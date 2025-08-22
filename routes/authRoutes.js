@@ -123,7 +123,6 @@ const sendVerificationEmail = async (email, token, type) => {
     }
 };
 
-
 // --- Route 1: User Registration ---
 router.post('/register', async (req, res) => {
     const { firstName, lastName, email, phoneNumber, password } = req.body;
@@ -142,16 +141,27 @@ router.post('/register', async (req, res) => {
         user.emailVerificationToken = verificationToken;
         user.emailVerificationExpires = Date.now() + 24 * 60 * 60 * 1000;
         await user.save();
-        await sendVerificationEmail(user.email, verificationToken, 'email');
+
+        try {
+            await sendVerificationEmail(user.email, verificationToken, 'email');
+        } catch (emailError) {
+            console.error("Email sending failed:", emailError);
+            await User.findByIdAndDelete(user._id); // rollback user if email fails
+            return res.status(500).json({
+                message: emailError?.response?.body?.error?.message || emailError.message || "Email sending failed"
+            });
+        }
+
         res.status(201).json({
             message: 'User registered successfully. Please check your email for verification.',
             userId: user._id, email: user.email,
         });
     } catch (error) {
         console.error('Registration error:', error);
-        res.status(500).json({ message: 'Server error during registration' });
+        res.status(500).json({ message: error.message || 'Server error during registration' });
     }
 });
+
 
 // --- Route 2: Email Verification ---
 router.get('/email/verify/:token', async (req, res) => {
