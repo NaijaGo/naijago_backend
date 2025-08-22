@@ -29,36 +29,83 @@ const sendVerificationEmail = async (email, token, type) => {
     let subject, htmlContent, textContent;
 
     switch (type) {
-        case 'email':
-            subject = 'NaijaGo: Email Verification';
-            htmlContent = `<p>Please verify your email for NaijaGo by clicking the link below:</p>
-                            <p><a href="${verificationLink}">Verify Email</a></p>
-                            <p>This link will expire in 24 hours.</p>`;
-            textContent = `Please verify your email for NaijaGo by clicking the link: ${verificationLink}. This link will expire in 24 hours.`;
-            break;
-        case 'password':
-            subject = 'NaijaGo: Password Reset Request';
-            htmlContent = `<p>You are receiving this because you (or someone else) have requested the reset of the password for your account.</p>
-                            <p>Please click on the following link to reset your password:</p>
-                            <p><a href="${verificationLink}">Reset Password</a></p>
-                            <p>This link will expire in 1 hour.</p>
-                            <p>If you did not request this, please ignore this email and your password will remain unchanged.</p>`;
-            textContent = `You requested a password reset. Click the link: ${verificationLink}. This link will expire in 1 hour. If you did not request this, ignore this email.`;
-            break;
-        case 'device':
-            subject = 'NaijaGo: Device Verification';
-            htmlContent = `<p>Please verify your new device for NaijaGo by clicking the link below:</p>
-                            <p><a href="${verificationLink}">Verify Device</a></p>
-                            <p>This link will expire in 24 hours.</p>`;
-            textContent = `Please verify your new device by clicking on this link: ${verificationLink}. This link will expire in 24 hours.`;
-            break;
-        default:
-            throw new Error('Unsupported verification type');
-    }
+    case 'email':
+        subject = 'NaijaGo: Email Verification';
+        htmlContent = `
+        <div style="font-family: Arial, sans-serif; background: #f9fafb; padding: 20px; text-align: center; color: #333;">
+            <div style="max-width: 600px; margin: auto; background: #ffffff; border-radius: 10px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); padding: 30px;">
+                <img src="https://naijago-backend.onrender.com/images/naijago_email_logo.jpg" alt="NaijaGo" style="width: 120px; margin-bottom: 20px; border-radius:60px" />
+                <h2 style="color: #2563eb; margin-bottom: 10px;">Verify Your Email</h2>
+                <p style="font-size: 16px; margin-bottom: 25px;">
+                    Please verify your email for <strong>NaijaGo</strong> by clicking the button below.
+                </p>
+                <a href="${verificationLink}" 
+                   style="display: inline-block; background: #16a34a; color: #fff; text-decoration: none; 
+                          padding: 12px 24px; font-size: 16px; font-weight: bold; border-radius: 8px;">
+                    Verify Email
+                </a>
+                <p style="font-size: 14px; color: #666; margin-top: 20px;">
+                    This link will expire in <strong>24 hours</strong>.
+                </p>
+            </div>
+        </div>`;
+        textContent = `Please verify your email for NaijaGo by clicking the link: ${verificationLink}. This link will expire in 24 hours.`;
+        break;
+
+    case 'password':
+        subject = 'NaijaGo: Password Reset Request';
+        htmlContent = `
+        <div style="font-family: Arial, sans-serif; background: #f9fafb; padding: 20px; text-align: center; color: #333;">
+            <div style="max-width: 600px; margin: auto; background: #ffffff; border-radius: 10px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); padding: 30px;">
+                <img src="https://naijago-backend.onrender.com/images/naijago_email_logo.jpg" alt="NaijaGo" style="width: 120px; margin-bottom: 20px; border-radius:60px" />
+                <h2 style="color: #dc2626; margin-bottom: 10px;">Password Reset Request</h2>
+                <p style="font-size: 16px; margin-bottom: 25px;">
+                    You are receiving this because you (or someone else) requested a password reset for your account.
+                </p>
+                <a href="${verificationLink}" 
+                   style="display: inline-block; background: #dc2626; color: #fff; text-decoration: none; 
+                          padding: 12px 24px; font-size: 16px; font-weight: bold; border-radius: 8px;">
+                    Reset Password
+                </a>
+                <p style="font-size: 14px; color: #666; margin-top: 20px;">
+                    This link will expire in <strong>1 hour</strong>. If you did not request this, please ignore it.
+                </p>
+            </div>
+        </div>`;
+        textContent = `You requested a password reset. Click the link: ${verificationLink}. This link will expire in 1 hour. If you did not request this, ignore this email.`;
+        break;
+
+    case 'device':
+        subject = 'NaijaGo: Device Verification';
+        htmlContent = `
+        <div style="font-family: Arial, sans-serif; background: #f9fafb; padding: 20px; text-align: center; color: #333;">
+            <div style="max-width: 600px; margin: auto; background: #ffffff; border-radius: 10px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); padding: 30px;">
+                <img src="https://naijago-backend.onrender.com/images/naijago_email_logo.jpg" alt="NaijaGo" style="width: 120px; margin-bottom: 20px; border-radius:60px" />
+                <h2 style="color: #0891b2; margin-bottom: 10px;">New Device Verification</h2>
+                <p style="font-size: 16px; margin-bottom: 25px;">
+                    A new device is trying to access your <strong>NaijaGo</strong> account. Please verify it by clicking the button below.
+                </p>
+                <a href="${verificationLink}" 
+                   style="display: inline-block; background: #0891b2; color: #fff; text-decoration: none; 
+                          padding: 12px 24px; font-size: 16px; font-weight: bold; border-radius: 8px;">
+                    Verify Device
+                </a>
+                <p style="font-size: 14px; color: #666; margin-top: 20px;">
+                    This link will expire in <strong>24 hours</strong>.
+                </p>
+            </div>
+        </div>`;
+        textContent = `Please verify your new device by clicking on this link: ${verificationLink}. This link will expire in 24 hours.`;
+        break;
+
+    default:
+        throw new Error('Unsupported verification type');
+}
+
 
     try {
         const { data, error } = await resend.emails.send({
-            from: 'NaijaGo <onboarding@resend.dev>',
+            from: 'NaijaGo <noreply@naijago.com>',
             to: email,
             subject: subject,
             html: htmlContent,
