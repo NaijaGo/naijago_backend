@@ -105,7 +105,7 @@ const sendVerificationEmail = async (email, token, type) => {
 
     try {
         const { data, error } = await resend.emails.send({
-            from: 'NaijaGo <noreply@naijago.com>',
+            from: 'NaijaGo <noreply@naijagoapp.com>',
             to: email,
             subject: subject,
             html: htmlContent,
