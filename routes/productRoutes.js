@@ -72,7 +72,7 @@ router.post(
             // Prepare options for PythonShell
             const pythonOptions = {
                 mode: 'text',
-                pythonPath: 'python3', // Use 'python3' as it's common on Linux-based servers
+                pythonPath: './venv/bin/python3', // Use 'python3' as it's common on Linux-based servers
                 scriptPath: path.join(__dirname, '..'), // The path to your project root
             };
 
