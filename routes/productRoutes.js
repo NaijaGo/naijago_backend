@@ -8,6 +8,7 @@ const { protect, authorizeRoles } = require('../middleware/authMiddleware'); // 
 const multer = require('multer'); // Import Multer for file uploads
 const cloudinary = require('../utils/cloudinary'); // Import your Cloudinary utility
 const path = require('path'); // Import path module to work with file paths
+const { PythonShell } = require('python-shell'); // python shell for images
 
 // --- Multer Configuration for Image Upload ---
 // Set up storage for Multer. We'll use memory storage as Cloudinary will handle the persistence.
@@ -42,78 +43,194 @@ const upload = multer({
 // @route   POST /api/products
 // @access  Private (Vendor only)
 router.post(
-    '/',
-    protect, // Ensure user is authenticated
-    authorizeRoles('vendor'), // Ensure user is an approved vendor
-    upload.single('image'), // Multer middleware to handle single file upload with field name 'image'
-    async (req, res) => {
-        // --- DEBUG LOGS ---
-        console.log('Backend: Product POST route hit.');
-        console.log('Backend: req.body (after multer):', req.body); // Check text fields
-        console.log('Backend: req.file (after multer):', req.file); // Check file info
-        // --- END DEBUG LOGS ---
+    '/',
+    protect, // Ensure user is authenticated
+    authorizeRoles('vendor'), // Ensure user is an approved vendor
+    upload.single('image'), // Multer middleware to handle single file upload with field name 'image'
+    async (req, res) => {
+        // --- DEBUG LOGS ---
+        console.log('Backend: Product POST route hit.');
+        console.log('Backend: req.body (after multer):', req.body); // Check text fields
+        console.log('Backend: req.file (after multer):', req.file); // Check file info
+        // --- END DEBUG LOGS ---
 
-        // Check if file was uploaded by Multer
-        if (!req.file) {
-            return res.status(400).json({ message: 'No image file uploaded.' });
-        }
+        // Check if file was uploaded by Multer
+        if (!req.file) {
+            return res.status(400).json({ message: 'No image file uploaded.' });
+        }
 
-        // Destructure all required fields, including the new 'is_flashsale' field
-        const { name, description, price, category, stockQuantity, is_flashsale } = req.body;
+        // Destructure all required fields, including the new 'is_flashsale' field
+        const { name, description, price, category, stockQuantity, is_flashsale } = req.body;
 
-        // Basic validation
-        if (!name || !description || !price || !category || !stockQuantity) {
-            return res.status(400).json({ message: 'Please enter all product details (name, description, price, category, stock quantity).' });
-        }
-        // Note: is_flashsale is not strictly required and can be false by default
+        // Basic validation
+        if (!name || !description || !price || !category || !stockQuantity) {
+            return res.status(400).json({ message: 'Please enter all product details (name, description, price, category, stock quantity).' });
+        }
+        
+        try {
+            // --- NEW: Image Quality Check using Python ---
+            // Prepare options for PythonShell
+            const pythonOptions = {
+                mode: 'text',
+                pythonPath: 'python3', // Use 'python3' as it's common on Linux-based servers
+                scriptPath: path.join(__dirname, '..'), // The path to your project root
+            };
 
-        try {
-            // Upload image to Cloudinary
-            const result = await cloudinary.uploader.upload(
-                `data:${req.file.mimetype};base64,${req.file.buffer.toString('base64')}`,
-                {
-                    folder: 'naijago_products',
-                    resource_type: 'image',
-                }
-            );
+            const blurScore = await new Promise((resolve, reject) => {
+                const pythonShell = new PythonShell('image_quality_check.py', pythonOptions);
+
+                // Send the image buffer to the Python script's stdin
+                pythonShell.send(req.file.buffer.toString('binary'), { encoding: 'binary' });
+
+                pythonShell.on('message', function (message) {
+                    const score = parseFloat(message);
+                    if (isNaN(score)) {
+                        reject(new Error('Invalid response from Python script.'));
+                    } else {
+                        resolve(score);
+                    }
+                });
+
+                pythonShell.end(function (err) {
+                    if (err) {
+                        console.error('Python script error:', err);
+                        reject(err);
+                    }
+                });
+            });
+
+            const BLUR_THRESHOLD = 100; // You can adjust this value based on testing
+            console.log(`Image blur score: ${blurScore}`);
+
+            // If the image is too blurry, reject the request
+            if (blurScore < BLUR_THRESHOLD) {
+                return res.status(400).json({ message: 'The uploaded image is too blurry. Please upload a clearer photo.' });
+            }
+            // --- END NEW LOGIC ---
+
+            // Upload image to Cloudinary
+            const result = await cloudinary.uploader.upload(
+                `data:${req.file.mimetype};base64,${req.file.buffer.toString('base64')}`,
+                {
+                    folder: 'naijago_products',
+                    resource_type: 'image',
+                }
+            );
 
             // Convert the string "true" or "false" from the form to a boolean
             const isFlashSaleBoolean = is_flashsale === 'true';
 
-            // Create new product
-            const product = new Product({
-                name,
-                description,
-                price,
-                category,
-                stockQuantity,
-                imageUrls: [result.secure_url],
-                vendor: req.user._id,
-                is_flashsale: isFlashSaleBoolean, // Assign the parsed boolean value
-            });
+            // Create new product
+            const product = new Product({
+                name,
+                description,
+                price,
+                category,
+                stockQuantity,
+                imageUrls: [result.secure_url],
+                vendor: req.user._id,
+                is_flashsale: isFlashSaleBoolean, // Assign the parsed boolean value
+            });
 
-            const createdProduct = await product.save();
+            const createdProduct = await product.save();
 
-            // Update vendor's product counts (optional, but good for dashboard metrics)
-            const vendor = await User.findById(req.user._id);
-            if (vendor) {
-                vendor.totalProducts = (vendor.totalProducts || 0) + 1;
-                vendor.productsUnsold = (vendor.productsUnsold || 0) + parseInt(stockQuantity);
-                await vendor.save();
-            }
+            // Update vendor's product counts (optional, but good for dashboard metrics)
+            const vendor = await User.findById(req.user._id);
+            if (vendor) {
+                vendor.totalProducts = (vendor.totalProducts || 0) + 1;
+                vendor.productsUnsold = (vendor.productsUnsold || 0) + parseInt(stockQuantity);
+                await vendor.save();
+            }
 
-            await createdProduct.populate('vendor', 'businessName');
+            await createdProduct.populate('vendor', 'businessName');
 
-            res.status(201).json({
-                message: 'Product added successfully!',
-                product: product,
-            });
-        } catch (error) {
-            console.error('Error adding product:', error);
-            res.status(500).json({ message: 'Server error adding product or uploading image.' });
-        }
-    }
+            res.status(201).json({
+                message: 'Product added successfully!',
+                product: product,
+            });
+        } catch (error) {
+            console.error('Error adding product or checking image quality:', error);
+            res.status(500).json({ message: 'Server error adding product or checking image quality.' });
+        }
+    }
 );
+
+// @desc    Add a new product
+// @route   POST /api/products
+// @access  Private (Vendor only)
+// router.post(
+//     '/',
+//     protect, // Ensure user is authenticated
+//     authorizeRoles('vendor'), // Ensure user is an approved vendor
+//     upload.single('image'), // Multer middleware to handle single file upload with field name 'image'
+//     async (req, res) => {
+//         // --- DEBUG LOGS ---
+//         console.log('Backend: Product POST route hit.');
+//         console.log('Backend: req.body (after multer):', req.body); // Check text fields
+//         console.log('Backend: req.file (after multer):', req.file); // Check file info
+//         // --- END DEBUG LOGS ---
+
+//         // Check if file was uploaded by Multer
+//         if (!req.file) {
+//             return res.status(400).json({ message: 'No image file uploaded.' });
+//         }
+
+//         // Destructure all required fields, including the new 'is_flashsale' field
+//         const { name, description, price, category, stockQuantity, is_flashsale } = req.body;
+
+//         // Basic validation
+//         if (!name || !description || !price || !category || !stockQuantity) {
+//             return res.status(400).json({ message: 'Please enter all product details (name, description, price, category, stock quantity).' });
+//         }
+//         // Note: is_flashsale is not strictly required and can be false by default
+
+//         try {
+//             // Upload image to Cloudinary
+//             const result = await cloudinary.uploader.upload(
+//                 `data:${req.file.mimetype};base64,${req.file.buffer.toString('base64')}`,
+//                 {
+//                     folder: 'naijago_products',
+//                     resource_type: 'image',
+//                 }
+//             );
+
+//             // Convert the string "true" or "false" from the form to a boolean
+//             const isFlashSaleBoolean = is_flashsale === 'true';
+
+//             // Create new product
+//             const product = new Product({
+//                 name,
+//                 description,
+//                 price,
+//                 category,
+//                 stockQuantity,
+//                 imageUrls: [result.secure_url],
+//                 vendor: req.user._id,
+//                 is_flashsale: isFlashSaleBoolean, // Assign the parsed boolean value
+//             });
+
+//             const createdProduct = await product.save();
+
+//             // Update vendor's product counts (optional, but good for dashboard metrics)
+//             const vendor = await User.findById(req.user._id);
+//             if (vendor) {
+//                 vendor.totalProducts = (vendor.totalProducts || 0) + 1;
+//                 vendor.productsUnsold = (vendor.productsUnsold || 0) + parseInt(stockQuantity);
+//                 await vendor.save();
+//             }
+
+//             await createdProduct.populate('vendor', 'businessName');
+
+//             res.status(201).json({
+//                 message: 'Product added successfully!',
+//                 product: product,
+//             });
+//         } catch (error) {
+//             console.error('Error adding product:', error);
+//             res.status(500).json({ message: 'Server error adding product or uploading image.' });
+//         }
+//     }
+// );
 
 
 // ------------------ START OF REORDERED ROUTES ------------------
