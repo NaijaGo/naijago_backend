@@ -12,148 +12,238 @@ const { PythonShell } = require('python-shell'); // python shell for images
 
 // --- Multer Configuration for Image Upload ---
 // Set up storage for Multer. We'll use memory storage as Cloudinary will handle the persistence.
-const storage = multer.memoryStorage(); // Store files in memory as buffers
-const upload = multer({
-    storage: storage,
-    limits: { fileSize: 5 * 1024 * 1024 }, // Limit file size to 5MB
-    fileFilter: (req, file, cb) => {
-        // --- DEBUG LOGS FOR FILE FILTER ---
-        console.log('Backend: Multer fileFilter hit.');
-        console.log('Backend: File originalname:', file.originalname);
-        console.log('Backend: File mimetype:', file.mimetype);
-        // --- END DEBUG LOGS ---
-
-        // Accept only image files
-        // Check if mimetype starts with 'image/' OR if it's a generic octet-stream AND has a common image extension
-        const isImageMime = file.mimetype.startsWith('image/');
-        const isGenericAndImageExtension = file.mimetype === 'application/octet-stream' &&
-                                           ['.jpg', '.jpeg', '.png', '.gif'].includes(path.extname(file.originalname).toLowerCase());
-
-        if (isImageMime || isGenericAndImageExtension) {
-            cb(null, true);
-        } else {
-            cb(new Error('Only image files are allowed!'), false);
-        }
-    },
+// --- Multer Configuration for Image Upload ---
+// Set up disk storage for Multer to save files to the server's disk
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    // Create a temporary 'uploads' directory in your project root
+    cb(null, 'uploads/'); 
+  },
+  filename: (req, file, cb) => {
+    // Use a unique name to prevent conflicts
+    cb(null, Date.now() + '-' + file.originalname);
+  },
 });
 
+const upload = multer({
+  storage: storage,
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
+  fileFilter: (req, file, cb) => {
+    // Your existing file filter logic
+    const isImageMime = file.mimetype.startsWith('image/');
+    const isGenericAndImageExtension = file.mimetype === 'application/octet-stream' &&
+        ['.jpg', '.jpeg', '.png', '.gif'].includes(path.extname(file.originalname).toLowerCase());
+
+    if (isImageMime || isGenericAndImageExtension) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only image files are allowed!'), false);
+    }
+  },
+});
 // --- Product Routes ---
 
 // @desc    Add a new product
 // @route   POST /api/products
 // @access  Private (Vendor only)
+
 router.post(
-    '/',
-    protect, // Ensure user is authenticated
-    authorizeRoles('vendor'), // Ensure user is an approved vendor
-    upload.single('image'), // Multer middleware to handle single file upload with field name 'image'
-    async (req, res) => {
-        // --- DEBUG LOGS ---
-        console.log('Backend: Product POST route hit.');
-        console.log('Backend: req.body (after multer):', req.body); // Check text fields
-        console.log('Backend: req.file (after multer):', req.file); // Check file info
-        // --- END DEBUG LOGS ---
-
-        // Check if file was uploaded by Multer
-        if (!req.file) {
-            return res.status(400).json({ message: 'No image file uploaded.' });
-        }
-
-        // Destructure all required fields, including the new 'is_flashsale' field
-        const { name, description, price, category, stockQuantity, is_flashsale } = req.body;
-
-        // Basic validation
-        if (!name || !description || !price || !category || !stockQuantity) {
-            return res.status(400).json({ message: 'Please enter all product details (name, description, price, category, stock quantity).' });
-        }
-        
-        try {
-            // --- NEW: Image Quality Check using Python ---
-            // Prepare options for PythonShell
-            const pythonOptions = {
-                mode: 'text',
-                pythonPath: './venv/bin/python3', // Use 'python3' as it's common on Linux-based servers
-                scriptPath: path.join(__dirname, '..'), // The path to your project root
-            };
-
-            const blurScore = await new Promise((resolve, reject) => {
-                const pythonShell = new PythonShell('image_quality_check.py', pythonOptions);
-
-                // Send the image buffer to the Python script's stdin
-                pythonShell.send(req.file.buffer.toString('binary'), { encoding: 'binary' });
-
-                pythonShell.on('message', function (message) {
-                    const score = parseFloat(message);
-                    if (isNaN(score)) {
-                        reject(new Error('Invalid response from Python script.'));
-                    } else {
-                        resolve(score);
-                    }
-                });
-
-                pythonShell.end(function (err) {
-                    if (err) {
-                        console.error('Python script error:', err);
-                        reject(err);
-                    }
-                });
-            });
-
-            const BLUR_THRESHOLD = 100; // You can adjust this value based on testing
-            console.log(`Image blur score: ${blurScore}`);
-
-            // If the image is too blurry, reject the request
-            if (blurScore < BLUR_THRESHOLD) {
-                return res.status(400).json({ message: 'The uploaded image is too blurry. Please upload a clearer photo.' });
-            }
-            // --- END NEW LOGIC ---
-
-            // Upload image to Cloudinary
-            const result = await cloudinary.uploader.upload(
-                `data:${req.file.mimetype};base64,${req.file.buffer.toString('base64')}`,
-                {
-                    folder: 'naijago_products',
-                    resource_type: 'image',
-                }
-            );
-
-            // Convert the string "true" or "false" from the form to a boolean
-            const isFlashSaleBoolean = is_flashsale === 'true';
-
-            // Create new product
-            const product = new Product({
-                name,
-                description,
-                price,
-                category,
-                stockQuantity,
-                imageUrls: [result.secure_url],
-                vendor: req.user._id,
-                is_flashsale: isFlashSaleBoolean, // Assign the parsed boolean value
-            });
-
-            const createdProduct = await product.save();
-
-            // Update vendor's product counts (optional, but good for dashboard metrics)
-            const vendor = await User.findById(req.user._id);
-            if (vendor) {
-                vendor.totalProducts = (vendor.totalProducts || 0) + 1;
-                vendor.productsUnsold = (vendor.productsUnsold || 0) + parseInt(stockQuantity);
-                await vendor.save();
-            }
-
-            await createdProduct.populate('vendor', 'businessName');
-
-            res.status(201).json({
-                message: 'Product added successfully!',
-                product: product,
-            });
-        } catch (error) {
-            console.error('Error adding product or checking image quality:', error);
-            res.status(500).json({ message: 'Server error adding product or checking image quality.' });
-        }
+  '/',
+  protect,
+  authorizeRoles('vendor'),
+  upload.single('image'),
+  async (req, res) => {
+    if (!req.file) {
+      return res.status(400).json({ message: 'No image file uploaded.' });
     }
+
+    // Use the temporary file path created by Multer disk storage
+    const imagePath = req.file.path;
+
+    try {
+      // Pass the file path to the Python script
+      const pythonOptions = {
+        mode: 'text',
+        pythonPath: './venv/bin/python3',
+        scriptPath: path.join(__dirname, '..'),
+        args: [imagePath], // Pass the file path as an argument
+      };
+
+      const blurScore = await new Promise((resolve, reject) => {
+        PythonShell.run('image_quality_check.py', pythonOptions, (err, results) => {
+          if (err) {
+            console.error('Python script error:', err);
+            return reject(err);
+          }
+          const score = parseFloat(results[0]);
+          if (isNaN(score)) {
+            return reject(new Error('Invalid response from Python script.'));
+          }
+          resolve(score);
+        });
+      });
+
+      const BLUR_THRESHOLD = 100;
+      console.log(`Image blur score: ${blurScore}`);
+
+      if (blurScore < BLUR_THRESHOLD) {
+        // Delete the temp file before returning
+        fs.unlinkSync(imagePath);
+        return res.status(400).json({ message: 'The uploaded image is too blurry. Please upload a clearer photo.' });
+      }
+
+      // Upload the local file to Cloudinary
+      const result = await cloudinary.uploader.upload(imagePath, {
+        folder: 'naijago_products',
+        resource_type: 'image',
+      });
+
+      // Delete the local file after it's uploaded
+      fs.unlinkSync(imagePath);
+
+      // ... rest of your product creation logic
+      const { name, description, price, category, stockQuantity, is_flashsale } = req.body;
+      const isFlashSaleBoolean = is_flashsale === 'true';
+
+      const product = new Product({
+        name,
+        description,
+        price,
+        category,
+        stockQuantity,
+        imageUrls: [result.secure_url],
+        vendor: req.user._id,
+        is_flashsale: isFlashSaleBoolean,
+      });
+
+      await product.save();
+      // ... rest of your code
+
+      res.status(201).json({ message: 'Product added successfully!', product });
+
+    } catch (error) {
+      console.error('Error adding product or checking image quality:', error);
+      // Delete the file if an error occurs to prevent it from being orphaned
+      if (fs.existsSync(imagePath)) {
+        fs.unlinkSync(imagePath);
+      }
+      res.status(500).json({ message: 'Server error adding product or checking image quality.' });
+    }
+  }
 );
+
+// router.post(
+//     '/',
+//     protect, // Ensure user is authenticated
+//     authorizeRoles('vendor'), // Ensure user is an approved vendor
+//     upload.single('image'), // Multer middleware to handle single file upload with field name 'image'
+//     async (req, res) => {
+//         // --- DEBUG LOGS ---
+//         console.log('Backend: Product POST route hit.');
+//         console.log('Backend: req.body (after multer):', req.body); // Check text fields
+//         console.log('Backend: req.file (after multer):', req.file); // Check file info
+//         // --- END DEBUG LOGS ---
+
+//         // Check if file was uploaded by Multer
+//         if (!req.file) {
+//             return res.status(400).json({ message: 'No image file uploaded.' });
+//         }
+
+//         // Destructure all required fields, including the new 'is_flashsale' field
+//         const { name, description, price, category, stockQuantity, is_flashsale } = req.body;
+
+//         // Basic validation
+//         if (!name || !description || !price || !category || !stockQuantity) {
+//             return res.status(400).json({ message: 'Please enter all product details (name, description, price, category, stock quantity).' });
+//         }
+        
+//         try {
+//             // --- NEW: Image Quality Check using Python ---
+//             // Prepare options for PythonShell
+//             const pythonOptions = {
+//                 mode: 'text',
+//                 pythonPath: './venv/bin/python3', // Use 'python3' as it's common on Linux-based servers
+//                 scriptPath: path.join(__dirname, '..'), // The path to your project root
+//             };
+
+//             const blurScore = await new Promise((resolve, reject) => {
+//                 const pythonShell = new PythonShell('image_quality_check.py', pythonOptions);
+
+//                 // Send the image buffer to the Python script's stdin
+//                 pythonShell.send(req.file.buffer.toString('binary'), { encoding: 'binary' });
+
+//                 pythonShell.on('message', function (message) {
+//                     const score = parseFloat(message);
+//                     if (isNaN(score)) {
+//                         reject(new Error('Invalid response from Python script.'));
+//                     } else {
+//                         resolve(score);
+//                     }
+//                 });
+
+//                 pythonShell.end(function (err) {
+//                     if (err) {
+//                         console.error('Python script error:', err);
+//                         reject(err);
+//                     }
+//                 });
+//             });
+
+//             const BLUR_THRESHOLD = 100; // You can adjust this value based on testing
+//             console.log(`Image blur score: ${blurScore}`);
+
+//             // If the image is too blurry, reject the request
+//             if (blurScore < BLUR_THRESHOLD) {
+//                 return res.status(400).json({ message: 'The uploaded image is too blurry. Please upload a clearer photo.' });
+//             }
+//             // --- END NEW LOGIC ---
+
+//             // Upload image to Cloudinary
+//             const result = await cloudinary.uploader.upload(
+//                 `data:${req.file.mimetype};base64,${req.file.buffer.toString('base64')}`,
+//                 {
+//                     folder: 'naijago_products',
+//                     resource_type: 'image',
+//                 }
+//             );
+
+//             // Convert the string "true" or "false" from the form to a boolean
+//             const isFlashSaleBoolean = is_flashsale === 'true';
+
+//             // Create new product
+//             const product = new Product({
+//                 name,
+//                 description,
+//                 price,
+//                 category,
+//                 stockQuantity,
+//                 imageUrls: [result.secure_url],
+//                 vendor: req.user._id,
+//                 is_flashsale: isFlashSaleBoolean, // Assign the parsed boolean value
+//             });
+
+//             const createdProduct = await product.save();
+
+//             // Update vendor's product counts (optional, but good for dashboard metrics)
+//             const vendor = await User.findById(req.user._id);
+//             if (vendor) {
+//                 vendor.totalProducts = (vendor.totalProducts || 0) + 1;
+//                 vendor.productsUnsold = (vendor.productsUnsold || 0) + parseInt(stockQuantity);
+//                 await vendor.save();
+//             }
+
+//             await createdProduct.populate('vendor', 'businessName');
+
+//             res.status(201).json({
+//                 message: 'Product added successfully!',
+//                 product: product,
+//             });
+//         } catch (error) {
+//             console.error('Error adding product or checking image quality:', error);
+//             res.status(500).json({ message: 'Server error adding product or checking image quality.' });
+//         }
+//     }
+// );
 
 // @desc    Add a new product
 // @route   POST /api/products
