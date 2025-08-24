@@ -9,11 +9,16 @@ const helmet = require('helmet');
 const compression = require('compression');
 const rateLimit = require('express-rate-limit');
 const cors = require('cors');
+const { PythonShell } = require('python-shell');
+const fs = require('fs');
 
 const connectDB = require('./config/db');
 const { notFound, errorHandler } = require('./middleware/errorMiddleware');
 
 const app = express();
+
+app.set('trust proxy', true);
+
 connectDB();
 
 const PORT = process.env.PORT || 5000;
