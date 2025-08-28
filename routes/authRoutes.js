@@ -290,6 +290,26 @@ router.get('/me', protect, async (req, res) => {
     }
 });
 
+// @desc    Delete a user account
+// @route   DELETE /api/auth/delete-account
+// @access  Private
+router.delete('/delete-account', protect, async (req, res) => {
+    try {
+        const userId = req.user._id;
+        const user = await User.findByIdAndDelete(userId);
+
+        if (!user) {
+            return res.status(404).json({ message: 'User not found.' });
+        }
+
+        res.status(200).json({ message: 'Account successfully deleted.' });
+        
+    } catch (error) {
+        console.error('Error during account deletion:', error);
+        res.status(500).json({ message: 'Server error during account deletion.' });
+    }
+});
+
 // @desc    Vendor desists from being a vendor
 // @route   PUT /api/auth/desist-vendor
 // @access  Private (Vendor only)
