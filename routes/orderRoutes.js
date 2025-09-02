@@ -6,6 +6,7 @@ const Order = require('../models/Order');
 const Product = require('../models/Product');
 const User = require('../models/User');
 const { protect, authorizeRoles } = require('../middleware/authMiddleware');
+const axios = require("axios");
 
 // @desc    Get all orders (Admin access only)
 // @route   GET /api/orders
@@ -154,6 +155,9 @@ router.get('/vendor', protect, authorizeRoles('vendor', 'admin'), async (req, re
 // @desc    Update order to paid + credit vendor + update metrics
 // @route   PUT /api/orders/:id/pay
 // @access  Private
+// @desc    Update order to paid + verify Flutterwave + credit vendor + update metrics
+// @route   PUT /api/orders/:id/pay
+// @access  Private
 router.put('/:id/pay', protect, async (req, res) => {
     const session = await mongoose.startSession();
     session.startTransaction();
@@ -184,37 +188,62 @@ router.put('/:id/pay', protect, async (req, res) => {
             return res.status(401).json({ message: 'Not authorized to modify this order' });
         }
 
-        // Update the order's payment details and status
+        // ✅ Require transaction_id from frontend (sent after Flutterwave charge)
+        const { transaction_id } = req.body;
+        if (!transaction_id) {
+            await session.abortTransaction();
+            session.endSession();
+            return res.status(400).json({ message: 'Transaction ID is required' });
+        }
+
+        // ✅ Verify payment with Flutterwave using secret key
+        const flwResponse = await axios.get(
+            `https://api.flutterwave.com/v3/transactions/${transaction_id}/verify`,
+            {
+                headers: { Authorization: `Bearer ${process.env.FLUTTERWAVE_SECRET_KEY}` }
+            }
+        );
+
+        const flwData = flwResponse.data;
+
+        if (flwData.status !== "success" || flwData.data.status !== "successful") {
+            await session.abortTransaction();
+            session.endSession();
+            return res.status(400).json({
+                message: 'Payment verification failed',
+                flutterwave: flwData
+            });
+        }
+
+        // ✅ If verified, update order
         order.isPaid = true;
         order.paidAt = Date.now();
         order.paymentResult = {
-            id: req.body.id,
-            status: req.body.status,
-            update_time: req.body.update_time,
-            email_address: req.body.email_address,
+            id: flwData.data.id,
+            status: flwData.data.status,
+            tx_ref: flwData.data.tx_ref,
+            flw_ref: flwData.data.flw_ref,
+            amount: flwData.data.amount,
+            currency: flwData.data.currency,
+            email_address: flwData.data.customer.email,
         };
 
         const vendorUpdates = new Map();
         const productUpdates = [];
 
         for (const item of order.orderItems) {
-            if (!item.vendor) {
-                console.warn(`Vendor not found for product ID: ${item.product}. Skipping wallet update.`);
-                continue;
-            }
+            if (!item.vendor) continue;
 
             const vendorId = item.vendor._id.toString();
             const revenue = item.price * item.quantity;
             const soldCount = item.quantity;
 
-            // Group revenue and sold count by vendor
             if (!vendorUpdates.has(vendorId)) {
                 vendorUpdates.set(vendorId, { revenue: 0, soldCount: 0 });
             }
             vendorUpdates.get(vendorId).revenue += revenue;
             vendorUpdates.get(vendorId).soldCount += soldCount;
-            
-            // Collect all product updates
+
             productUpdates.push(
                 Product.findByIdAndUpdate(
                     item.product,
@@ -224,40 +253,39 @@ router.put('/:id/pay', protect, async (req, res) => {
             );
         }
 
-        // Execute all product updates in parallel
         await Promise.all(productUpdates);
-        
+
         const userUpdatePromises = [];
         for (const [vendorId, updates] of vendorUpdates.entries()) {
-            const userUpdatePromise = User.findByIdAndUpdate(
-                vendorId,
-                {
-                    $inc: {
-                        vendorWalletBalance: updates.revenue,
-                        productsSold: updates.soldCount,
-                        productsUnsold: -updates.soldCount, // Now update productsUnsold here
-                    },
-                    $push: {
-                        notifications: {
-                            $each: [{
-                                type: 'payment_received',
-                                message: `You have received ₦${updates.revenue.toFixed(2)} for a new order.`,
-                                isRead: false,
-                                createdAt: new Date(),
-                            }],
-                            $position: 0,
+            userUpdatePromises.push(
+                User.findByIdAndUpdate(
+                    vendorId,
+                    {
+                        $inc: {
+                            vendorWalletBalance: updates.revenue,
+                            productsSold: updates.soldCount,
+                            productsUnsold: -updates.soldCount,
+                        },
+                        $push: {
+                            notifications: {
+                                $each: [{
+                                    type: 'payment_received',
+                                    message: `You have received ₦${updates.revenue.toFixed(2)} for a new order.`,
+                                    isRead: false,
+                                    createdAt: new Date(),
+                                }],
+                                $position: 0,
+                            },
                         },
                     },
-                },
-                { new: true, session }
+                    { new: true, session }
+                )
             );
-            userUpdatePromises.push(userUpdatePromise);
         }
 
         await Promise.all(userUpdatePromises);
-        
-        const updatedOrder = await order.save({ session });
 
+        const updatedOrder = await order.save({ session });
         await session.commitTransaction();
         session.endSession();
 
@@ -266,10 +294,128 @@ router.put('/:id/pay', protect, async (req, res) => {
     } catch (error) {
         await session.abortTransaction();
         session.endSession();
-        console.error('Error updating order to paid and crediting vendors:', error);
-        res.status(500).json({ message: 'Server Error' });
+        console.error('Error verifying payment and updating order:', error.response?.data || error.message);
+        res.status(500).json({ message: 'Server Error', error: error.response?.data || error.message });
     }
 });
+
+// ====================================================================
+// router.put('/:id/pay', protect, async (req, res) => {
+//     const session = await mongoose.startSession();
+//     session.startTransaction();
+
+//     try {
+//         const order = await Order.findById(req.params.id)
+//             .populate({
+//                 path: 'orderItems.vendor',
+//                 select: 'businessName'
+//             })
+//             .session(session);
+
+//         if (!order) {
+//             await session.abortTransaction();
+//             session.endSession();
+//             return res.status(404).json({ message: 'Order not found' });
+//         }
+
+//         if (order.isPaid) {
+//             await session.abortTransaction();
+//             session.endSession();
+//             return res.status(400).json({ message: 'Order is already paid' });
+//         }
+
+//         if (order.user.toString() !== req.user.id.toString()) {
+//             await session.abortTransaction();
+//             session.endSession();
+//             return res.status(401).json({ message: 'Not authorized to modify this order' });
+//         }
+
+//         // Update the order's payment details and status
+//         order.isPaid = true;
+//         order.paidAt = Date.now();
+//         order.paymentResult = {
+//             id: req.body.id,
+//             status: req.body.status,
+//             update_time: req.body.update_time,
+//             email_address: req.body.email_address,
+//         };
+
+//         const vendorUpdates = new Map();
+//         const productUpdates = [];
+
+//         for (const item of order.orderItems) {
+//             if (!item.vendor) {
+//                 console.warn(`Vendor not found for product ID: ${item.product}. Skipping wallet update.`);
+//                 continue;
+//             }
+
+//             const vendorId = item.vendor._id.toString();
+//             const revenue = item.price * item.quantity;
+//             const soldCount = item.quantity;
+
+//             // Group revenue and sold count by vendor
+//             if (!vendorUpdates.has(vendorId)) {
+//                 vendorUpdates.set(vendorId, { revenue: 0, soldCount: 0 });
+//             }
+//             vendorUpdates.get(vendorId).revenue += revenue;
+//             vendorUpdates.get(vendorId).soldCount += soldCount;
+            
+//             // Collect all product updates
+//             productUpdates.push(
+//                 Product.findByIdAndUpdate(
+//                     item.product,
+//                     { $inc: { salesCount: soldCount, stockQuantity: -soldCount } },
+//                     { new: true, session }
+//                 )
+//             );
+//         }
+
+//         // Execute all product updates in parallel
+//         await Promise.all(productUpdates);
+        
+//         const userUpdatePromises = [];
+//         for (const [vendorId, updates] of vendorUpdates.entries()) {
+//             const userUpdatePromise = User.findByIdAndUpdate(
+//                 vendorId,
+//                 {
+//                     $inc: {
+//                         vendorWalletBalance: updates.revenue,
+//                         productsSold: updates.soldCount,
+//                         productsUnsold: -updates.soldCount, // Now update productsUnsold here
+//                     },
+//                     $push: {
+//                         notifications: {
+//                             $each: [{
+//                                 type: 'payment_received',
+//                                 message: `You have received ₦${updates.revenue.toFixed(2)} for a new order.`,
+//                                 isRead: false,
+//                                 createdAt: new Date(),
+//                             }],
+//                             $position: 0,
+//                         },
+//                     },
+//                 },
+//                 { new: true, session }
+//             );
+//             userUpdatePromises.push(userUpdatePromise);
+//         }
+
+//         await Promise.all(userUpdatePromises);
+        
+//         const updatedOrder = await order.save({ session });
+
+//         await session.commitTransaction();
+//         session.endSession();
+
+//         res.json(updatedOrder);
+
+//     } catch (error) {
+//         await session.abortTransaction();
+//         session.endSession();
+//         console.error('Error updating order to paid and crediting vendors:', error);
+//         res.status(500).json({ message: 'Server Error' });
+//     }
+// });
 
 
 // @desc    Update order status by dispatch rider
