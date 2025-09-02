@@ -7,6 +7,10 @@ const bcrypt = require('bcryptjs');
 const { protect } = require('../middleware/authMiddleware'); // Import 'protect' middleware
 const fs = require('fs'); // For file system operations (saving images)
 const path = require('path'); // For path manipulation
+const Product = require('../models/Product');
+const Review = require('../models/Review');
+const DisputeRequest = require('../models/DisputeRequest');
+const ReturnRequest = require('../models/ReturnRequest');
 
 
 const router = express.Router();
@@ -290,19 +294,44 @@ router.get('/me', protect, async (req, res) => {
     }
 });
 
-// @desc    Delete a user account
+// @desc    Delete a user account and all associated data
 // @route   DELETE /api/auth/delete-account
 // @access  Private
 router.delete('/delete-account', protect, async (req, res) => {
     try {
         const userId = req.user._id;
-        const user = await User.findByIdAndDelete(userId);
+
+        // 1. Find the user to check their role before deletion
+        const user = await User.findById(userId);
 
         if (!user) {
             return res.status(404).json({ message: 'User not found.' });
         }
 
-        res.status(200).json({ message: 'Account successfully deleted.' });
+        // 2. Perform Cascading Deletion for all related documents
+
+        // If the user is a vendor, delete all their products
+        if (user.isVendor) {
+            console.log(`Deleting all products for vendor: ${userId}`);
+            await Product.deleteMany({ vendor: userId });
+        }
+
+        // Delete all reviews submitted by this user
+        console.log(`Deleting all reviews for user: ${userId}`);
+        await Review.deleteMany({ user: userId });
+
+        // Delete all dispute requests created by this user
+        console.log(`Deleting all dispute requests for user: ${userId}`);
+        await DisputeRequest.deleteMany({ user: userId });
+
+        // Delete all return requests created by this user
+        console.log(`Deleting all return requests for user: ${userId}`);
+        await ReturnRequest.deleteMany({ user: userId });
+
+        // 3. Finally, delete the user account itself
+        await User.findByIdAndDelete(userId);
+
+        res.status(200).json({ message: 'Account and all associated data successfully deleted.' });
         
     } catch (error) {
         console.error('Error during account deletion:', error);

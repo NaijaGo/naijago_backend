@@ -1,4 +1,4 @@
-
+// models/User.js
 const mongoose = require('mongoose'); // Import Mongoose for schema definition
 const bcrypt = require('bcryptjs'); // Import bcryptjs for password hashing
 

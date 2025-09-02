@@ -1,3 +1,5 @@
+// models/Order.js
+
 const mongoose = require('mongoose'); // Import Mongoose for schema definition
 
 // Define the schema for individual items within an order
