@@ -26,6 +26,7 @@ router.get('/', protect, async (req, res) => {
 // @desc    Create new order (pending payment)
 // @route   POST /api/orders
 // @access  Private
+/* Corrected POST route with validation */
 router.post('/', protect, async (req, res) => {
     const {
         orderItems,
@@ -45,6 +46,14 @@ router.post('/', protect, async (req, res) => {
             await session.abortTransaction();
             session.endSession();
             return res.status(400).json({ message: 'No order items' });
+        }
+
+        // ✅ ADD THIS VALIDATION to check for empty or missing vendor IDs
+        const hasMissingVendor = orderItems.some(item => !item.vendor || item.vendor === '');
+        if (hasMissingVendor) {
+            await session.abortTransaction();
+            session.endSession();
+            return res.status(400).json({ message: 'One or more order items are missing a vendor ID.' });
         }
 
         // Validate stock before creating the order
@@ -98,6 +107,79 @@ router.post('/', protect, async (req, res) => {
         res.status(500).json({ message: 'Server Error' });
     }
 });
+// ===============================================
+// router.post('/', protect, async (req, res) => {
+//     const {
+//         orderItems,
+//         shippingAddress,
+//         paymentMethod,
+//         taxPrice,
+//         shippingPrice,
+//         totalPrice,
+//     } = req.body;
+
+//     // Use a transaction for a robust, all-or-nothing operation
+//     const session = await mongoose.startSession();
+//     session.startTransaction();
+
+//     try {
+//         if (!orderItems || orderItems.length === 0) {
+//             await session.abortTransaction();
+//             session.endSession();
+//             return res.status(400).json({ message: 'No order items' });
+//         }
+
+//         // Validate stock before creating the order
+//         for (const item of orderItems) {
+//             const product = await Product.findById(item.product).session(session);
+//             if (!product) {
+//                 await session.abortTransaction();
+//                 session.endSession();
+//                 return res.status(404).json({ message: `Product not found: ${item.name}` });
+//             }
+//             if (product.stockQuantity < item.quantity) {
+//                 await session.abortTransaction();
+//                 session.endSession();
+//                 return res.status(400).json({ message: `Insufficient stock for ${product.name}. Available: ${product.stockQuantity}` });
+//             }
+//         }
+
+//         // Create the order with isPaid set to false
+//         const order = new Order({
+//             user: req.user._id,
+//             orderItems: orderItems.map(item => ({
+//                 product: item.product,
+//                 name: item.name,
+//                 image: item.image,
+//                 quantity: item.quantity,
+//                 price: item.price,
+//                 vendor: item.vendor,
+//             })),
+//             shippingAddress,
+//             paymentMethod,
+//             taxPrice,
+//             shippingPrice,
+//             totalPrice,
+//             isPaid: false, // Order starts as unpaid
+//             isDelivered: false,
+//             orderStatus: 'pending',
+//         });
+
+//         const createdOrder = await order.save({ session });
+
+//         // Commit the transaction to save the pending order.
+//         await session.commitTransaction();
+//         session.endSession();
+
+//         res.status(201).json(createdOrder);
+
+//     } catch (error) {
+//         await session.abortTransaction();
+//         session.endSession();
+//         console.error('Error creating order:', error);
+//         res.status(500).json({ message: 'Server Error' });
+//     }
+// });
 
 
 // @desc    Get logged in user's orders
