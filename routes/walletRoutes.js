@@ -112,70 +112,77 @@ router.get('/banks', protect, async (req, res) => {
 // @route   POST /api/wallet/withdraw
 // @access  Private
 router.post('/withdraw', protect, async (req, res) => {
-    const { bank_code, account_number, account_name, amount } = req.body;
+  const { bank_code, account_number, account_name, amount } = req.body;
 
-    if (!bank_code || !account_number || !account_name || !amount) {
-        return res.status(400).json({ message: 'All fields are required.' });
+  if (!bank_code || !account_number || !account_name || !amount) {
+    return res.status(400).json({ message: 'All fields are required.' });
+  }
+
+  if (amount <= 0) {
+    return res.status(400).json({ message: 'Invalid withdrawal amount.' });
+  }
+
+  try {
+    const user = await User.findById(req.user.id);
+    if (!user) {
+      return res.status(404).json({ message: 'User not found.' });
     }
 
-    if (amount <= 0) {
-        return res.status(400).json({ message: 'Invalid withdrawal amount.' });
+    if (user.userWalletBalance < amount) {
+      return res.status(400).json({ message: 'Insufficient balance.' });
     }
 
-    try {
-        const user = await User.findById(req.user.id);
-        if (!user) {
-            return res.status(404).json({ message: 'User not found.' });
-        }
-
-        if (user.userWalletBalance < amount) {
-            return res.status(400).json({ message: 'Insufficient balance.' });
-        }
-
-        const flutterwaveSecretKey = process.env.FLUTTERWAVE_SECRET_KEY;
-        if (!flutterwaveSecretKey) {
-            return res.status(500).json({ message: 'Missing Flutterwave Secret Key.' });
-        }
-
-        // ✅ Send transfer request to Flutterwave
-        const transferResponse = await axios.post(
-            'https://api.flutterwave.com/v3/transfers',
-            {
-                account_bank: bank_code,
-                account_number,
-                amount,
-                narration: 'Wallet Withdrawal',
-                currency: 'NGN',
-                reference: `wd_${Date.now()}`, // unique reference
-                beneficiary_name: account_name
-            },
-            {
-                headers: {
-                    Authorization: `Bearer ${flutterwaveSecretKey}`,
-                    'Content-Type': 'application/json'
-                }
-            }
-        );
-
-        const transferData = transferResponse.data;
-
-        if (transferData.status === 'success') {
-            // Deduct from wallet
-            user.userWalletBalance -= amount;
-            await user.save();
-
-            return res.status(200).json({
-                message: 'Withdrawal successful. Funds are on the way.',
-                newBalance: user.userWalletBalance,
-                transferId: transferData.data.id
-            });
-        } else {
-            return res.status(400).json({ message: 'Transfer failed.', details: transferData });
-        }
-    } catch (error) {
-        console.error('Error processing withdrawal:', error.response?.data || error.message);
-        return res.status(500).json({ message: 'Error processing withdrawal.' });
+    const flutterwaveSecretKey = process.env.FLUTTERWAVE_SECRET_KEY;
+    if (!flutterwaveSecretKey) {
+      return res.status(500).json({ message: 'Missing Flutterwave Secret Key.' });
     }
+
+    // ✅ Prepare transfer request
+    const transferPayload = {
+      account_bank: bank_code,        // Bank code
+      account_number: account_number, // Account number
+      amount: amount,
+      narration: "Wallet withdrawal",
+      currency: "NGN",
+      reference: `wd_${Date.now()}`, // unique reference
+      debit_currency: "NGN"
+    };
+
+    // ✅ Call Flutterwave Transfers API
+    const transferResponse = await axios.post(
+      "https://api.flutterwave.com/v3/transfers",
+      transferPayload,
+      {
+        headers: {
+          Authorization: `Bearer ${flutterwaveSecretKey}`,
+          "Content-Type": "application/json"
+        }
+      }
+    );
+
+    const transferData = transferResponse.data;
+
+    if (transferData.status === "success") {
+      // Deduct from wallet balance only if Flutterwave accepted transfer
+      user.userWalletBalance -= amount;
+      await user.save();
+
+      return res.status(200).json({
+        message: "Withdrawal request successful. Funds will arrive shortly.",
+        newBalance: user.userWalletBalance,
+        transferId: transferData.data.id,
+        flutterwaveStatus: transferData.data.status
+      });
+    } else {
+      return res.status(400).json({
+        message: "Withdrawal failed.",
+        details: transferData
+      });
+    }
+  } catch (error) {
+    console.error("Error processing withdrawal:", error.response?.data || error.message);
+    return res.status(500).json({ message: "Error processing withdrawal." });
+  }
 });
 
 
