@@ -75,6 +75,37 @@ router.post('/verify-payment', protect, async (req, res) => {
 });
 
 
+// @desc    Get list of banks (via Flutterwave)
+// @route   GET /api/wallet/banks
+// @access  Private
+router.get('/banks', protect, async (req, res) => {
+    try {
+        const flutterwaveSecretKey = process.env.FLUTTERWAVE_SECRET_KEY;
+        if (!flutterwaveSecretKey) {
+            return res.status(500).json({ message: 'Missing Flutterwave Secret Key.' });
+        }
+
+        const response = await axios.get(
+            'https://api.flutterwave.com/v3/banks/NG',
+            {
+                headers: {
+                    Authorization: `Bearer ${flutterwaveSecretKey}`
+                }
+            }
+        );
+
+        if (response.data && response.data.status === 'success') {
+            return res.status(200).json({
+                banks: response.data.data
+            });
+        } else {
+            return res.status(400).json({ message: 'Failed to fetch banks from Flutterwave.' });
+        }
+    } catch (error) {
+        console.error('Error fetching banks:', error.response?.data || error.message);
+        return res.status(500).json({ message: 'Error fetching banks.' });
+    }
+});
 
 
 // @desc    Withdraw funds from wallet to bank account
@@ -146,6 +177,8 @@ router.post('/withdraw', protect, async (req, res) => {
         return res.status(500).json({ message: 'Error processing withdrawal.' });
     }
 });
+
+
 
 
 module.exports = router;
