@@ -554,202 +554,271 @@ router.get('/reset-password-form/:token', async (req, res) => {
         }
         res.send(`
             <!DOCTYPE html>
-            <html lang="en">
-            <head>
+                <html lang="en">
+                <head>
                 <meta charset="UTF-8">
                 <meta name="viewport" content="width=device-width, initial-scale=1.0">
                 <title>Reset Your Password</title>
                 <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap" rel="stylesheet">
                 <style>
                     :root {
-                        --primary-color: #007bff;
-                        --primary-dark-color: #0056b3;
-                        --background-color: #f0f2f5;
-                        --card-background: #ffffff;
-                        --text-color: #333;
-                        --border-color: #e0e0e0;
-                        --success-color: #28a745;
-                        --error-color: #dc3545;
+                    --primary-color: #007bff;
+                    --primary-dark-color: #0056b3;
+                    --background-gradient: linear-gradient(135deg, #e3f2fd, #f0f2f5);
+                    --card-background: #ffffff;
+                    --text-color: #333;
+                    --border-color: #e0e0e0;
+                    --success-color: #28a745;
+                    --error-color: #dc3545;
                     }
 
                     body {
-                        font-family: 'Roboto', sans-serif;
-                        background-color: var(--background-color);
-                        margin: 0;
-                        padding: 0;
-                        display: flex;
-                        justify-content: center;
-                        align-items: center;
-                        min-height: 100vh;
-                        color: var(--text-color);
+                    font-family: 'Roboto', sans-serif;
+                    background: var(--background-gradient);
+                    margin: 0;
+                    padding: 0;
+                    display: flex;
+                    justify-content: center;
+                    align-items: center;
+                    min-height: 100vh;
+                    color: var(--text-color);
                     }
 
                     .container {
-                        background-color: var(--card-background);
-                        padding: 40px;
-                        border-radius: 12px;
-                        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
-                        width: 100%;
-                        max-width: 440px;
-                        text-align: center;
-                        box-sizing: border-box;
-                        border: 1px solid var(--border-color);
+                    background-color: var(--card-background);
+                    padding: 40px 30px;
+                    border-radius: 16px;
+                    box-shadow: 0 6px 25px rgba(0, 0, 0, 0.1);
+                    width: 100%;
+                    max-width: 460px;
+                    text-align: center;
+                    box-sizing: border-box;
+                    border: 1px solid var(--border-color);
+                    animation: fadeIn 0.6s ease-in-out;
                     }
-                    
+
+                    .logo {
+                    width: 120px;
+                    height: auto;
+                    margin-bottom: 20px;
+                    }
+
                     h1 {
-                        color: var(--primary-dark-color);
-                        margin-bottom: 25px;
-                        font-weight: 700;
-                        font-size: 2rem;
-                        letter-spacing: -0.5px;
+                    color: var(--primary-dark-color);
+                    margin-bottom: 10px;
+                    font-weight: 700;
+                    font-size: 1.9rem;
+                    letter-spacing: -0.5px;
                     }
 
                     p.subtitle {
-                        margin-top: -15px;
-                        margin-bottom: 30px;
-                        color: #6c757d;
+                    margin-top: 0;
+                    margin-bottom: 30px;
+                    color: #6c757d;
+                    font-size: 1rem;
                     }
 
                     .input-group {
-                        margin-bottom: 20px;
-                        text-align: left;
+                    margin-bottom: 20px;
+                    text-align: left;
+                    position: relative;
                     }
 
                     label {
-                        display: block;
-                        margin-bottom: 8px;
-                        font-weight: 500;
+                    display: block;
+                    margin-bottom: 8px;
+                    font-weight: 500;
+                    color: #444;
                     }
 
-                    input[type="password"] {
-                        width: 100%;
-                        padding: 14px;
-                        border: 1px solid var(--border-color);
-                        border-radius: 8px;
-                        font-size: 1rem;
-                        box-sizing: border-box;
-                        transition: border-color 0.3s, box-shadow 0.3s;
+                    input[type="password"], input[type="text"] {
+                    width: 100%;
+                    padding: 14px 40px 14px 14px; /* space for toggle button */
+                    border: 1px solid var(--border-color);
+                    border-radius: 10px;
+                    font-size: 1rem;
+                    box-sizing: border-box;
+                    transition: border-color 0.3s, box-shadow 0.3s;
                     }
 
-                    input[type="password"]:focus {
-                        border-color: var(--primary-color);
-                        outline: none;
-                        box-shadow: 0 0 0 3px rgba(0, 123, 255, 0.25);
+                    input:focus {
+                    border-color: var(--primary-color);
+                    outline: none;
+                    box-shadow: 0 0 0 3px rgba(0, 123, 255, 0.25);
+                    }
+
+                    .toggle-password {
+                    position: absolute;
+                    top: 38px;
+                    right: 12px;
+                    cursor: pointer;
+                    font-size: 0.9rem;
+                    color: var(--primary-dark-color);
+                    background: none;
+                    border: none;
+                    outline: none;
+                    padding: 0;
                     }
 
                     button {
-                        background-color: var(--primary-color);
-                        color: white;
-                        padding: 15px 25px;
-                        border: none;
-                        border-radius: 8px;
-                        cursor: pointer;
-                        font-size: 1.1rem;
-                        font-weight: 500;
-                        width: 100%;
-                        transition: background-color 0.3s, transform 0.2s;
-                        box-shadow: 0 4px 10px rgba(0, 123, 255, 0.2);
+                    background: var(--primary-color);
+                    color: white;
+                    padding: 15px 25px;
+                    border: none;
+                    border-radius: 10px;
+                    cursor: pointer;
+                    font-size: 1.1rem;
+                    font-weight: 600;
+                    width: 100%;
+                    transition: background-color 0.3s, transform 0.2s, box-shadow 0.3s;
+                    box-shadow: 0 4px 12px rgba(0, 123, 255, 0.25);
                     }
 
                     button:hover {
-                        background-color: var(--primary-dark-color);
-                        transform: translateY(-2px);
+                    background-color: var(--primary-dark-color);
+                    transform: translateY(-2px);
+                    box-shadow: 0 6px 16px rgba(0, 86, 179, 0.3);
                     }
 
                     button:active {
-                        transform: translateY(0);
+                    transform: translateY(0);
                     }
-                    
+
                     .message {
-                        margin-top: 25px;
-                        font-weight: 500;
-                        padding: 12px;
-                        border-radius: 8px;
-                        transition: all 0.4s ease-in-out;
-                        opacity: 0;
-                        transform: translateY(10px);
-                        visibility: hidden;
+                    margin-top: 25px;
+                    font-weight: 500;
+                    padding: 12px;
+                    border-radius: 10px;
+                    transition: all 0.4s ease-in-out;
+                    opacity: 0;
+                    transform: translateY(10px);
+                    visibility: hidden;
                     }
 
                     .message.show {
-                        opacity: 1;
-                        transform: translateY(0);
-                        visibility: visible;
+                    opacity: 1;
+                    transform: translateY(0);
+                    visibility: visible;
                     }
 
                     .success {
-                        color: var(--success-color);
-                        background-color: #e6f7ee;
-                        border: 1px solid #c8e6c9;
+                    color: var(--success-color);
+                    background-color: #e6f7ee;
+                    border: 1px solid #c8e6c9;
                     }
 
                     .error {
-                        color: var(--error-color);
-                        background-color: #fdeded;
-                        border: 1px solid #f2c7c7;
+                    color: var(--error-color);
+                    background-color: #fdeded;
+                    border: 1px solid #f2c7c7;
+                    }
+
+                    @keyframes fadeIn {
+                    from {
+                        opacity: 0;
+                        transform: translateY(15px);
+                    }
+                    to {
+                        opacity: 1;
+                        transform: translateY(0);
+                    }
+                    }
+
+                    /* Mobile responsive */
+                    @media (max-width: 500px) {
+                    .container {
+                        padding: 30px 20px;
+                    }
+                    h1 {
+                        font-size: 1.6rem;
+                    }
                     }
                 </style>
-            </head>
-            <body>
+                </head>
+                <body>
                 <div class="container">
+                    <img src="https://naijago-backend.onrender.com/naijago-app.jpg" alt="Naijago Logo" class="logo">
                     <h1>Reset Your Password</h1>
                     <p class="subtitle">Enter and confirm your new password below.</p>
                     <form id="resetForm" action="${BASE_URL}/api/auth/reset-password-submit" method="POST">
-                        <input type="hidden" name="token" value="${token}">
-                        <div class="input-group">
-                            <label for="newPassword">New Password</label>
-                            <input type="password" id="newPassword" name="newPassword" placeholder="Enter new password" required>
-                        </div>
-                        <div class="input-group">
-                            <label for="confirmNewPassword">Confirm New Password</label>
-                            <input type="password" id="confirmNewPassword" name="confirmNewPassword" placeholder="Confirm new password" required>
-                        </div>
-                        <button type="submit">Reset Password</button>
+                    <input type="hidden" name="token" value="${token}">
+                    
+                    <div class="input-group">
+                        <label for="newPassword">New Password</label>
+                        <input type="password" id="newPassword" name="newPassword" placeholder="Enter new password" required>
+                        <button type="button" class="toggle-password" data-target="newPassword">👁</button>
+                    </div>
+                    
+                    <div class="input-group">
+                        <label for="confirmNewPassword">Confirm New Password</label>
+                        <input type="password" id="confirmNewPassword" name="confirmNewPassword" placeholder="Confirm new password" required>
+                        <button type="button" class="toggle-password" data-target="confirmNewPassword">👁</button>
+                    </div>
+                    
+                    <button type="submit">Reset Password</button>
                     </form>
                     <div id="message" class="message"></div>
                 </div>
+
                 <script>
-                    document.getElementById('resetForm').addEventListener('submit', async function(event) {
-                        event.preventDefault();
-                        const form = event.target;
-                        const newPassword = form.newPassword.value;
-                        const confirmNewPassword = form.confirmNewPassword.value;
-                        const messageDiv = document.getElementById('message');
-
-                        messageDiv.className = 'message'; // Clear previous styles
-                        messageDiv.textContent = ''; // Clear previous message
-
-                        if (newPassword !== confirmNewPassword) {
-                            messageDiv.className = 'message error show';
-                            messageDiv.textContent = 'Passwords do not match!';
-                            return;
-                        }
-                        
-                        try {
-                            const response = await fetch(form.action, {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ token: form.token.value, newPassword: newPassword })
-                            });
-                            const data = await response.json();
-                            
-                            if (response.ok) {
-                                messageDiv.className = 'message success show';
-                                messageDiv.textContent = data.message || 'Password reset successfully!';
-                                form.reset(); // Clear the form
-                            } else {
-                                messageDiv.className = 'message error show';
-                                messageDiv.textContent = data.message || 'Failed to reset password.';
-                            }
-                        } catch (error) {
-                            console.error('Error:', error);
-                            messageDiv.className = 'message error show';
-                            messageDiv.textContent = 'An error occurred while resetting password.';
+                    // Toggle password visibility
+                    document.querySelectorAll('.toggle-password').forEach(btn => {
+                    btn.addEventListener('click', () => {
+                        const targetId = btn.getAttribute('data-target');
+                        const input = document.getElementById(targetId);
+                        if (input.type === "password") {
+                        input.type = "text";
+                        btn.textContent = "🙈";
+                        } else {
+                        input.type = "password";
+                        btn.textContent = "👁";
                         }
                     });
+                    });
+
+                    // Handle form submit
+                    document.getElementById('resetForm').addEventListener('submit', async function(event) {
+                    event.preventDefault();
+                    const form = event.target;
+                    const newPassword = form.newPassword.value;
+                    const confirmNewPassword = form.confirmNewPassword.value;
+                    const messageDiv = document.getElementById('message');
+
+                    messageDiv.className = 'message';
+                    messageDiv.textContent = '';
+
+                    if (newPassword !== confirmNewPassword) {
+                        messageDiv.className = 'message error show';
+                        messageDiv.textContent = 'Passwords do not match!';
+                        return;
+                    }
+                    
+                    try {
+                        const response = await fetch(form.action, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ token: form.token.value, newPassword: newPassword })
+                        });
+                        const data = await response.json();
+                        
+                        if (response.ok) {
+                        messageDiv.className = 'message success show';
+                        messageDiv.textContent = data.message || 'Password reset successfully!';
+                        form.reset();
+                        } else {
+                        messageDiv.className = 'message error show';
+                        messageDiv.textContent = data.message || 'Failed to reset password.';
+                        }
+                    } catch (error) {
+                        console.error('Error:', error);
+                        messageDiv.className = 'message error show';
+                        messageDiv.textContent = 'An error occurred while resetting password.';
+                    }
+                    });
                 </script>
-            </body>
-            </html>
+                </body>
+                </html>
+
         `);
     } catch (error) {
         console.error('Error rendering reset password form:', error);
