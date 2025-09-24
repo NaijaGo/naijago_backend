@@ -208,6 +208,7 @@ router.get('/email/verify/:token', async (req, res) => {
     }
 });
 
+
 // --- Route 3: User Login ---
 router.post('/login', async (req, res) => {
     const { email, password, deviceFingerprint } = req.body;
@@ -229,23 +230,38 @@ router.post('/login', async (req, res) => {
 
         // NEW LOGIC: If the user is an admin, bypass device verification for development convenience
         if (user.isAdmin) {
-            // For admin users, if deviceFingerprint is provided, update it.
-            // This ensures the admin's device fingerprint is recorded for the browser they are using.
             if (deviceFingerprint && user.deviceFingerprint !== deviceFingerprint) {
                 user.deviceFingerprint = deviceFingerprint;
-                user.isDeviceVerified = true; // Mark as verified for this new device
+                user.isDeviceVerified = true;
                 await user.save();
             }
-            // Proceed with login for admin without device verification email
             return res.status(200).json({
                 token: generateToken(user._id),
                 user: {
                     id: user._id, firstName: user.firstName, lastName: user.lastName, email: user.email,
                     phoneNumber: user.phoneNumber, isEmailVerified: user.isEmailVerified, isAdmin: user.isAdmin,
-                    isVendor: user.isVendor, vendorStatus: user.vendorStatus // Include vendor status for admin
+                    isVendor: user.isVendor, vendorStatus: user.vendorStatus
                 },
                 message: 'Admin login successful. Device verification bypassed for convenience.',
             });
+        }
+
+        // ⚡ NEW LOGIC: Auto-trust device if password was recently reset
+        if (user.passwordResetToken === undefined && user.passwordResetExpires === undefined) {
+            if (deviceFingerprint && user.deviceFingerprint !== deviceFingerprint) {
+                user.deviceFingerprint = deviceFingerprint;
+                user.isDeviceVerified = true;
+                await user.save();
+                return res.status(200).json({
+                    token: generateToken(user._id),
+                    user: {
+                        id: user._id, firstName: user.firstName, lastName: user.lastName, email: user.email,
+                        phoneNumber: user.phoneNumber, isEmailVerified: user.isEmailVerified,
+                        isVendor: user.isVendor, vendorStatus: user.vendorStatus
+                    },
+                    message: 'Login successful after password reset. New device trusted automatically.',
+                });
+            }
         }
 
         // Existing Device Verification Logic (for non-admin users)
@@ -257,7 +273,7 @@ router.post('/login', async (req, res) => {
                 user: {
                     id: user._id, firstName: user.firstName, lastName: user.lastName, email: user.email,
                     phoneNumber: user.phoneNumber, isEmailVerified: user.isEmailVerified,
-                    isVendor: user.isVendor, vendorStatus: user.vendorStatus // Include vendor status for regular users
+                    isVendor: user.isVendor, vendorStatus: user.vendorStatus
                 },
                 message: 'Login successful. Device captured as original.',
             });
@@ -278,7 +294,7 @@ router.post('/login', async (req, res) => {
                     user: {
                         id: user._id, firstName: user.firstName, lastName: user.lastName, email: user.email,
                         phoneNumber: user.phoneNumber, isEmailVerified: user.isEmailVerified,
-                        isVendor: user.isVendor, vendorStatus: user.vendorStatus // Include vendor status for regular users
+                        isVendor: user.isVendor, vendorStatus: user.vendorStatus
                     },
                     message: 'Login successful from original device.',
                 });
@@ -289,6 +305,87 @@ router.post('/login', async (req, res) => {
         res.status(500).json({ message: 'Server error during login' });
     }
 });
+
+// router.post('/login', async (req, res) => {
+//     const { email, password, deviceFingerprint } = req.body;
+//     if (!email || !password) {
+//         return res.status(400).json({ message: 'Please enter all fields' });
+//     }
+//     try {
+//         const user = await User.findOne({ email });
+//         if (!user) {
+//             return res.status(400).json({ message: 'Invalid credentials' });
+//         }
+//         if (!user.isEmailVerified) {
+//             return res.status(403).json({ message: 'Please verify your email before logging in.' });
+//         }
+//         const isMatch = await bcrypt.compare(password, user.password);
+//         if (!isMatch) {
+//             return res.status(400).json({ message: 'Invalid credentials' });
+//         }
+
+//         // NEW LOGIC: If the user is an admin, bypass device verification for development convenience
+//         if (user.isAdmin) {
+//             // For admin users, if deviceFingerprint is provided, update it.
+//             // This ensures the admin's device fingerprint is recorded for the browser they are using.
+//             if (deviceFingerprint && user.deviceFingerprint !== deviceFingerprint) {
+//                 user.deviceFingerprint = deviceFingerprint;
+//                 user.isDeviceVerified = true; // Mark as verified for this new device
+//                 await user.save();
+//             }
+//             // Proceed with login for admin without device verification email
+//             return res.status(200).json({
+//                 token: generateToken(user._id),
+//                 user: {
+//                     id: user._id, firstName: user.firstName, lastName: user.lastName, email: user.email,
+//                     phoneNumber: user.phoneNumber, isEmailVerified: user.isEmailVerified, isAdmin: user.isAdmin,
+//                     isVendor: user.isVendor, vendorStatus: user.vendorStatus // Include vendor status for admin
+//                 },
+//                 message: 'Admin login successful. Device verification bypassed for convenience.',
+//             });
+//         }
+
+//         // Existing Device Verification Logic (for non-admin users)
+//         if (!user.deviceFingerprint) {
+//             user.deviceFingerprint = deviceFingerprint;
+//             await user.save();
+//             res.status(200).json({
+//                 token: generateToken(user._id),
+//                 user: {
+//                     id: user._id, firstName: user.firstName, lastName: user.lastName, email: user.email,
+//                     phoneNumber: user.phoneNumber, isEmailVerified: user.isEmailVerified,
+//                     isVendor: user.isVendor, vendorStatus: user.vendorStatus // Include vendor status for regular users
+//                 },
+//                 message: 'Login successful. Device captured as original.',
+//             });
+//         } else {
+//             if (user.deviceFingerprint !== deviceFingerprint) {
+//                 const deviceVerificationToken = crypto.randomBytes(32).toString('hex');
+//                 user.deviceVerificationToken = deviceVerificationToken;
+//                 user.deviceVerificationExpires = Date.now() + 24 * 60 * 60 * 1000;
+//                 await user.save();
+//                 await sendVerificationEmail(user.email, deviceVerificationToken, 'device');
+
+//                 return res.status(403).json({
+//                     message: 'New device detected. Please check your email to verify this device.',
+//                 });
+//             } else {
+//                 res.status(200).json({
+//                     token: generateToken(user._id),
+//                     user: {
+//                         id: user._id, firstName: user.firstName, lastName: user.lastName, email: user.email,
+//                         phoneNumber: user.phoneNumber, isEmailVerified: user.isEmailVerified,
+//                         isVendor: user.isVendor, vendorStatus: user.vendorStatus // Include vendor status for regular users
+//                     },
+//                     message: 'Login successful from original device.',
+//                 });
+//             }
+//         }
+//     } catch (error) {
+//         console.error('Login error:', error);
+//         res.status(500).json({ message: 'Server error during login' });
+//     }
+// });
 
 // @desc    Get current authenticated user profile
 // @route   GET /api/auth/me
@@ -462,25 +559,151 @@ router.get('/reset-password-form/:token', async (req, res) => {
                 <meta charset="UTF-8">
                 <meta name="viewport" content="width=device-width, initial-scale=1.0">
                 <title>Reset Your Password</title>
+                <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap" rel="stylesheet">
                 <style>
-                    body { font-family: Arial, sans-serif; background-color: #f4f4f4; margin: 0; padding: 20px; display: flex; justify-content: center; align-items: center; min-height: 100vh; }
-                    .container { background-color: #fff; padding: 30px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); width: 100%; max-width: 400px; text-align: center; }
-                    h1 { color: #000080; margin-bottom: 20px; }
-                    input[type="password"] { width: calc(100% - 20px); padding: 10px; margin-bottom: 15px; border: 1px solid #ddd; border-radius: 4px; }
-                    button { background-color: #000080; color: white; padding: 12px 20px; border: none; border-radius: 4px; cursor: pointer; font-size: 16px; width: 100%; }
-                    button:hover { background-color: #000066; }
-                    .message { margin-top: 15px; font-weight: bold; }
-                    .success { color: green; }
-                    .error { color: red; }
+                    :root {
+                        --primary-color: #007bff;
+                        --primary-dark-color: #0056b3;
+                        --background-color: #f0f2f5;
+                        --card-background: #ffffff;
+                        --text-color: #333;
+                        --border-color: #e0e0e0;
+                        --success-color: #28a745;
+                        --error-color: #dc3545;
+                    }
+
+                    body {
+                        font-family: 'Roboto', sans-serif;
+                        background-color: var(--background-color);
+                        margin: 0;
+                        padding: 0;
+                        display: flex;
+                        justify-content: center;
+                        align-items: center;
+                        min-height: 100vh;
+                        color: var(--text-color);
+                    }
+
+                    .container {
+                        background-color: var(--card-background);
+                        padding: 40px;
+                        border-radius: 12px;
+                        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
+                        width: 100%;
+                        max-width: 440px;
+                        text-align: center;
+                        box-sizing: border-box;
+                        border: 1px solid var(--border-color);
+                    }
+                    
+                    h1 {
+                        color: var(--primary-dark-color);
+                        margin-bottom: 25px;
+                        font-weight: 700;
+                        font-size: 2rem;
+                        letter-spacing: -0.5px;
+                    }
+
+                    p.subtitle {
+                        margin-top: -15px;
+                        margin-bottom: 30px;
+                        color: #6c757d;
+                    }
+
+                    .input-group {
+                        margin-bottom: 20px;
+                        text-align: left;
+                    }
+
+                    label {
+                        display: block;
+                        margin-bottom: 8px;
+                        font-weight: 500;
+                    }
+
+                    input[type="password"] {
+                        width: 100%;
+                        padding: 14px;
+                        border: 1px solid var(--border-color);
+                        border-radius: 8px;
+                        font-size: 1rem;
+                        box-sizing: border-box;
+                        transition: border-color 0.3s, box-shadow 0.3s;
+                    }
+
+                    input[type="password"]:focus {
+                        border-color: var(--primary-color);
+                        outline: none;
+                        box-shadow: 0 0 0 3px rgba(0, 123, 255, 0.25);
+                    }
+
+                    button {
+                        background-color: var(--primary-color);
+                        color: white;
+                        padding: 15px 25px;
+                        border: none;
+                        border-radius: 8px;
+                        cursor: pointer;
+                        font-size: 1.1rem;
+                        font-weight: 500;
+                        width: 100%;
+                        transition: background-color 0.3s, transform 0.2s;
+                        box-shadow: 0 4px 10px rgba(0, 123, 255, 0.2);
+                    }
+
+                    button:hover {
+                        background-color: var(--primary-dark-color);
+                        transform: translateY(-2px);
+                    }
+
+                    button:active {
+                        transform: translateY(0);
+                    }
+                    
+                    .message {
+                        margin-top: 25px;
+                        font-weight: 500;
+                        padding: 12px;
+                        border-radius: 8px;
+                        transition: all 0.4s ease-in-out;
+                        opacity: 0;
+                        transform: translateY(10px);
+                        visibility: hidden;
+                    }
+
+                    .message.show {
+                        opacity: 1;
+                        transform: translateY(0);
+                        visibility: visible;
+                    }
+
+                    .success {
+                        color: var(--success-color);
+                        background-color: #e6f7ee;
+                        border: 1px solid #c8e6c9;
+                    }
+
+                    .error {
+                        color: var(--error-color);
+                        background-color: #fdeded;
+                        border: 1px solid #f2c7c7;
+                    }
                 </style>
             </head>
             <body>
                 <div class="container">
                     <h1>Reset Your Password</h1>
+                    <p class="subtitle">Enter and confirm your new password below.</p>
                     <form id="resetForm" action="${BASE_URL}/api/auth/reset-password-submit" method="POST">
                         <input type="hidden" name="token" value="${token}">
-                        <input type="password" name="newPassword" placeholder="Enter new password" required>
-                        <input type="password" name="confirmNewPassword" placeholder="Confirm new password" required>
+                        <div class="input-group">
+                            <label for="newPassword">New Password</label>
+                            <input type="password" id="newPassword" name="newPassword" placeholder="Enter new password" required>
+                        </div>
+                        <div class="input-group">
+                            <label for="confirmNewPassword">Confirm New Password</label>
+                            <input type="password" id="confirmNewPassword" name="confirmNewPassword" placeholder="Confirm new password" required>
+                        </div>
                         <button type="submit">Reset Password</button>
                     </form>
                     <div id="message" class="message"></div>
@@ -493,12 +716,15 @@ router.get('/reset-password-form/:token', async (req, res) => {
                         const confirmNewPassword = form.confirmNewPassword.value;
                         const messageDiv = document.getElementById('message');
 
+                        messageDiv.className = 'message'; // Clear previous styles
+                        messageDiv.textContent = ''; // Clear previous message
+
                         if (newPassword !== confirmNewPassword) {
-                            messageDiv.className = 'message error';
+                            messageDiv.className = 'message error show';
                             messageDiv.textContent = 'Passwords do not match!';
                             return;
                         }
-
+                        
                         try {
                             const response = await fetch(form.action, {
                                 method: 'POST',
@@ -506,17 +732,18 @@ router.get('/reset-password-form/:token', async (req, res) => {
                                 body: JSON.stringify({ token: form.token.value, newPassword: newPassword })
                             });
                             const data = await response.json();
+                            
                             if (response.ok) {
-                                messageDiv.className = 'message success';
+                                messageDiv.className = 'message success show';
                                 messageDiv.textContent = data.message || 'Password reset successfully!';
                                 form.reset(); // Clear the form
                             } else {
-                                messageDiv.className = 'message error';
+                                messageDiv.className = 'message error show';
                                 messageDiv.textContent = data.message || 'Failed to reset password.';
                             }
                         } catch (error) {
                             console.error('Error:', error);
-                            messageDiv.className = 'message error';
+                            messageDiv.className = 'message error show';
                             messageDiv.textContent = 'An error occurred while resetting password.';
                         }
                     });
