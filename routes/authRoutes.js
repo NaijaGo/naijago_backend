@@ -208,27 +208,33 @@ router.get('/email/verify/:token', async (req, res) => {
     }
 });
 
-
-// --- Route 3: User Login ---
 router.post('/login', async (req, res) => {
     const { email, password, deviceFingerprint } = req.body;
+
     if (!email || !password) {
         return res.status(400).json({ message: 'Please enter all fields' });
     }
+
     try {
         const user = await User.findOne({ email });
+
         if (!user) {
             return res.status(400).json({ message: 'Invalid credentials' });
         }
+
         if (!user.isEmailVerified) {
             return res.status(403).json({ message: 'Please verify your email before logging in.' });
         }
+
+        // 1. ALWAYS VALIDATE THE PASSWORD FIRST
         const isMatch = await bcrypt.compare(password, user.password);
         if (!isMatch) {
             return res.status(400).json({ message: 'Invalid credentials' });
         }
 
-        // NEW LOGIC: If the user is an admin, bypass device verification for development convenience
+        // 2. NOW, HANDLE DEVICE VERIFICATION LOGIC
+
+        // If the user is an admin, bypass device verification for development convenience
         if (user.isAdmin) {
             if (deviceFingerprint && user.deviceFingerprint !== deviceFingerprint) {
                 user.deviceFingerprint = deviceFingerprint;
@@ -246,9 +252,10 @@ router.post('/login', async (req, res) => {
             });
         }
 
-        // ⚡ NEW LOGIC: Auto-trust device if password was recently reset
+        // Auto-trust new device if password was recently reset
+        // The password has already been validated above, so this is safe.
         if (user.passwordResetToken === undefined && user.passwordResetExpires === undefined) {
-            if (deviceFingerprint && user.deviceFingerprint !== deviceFingerprint) {
+            if (deviceFingerprint && user.deviceFingerprint !== user.deviceFingerprint) {
                 user.deviceFingerprint = deviceFingerprint;
                 user.isDeviceVerified = true;
                 await user.save();
@@ -264,9 +271,10 @@ router.post('/login', async (req, res) => {
             }
         }
 
-        // Existing Device Verification Logic (for non-admin users)
+        // Standard device verification logic for non-admin, non-reset users
         if (!user.deviceFingerprint) {
             user.deviceFingerprint = deviceFingerprint;
+            user.isDeviceVerified = true;
             await user.save();
             res.status(200).json({
                 token: generateToken(user._id),
@@ -306,6 +314,7 @@ router.post('/login', async (req, res) => {
     }
 });
 
+// --- Route 3: User Login ---
 // router.post('/login', async (req, res) => {
 //     const { email, password, deviceFingerprint } = req.body;
 //     if (!email || !password) {
@@ -326,23 +335,38 @@ router.post('/login', async (req, res) => {
 
 //         // NEW LOGIC: If the user is an admin, bypass device verification for development convenience
 //         if (user.isAdmin) {
-//             // For admin users, if deviceFingerprint is provided, update it.
-//             // This ensures the admin's device fingerprint is recorded for the browser they are using.
 //             if (deviceFingerprint && user.deviceFingerprint !== deviceFingerprint) {
 //                 user.deviceFingerprint = deviceFingerprint;
-//                 user.isDeviceVerified = true; // Mark as verified for this new device
+//                 user.isDeviceVerified = true;
 //                 await user.save();
 //             }
-//             // Proceed with login for admin without device verification email
 //             return res.status(200).json({
 //                 token: generateToken(user._id),
 //                 user: {
 //                     id: user._id, firstName: user.firstName, lastName: user.lastName, email: user.email,
 //                     phoneNumber: user.phoneNumber, isEmailVerified: user.isEmailVerified, isAdmin: user.isAdmin,
-//                     isVendor: user.isVendor, vendorStatus: user.vendorStatus // Include vendor status for admin
+//                     isVendor: user.isVendor, vendorStatus: user.vendorStatus
 //                 },
 //                 message: 'Admin login successful. Device verification bypassed for convenience.',
 //             });
+//         }
+
+//         // ⚡ NEW LOGIC: Auto-trust device if password was recently reset
+//         if (user.passwordResetToken === undefined && user.passwordResetExpires === undefined) {
+//             if (deviceFingerprint && user.deviceFingerprint !== deviceFingerprint) {
+//                 user.deviceFingerprint = deviceFingerprint;
+//                 user.isDeviceVerified = true;
+//                 await user.save();
+//                 return res.status(200).json({
+//                     token: generateToken(user._id),
+//                     user: {
+//                         id: user._id, firstName: user.firstName, lastName: user.lastName, email: user.email,
+//                         phoneNumber: user.phoneNumber, isEmailVerified: user.isEmailVerified,
+//                         isVendor: user.isVendor, vendorStatus: user.vendorStatus
+//                     },
+//                     message: 'Login successful after password reset. New device trusted automatically.',
+//                 });
+//             }
 //         }
 
 //         // Existing Device Verification Logic (for non-admin users)
@@ -354,7 +378,7 @@ router.post('/login', async (req, res) => {
 //                 user: {
 //                     id: user._id, firstName: user.firstName, lastName: user.lastName, email: user.email,
 //                     phoneNumber: user.phoneNumber, isEmailVerified: user.isEmailVerified,
-//                     isVendor: user.isVendor, vendorStatus: user.vendorStatus // Include vendor status for regular users
+//                     isVendor: user.isVendor, vendorStatus: user.vendorStatus
 //                 },
 //                 message: 'Login successful. Device captured as original.',
 //             });
@@ -375,7 +399,7 @@ router.post('/login', async (req, res) => {
 //                     user: {
 //                         id: user._id, firstName: user.firstName, lastName: user.lastName, email: user.email,
 //                         phoneNumber: user.phoneNumber, isEmailVerified: user.isEmailVerified,
-//                         isVendor: user.isVendor, vendorStatus: user.vendorStatus // Include vendor status for regular users
+//                         isVendor: user.isVendor, vendorStatus: user.vendorStatus
 //                     },
 //                     message: 'Login successful from original device.',
 //                 });
@@ -387,9 +411,7 @@ router.post('/login', async (req, res) => {
 //     }
 // });
 
-// @desc    Get current authenticated user profile
-// @route   GET /api/auth/me
-// @access  Private
+
 router.get('/me', protect, async (req, res) => {
     console.log('Backend: /api/auth/me route hit. User ID:', req.user?._id); // DEBUG LOG
     try {
@@ -815,6 +837,19 @@ router.get('/reset-password-form/:token', async (req, res) => {
                         messageDiv.textContent = 'An error occurred while resetting password.';
                     }
                     });
+                        document.querySelectorAll('.toggle-password').forEach(toggle => {
+                            toggle.addEventListener('click', function () {
+                                const input = this.previousElementSibling;
+                                if (input.type === "password") {
+                                    input.type = "text";
+                                    this.textContent = "Hide";
+                                } else {
+                                    input.type = "password";
+                                    this.textContent = "Show";
+                                }
+                            });
+                        });
+
                 </script>
                 </body>
                 </html>
