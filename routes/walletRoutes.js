@@ -157,7 +157,7 @@ router.post('/request-otp', protect, async (req, res) => {
             html: `
                     <div style="font-family: 'Arial', sans-serif; background-color: #f7f7f7; padding: 20px; border-radius: 10px; border: 1px solid #ddd; max-width: 600px; margin: 20px auto;">
                         <div style="text-align: center; margin-bottom: 20px;">
-                            <img src="https://naijago-backend.onrender.com/najago-app.jpg" alt="Najago App Logo" style="width: 150px; height: auto;">
+                            <img src="https://naijago-backend.onrender.com/naijago-app.jpg" alt="Najago App Logo" style="width: 150px; height: auto;">
                         </div>
                         <div style="background-color: #160d0dff; padding: 20px; border-radius: 8px;">
                             <h2 style="color: #000080; text-align: center; font-size: 24px;">Withdrawal Verification Code</h2>
@@ -169,7 +169,7 @@ router.post('/request-otp', protect, async (req, res) => {
                             </div>
                             <p style="color: #888; text-align: center; font-size: 14px;">This code is valid for 5 minutes. For your security, do not share this code.</p>
                             <p style="color: #888; font-size: 14px; margin-top: 30px;">If you did not request this, please contact support immediately.</p>
-                            <img src="https://naijago-backend.onrender.com/najago-flier3.jpg" alt="Najago App Logo" style="width: 150px; height: auto;">
+                            <img src="https://naijago-backend.onrender.com/naijago-flier3.jpg" alt="Najago App Logo" style="width: 150px; height: auto;">
                         </div>
                         <div style="text-align: center; margin-top: 20px; color: #aaa; font-size: 12px;">
                             <p>&copy; ${new Date().getFullYear()} Najago. All rights reserved.</p>

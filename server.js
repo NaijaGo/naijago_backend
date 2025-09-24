@@ -11,6 +11,7 @@ const rateLimit = require('express-rate-limit');
 const cors = require('cors');
 const { PythonShell } = require('python-shell');
 const fs = require('fs');
+const path = require('path');
 
 const connectDB = require('./config/db');
 const { notFound, errorHandler } = require('./middleware/errorMiddleware');
@@ -40,7 +41,9 @@ app.use(cors({
 const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 200 });
 app.use('/api/auth', authLimiter);
 
-app.use(express.static('public'))
+
+
+app.use(express.static(path.join(__dirname, 'public')));
 
 // Static (if using local uploads)
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
