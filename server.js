@@ -11,7 +11,6 @@ const rateLimit = require('express-rate-limit');
 const cors = require('cors');
 const { PythonShell } = require('python-shell');
 const fs = require('fs');
-const path = require('path');
 
 const connectDB = require('./config/db');
 const { notFound, errorHandler } = require('./middleware/errorMiddleware');

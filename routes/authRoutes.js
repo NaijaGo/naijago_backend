@@ -36,68 +36,87 @@ const sendVerificationEmail = async (email, token, type) => {
     case 'email':
         subject = 'NaijaGo: Email Verification';
         htmlContent = `
-        <div style="font-family: Arial, sans-serif; background: #f9fafb; padding: 20px; text-align: center; color: #333;">
-            <div style="max-width: 600px; margin: auto; background: #ffffff; border-radius: 10px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); padding: 30px;">
-                <img src="https://naijago-backend.onrender.com/najago-app.jpg" alt="NaijaGo" style="width: 120px; margin-bottom: 20px; border-radius:60px" />
-                <h2 style="color: #2563eb; margin-bottom: 10px;">Verify Your Email</h2>
-                <p style="font-size: 16px; margin-bottom: 25px;">
-                    Please verify your email for <strong>NaijaGo</strong> by clicking the button below.
+        <div style="font-family: 'Times New Roman', Times, serif; background-color: #f5f5f5; padding: 40px 20px; text-align: center; color: #333333;">
+                <div style="max-width: 600px; margin: auto; background-color: #ffffff; border: 1px solid #e0e0e0; border-radius: 15px; box-shadow: 0 6px 18px rgba(0,0,0,0.05); padding: 40px;">
+                    <img src="https://naijago-backend.onrender.com/naijago-app.jpg" alt="NaijaGo" style="width: 100px; height: 100px; border-radius: 50%; border: 2px solid #b8860b; object-fit: cover; margin-bottom: 25px;" />
+                    <h1 style="font-size: 28px; color: #b8860b; margin-bottom: 10px; font-weight: bold;">Email Verification</h1>
+                    <h2 style="font-size: 20px; color: #333333; margin-bottom: 25px;">Welcome to NaijaGo</h2>
+                    <p style="font-size: 16px; line-height: 1.6; margin-bottom: 30px;">
+                        Thank you for joining our community. Please confirm your email address to activate your account and gain access to all our features.
+                    </p>
+                    <a href="${verificationLink}"
+                    style="display: inline-block; background-color: #b8860b; color: #ffffff; text-decoration: none;
+                            padding: 15px 30px; font-size: 16px; font-weight: bold; border-radius: 50px;
+                            box-shadow: 0 4px 10px rgba(184, 134, 11, 0.3); letter-spacing: 1px; transition: background-color 0.3s ease;">
+                        Verify My Email
+                    </a>
+                    <p style="font-size: 14px; color: #999999; margin-top: 35px;">
+                        If you did not request this, please ignore this email.
+                        <br/>
+                        This link will expire in <strong>24 hours</strong>.
+                    </p>
+                </div>
+                <p style="font-size: 12px; color: #aaaaaa; margin-top: 30px;">
+                    © 2024 NaijaGo. All rights reserved.
                 </p>
-                <a href="${verificationLink}" 
-                   style="display: inline-block; background: #16a34a; color: #fff; text-decoration: none; 
-                          padding: 12px 24px; font-size: 16px; font-weight: bold; border-radius: 8px;">
-                    Verify Email
-                </a>
-                <p style="font-size: 14px; color: #666; margin-top: 20px;">
-                    This link will expire in <strong>24 hours</strong>.
-                </p>
-            </div>
-        </div>`;
+            </div>`;
         textContent = `Please verify your email for NaijaGo by clicking the link: ${verificationLink}. This link will expire in 24 hours.`;
         break;
 
     case 'password':
         subject = 'NaijaGo: Password Reset Request';
         htmlContent = `
-        <div style="font-family: Arial, sans-serif; background: #f9fafb; padding: 20px; text-align: center; color: #333;">
-            <div style="max-width: 600px; margin: auto; background: #ffffff; border-radius: 10px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); padding: 30px;">
-                <img src="https://naijago-backend.onrender.com/najago-app.jpg" alt="NaijaGo" style="width: 120px; margin-bottom: 20px; border-radius:60px" />
-                <h2 style="color: #dc2626; margin-bottom: 10px;">Password Reset Request</h2>
-                <p style="font-size: 16px; margin-bottom: 25px;">
-                    You are receiving this because you (or someone else) requested a password reset for your account.
+        <div style="font-family: 'Times New Roman', Times, serif; background-color: #f5f5f5; padding: 40px 20px; text-align: center; color: #333333;">
+                <div style="max-width: 600px; margin: auto; background-color: #ffffff; border: 1px solid #e0e0e0; border-radius: 15px; box-shadow: 0 6px 18px rgba(0,0,0,0.05); padding: 40px;">
+                    <img src="https://naijago-backend.onrender.com/naijago-app.jpg" alt="NaijaGo" style="width: 100px; height: 100px; border-radius: 50%; border: 2px solid #b8860b; object-fit: cover; margin-bottom: 25px;" />
+                    <h1 style="font-size: 28px; color: #1a237e; margin-bottom: 10px; font-weight: bold;">Password Reset</h1>
+                    <h2 style="font-size: 20px; color: #333333; margin-bottom: 25px;">Hello!</h2>
+                    <p style="font-size: 16px; line-height: 1.6; margin-bottom: 30px;">
+                        We received a request to reset the password for your account. Please click the button below to proceed.
+                    </p>
+                    <a href="${verificationLink}"
+                    style="display: inline-block; background-color: #1a237e; color: #ffffff; text-decoration: none;
+                            padding: 15px 30px; font-size: 16px; font-weight: bold; border-radius: 50px;
+                            box-shadow: 0 4px 10px rgba(26, 35, 126, 0.3); letter-spacing: 1px; transition: background-color 0.3s ease;">
+                        Reset Your Password
+                    </a>
+                    <p style="font-size: 14px; color: #999999; margin-top: 35px;">
+                        This link is valid for **1 hour**. If you did not request this, please disregard this email. Your password will remain unchanged.
+                    </p>
+                </div>
+                <p style="font-size: 12px; color: #aaaaaa; margin-top: 30px;">
+                    © 2024 NaijaGo. All rights reserved.
                 </p>
-                <a href="${verificationLink}" 
-                   style="display: inline-block; background: #dc2626; color: #fff; text-decoration: none; 
-                          padding: 12px 24px; font-size: 16px; font-weight: bold; border-radius: 8px;">
-                    Reset Password
-                </a>
-                <p style="font-size: 14px; color: #666; margin-top: 20px;">
-                    This link will expire in <strong>1 hour</strong>. If you did not request this, please ignore it.
-                </p>
-            </div>
-        </div>`;
+            </div>`;
         textContent = `You requested a password reset. Click the link: ${verificationLink}. This link will expire in 1 hour. If you did not request this, ignore this email.`;
         break;
 
     case 'device':
         subject = 'NaijaGo: Device Verification';
         htmlContent = `
-        <div style="font-family: Arial, sans-serif; background: #f9fafb; padding: 20px; text-align: center; color: #333;">
-            <div style="max-width: 600px; margin: auto; background: #ffffff; border-radius: 10px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); padding: 30px;">
-                <img src="https://naijago-backend.onrender.com/najago-app.jpg" alt="NaijaGo" style="width: 120px; margin-bottom: 20px; border-radius:60px" />
-                <h2 style="color: #0891b2; margin-bottom: 10px;">New Device Verification</h2>
-                <p style="font-size: 16px; margin-bottom: 25px;">
-                    A new device is trying to access your <strong>NaijaGo</strong> account. Please verify it by clicking the button below.
+        <div style="font-family: 'Times New Roman', Times, serif; background-color: #f5f5f5; padding: 40px 20px; text-align: center; color: #333333;">
+            <div style="max-width: 600px; margin: auto; background-color: #ffffff; border: 1px solid #e0e0e0; border-radius: 15px; box-shadow: 0 6px 18px rgba(0,0,0,0.05); padding: 40px;">
+                <img src="https://naijago-backend.onrender.com/naijago-app.jpg" alt="NaijaGo" style="width: 100px; height: 100px; border-radius: 50%; border: 2px solid #1a237e; object-fit: cover; margin-bottom: 25px;" />
+                <h1 style="font-size: 28px; color: #1a237e; margin-bottom: 10px; font-weight: bold;">Unusual Activity Detected</h1>
+                <h2 style="font-size: 20px; color: #333333; margin-bottom: 25px;">New Device Verification</h2>
+                <p style="font-size: 16px; line-height: 1.6; margin-bottom: 30px;">
+                    We noticed a login to your account from a new device. If this was you, please verify the device to continue accessing your account.
                 </p>
-                <a href="${verificationLink}" 
-                   style="display: inline-block; background: #0891b2; color: #fff; text-decoration: none; 
-                          padding: 12px 24px; font-size: 16px; font-weight: bold; border-radius: 8px;">
-                    Verify Device
+                <a href="${verificationLink}"
+                style="display: inline-block; background-color: #1a237e; color: #ffffff; text-decoration: none;
+                        padding: 15px 30px; font-size: 16px; font-weight: bold; border-radius: 50px;
+                        box-shadow: 0 4px 10px rgba(26, 35, 126, 0.3); letter-spacing: 1px; transition: background-color 0.3s ease;">
+                    Verify This Device
                 </a>
-                <p style="font-size: 14px; color: #666; margin-top: 20px;">
+                <p style="font-size: 14px; color: #999999; margin-top: 35px;">
+                    If you did not attempt to log in, please ignore this email.
+                    <br/>
                     This link will expire in <strong>24 hours</strong>.
                 </p>
             </div>
+            <p style="font-size: 12px; color: #aaaaaa; margin-top: 30px;">
+                © 2024 NaijaGo. All rights reserved.
+            </p>
         </div>`;
         textContent = `Please verify your new device by clicking on this link: ${verificationLink}. This link will expire in 24 hours.`;
         break;
@@ -248,6 +267,8 @@ router.post('/login', async (req, res) => {
                 user.deviceVerificationToken = deviceVerificationToken;
                 user.deviceVerificationExpires = Date.now() + 24 * 60 * 60 * 1000;
                 await user.save();
+                await sendVerificationEmail(user.email, deviceVerificationToken, 'device');
+
                 return res.status(403).json({
                     message: 'New device detected. Please check your email to verify this device.',
                 });
