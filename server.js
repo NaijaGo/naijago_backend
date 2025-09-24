@@ -40,6 +40,8 @@ app.use(cors({
 const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 200 });
 app.use('/api/auth', authLimiter);
 
+app.use(express.static('public'))
+
 // Static (if using local uploads)
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 

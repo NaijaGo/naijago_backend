@@ -38,7 +38,7 @@ const sendVerificationEmail = async (email, token, type) => {
         htmlContent = `
         <div style="font-family: Arial, sans-serif; background: #f9fafb; padding: 20px; text-align: center; color: #333;">
             <div style="max-width: 600px; margin: auto; background: #ffffff; border-radius: 10px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); padding: 30px;">
-                <img src="https://naijago-backend.onrender.com/images/naijago_email_logo.jpg" alt="NaijaGo" style="width: 120px; margin-bottom: 20px; border-radius:60px" />
+                <img src="https://naijago-backend.onrender.com/najago-app.jpg" alt="NaijaGo" style="width: 120px; margin-bottom: 20px; border-radius:60px" />
                 <h2 style="color: #2563eb; margin-bottom: 10px;">Verify Your Email</h2>
                 <p style="font-size: 16px; margin-bottom: 25px;">
                     Please verify your email for <strong>NaijaGo</strong> by clicking the button below.
@@ -61,7 +61,7 @@ const sendVerificationEmail = async (email, token, type) => {
         htmlContent = `
         <div style="font-family: Arial, sans-serif; background: #f9fafb; padding: 20px; text-align: center; color: #333;">
             <div style="max-width: 600px; margin: auto; background: #ffffff; border-radius: 10px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); padding: 30px;">
-                <img src="https://naijago-backend.onrender.com/images/naijago_email_logo.jpg" alt="NaijaGo" style="width: 120px; margin-bottom: 20px; border-radius:60px" />
+                <img src="https://naijago-backend.onrender.com/najago-app.jpg" alt="NaijaGo" style="width: 120px; margin-bottom: 20px; border-radius:60px" />
                 <h2 style="color: #dc2626; margin-bottom: 10px;">Password Reset Request</h2>
                 <p style="font-size: 16px; margin-bottom: 25px;">
                     You are receiving this because you (or someone else) requested a password reset for your account.
@@ -84,7 +84,7 @@ const sendVerificationEmail = async (email, token, type) => {
         htmlContent = `
         <div style="font-family: Arial, sans-serif; background: #f9fafb; padding: 20px; text-align: center; color: #333;">
             <div style="max-width: 600px; margin: auto; background: #ffffff; border-radius: 10px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); padding: 30px;">
-                <img src="https://naijago-backend.onrender.com/images/naijago_email_logo.jpg" alt="NaijaGo" style="width: 120px; margin-bottom: 20px; border-radius:60px" />
+                <img src="https://naijago-backend.onrender.com/najago-app.jpg" alt="NaijaGo" style="width: 120px; margin-bottom: 20px; border-radius:60px" />
                 <h2 style="color: #0891b2; margin-bottom: 10px;">New Device Verification</h2>
                 <p style="font-size: 16px; margin-bottom: 25px;">
                     A new device is trying to access your <strong>NaijaGo</strong> account. Please verify it by clicking the button below.

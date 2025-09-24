@@ -151,6 +151,9 @@ const UserSchema = new mongoose.Schema({
   ],
 
   // --- COMMON FIELDS ---
+  otp: String,
+  otpExpires: Date,
+
   notifications: [
     {
       type: {
