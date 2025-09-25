@@ -767,13 +767,13 @@ router.get('/reset-password-form/:token', async (req, res) => {
                 });
                 const data = await response.json();
                 
-                if (response.ok) {
+               if (response.ok) {
                     messageDiv.className = 'message success show';
-                    messageDiv.innerHTML = '<i class="fas fa-check-circle"></i> ${data.message || 'Password reset successfully!'}';
+                    messageDiv.innerHTML = \`<i class="fas fa-check-circle"></i> \${data.message || 'Password reset successfully!'}\`;
                     form.reset();
                 } else {
                     messageDiv.className = 'message error show';
-                    messageDiv.innerHTML = '<i class="fas fa-exclamation-circle"></i> ${data.message || 'Failed to reset password.'}';
+                    messageDiv.innerHTML = \`<i class="fas fa-exclamation-circle"></i> \${data.message || 'Failed to reset password.'}\`;
                 }
             } catch (error) {
                 console.error('Error:', error);
