@@ -332,103 +332,6 @@ router.post('/login', async (req, res) => {
   }
 });
 
-// --- Route 3: User Login ---
-// router.post('/login', async (req, res) => {
-//     const { email, password, deviceFingerprint } = req.body;
-//     if (!email || !password) {
-//         return res.status(400).json({ message: 'Please enter all fields' });
-//     }
-//     try {
-//         const user = await User.findOne({ email });
-//         if (!user) {
-//             return res.status(400).json({ message: 'Invalid credentials' });
-//         }
-//         if (!user.isEmailVerified) {
-//             return res.status(403).json({ message: 'Please verify your email before logging in.' });
-//         }
-//         const isMatch = await bcrypt.compare(password, user.password);
-//         if (!isMatch) {
-//             return res.status(400).json({ message: 'Invalid credentials' });
-//         }
-
-//         // NEW LOGIC: If the user is an admin, bypass device verification for development convenience
-//         if (user.isAdmin) {
-//             if (deviceFingerprint && user.deviceFingerprint !== deviceFingerprint) {
-//                 user.deviceFingerprint = deviceFingerprint;
-//                 user.isDeviceVerified = true;
-//                 await user.save();
-//             }
-//             return res.status(200).json({
-//                 token: generateToken(user._id),
-//                 user: {
-//                     id: user._id, firstName: user.firstName, lastName: user.lastName, email: user.email,
-//                     phoneNumber: user.phoneNumber, isEmailVerified: user.isEmailVerified, isAdmin: user.isAdmin,
-//                     isVendor: user.isVendor, vendorStatus: user.vendorStatus
-//                 },
-//                 message: 'Admin login successful. Device verification bypassed for convenience.',
-//             });
-//         }
-
-//         // ⚡ NEW LOGIC: Auto-trust device if password was recently reset
-//         if (user.passwordResetToken === undefined && user.passwordResetExpires === undefined) {
-//             if (deviceFingerprint && user.deviceFingerprint !== deviceFingerprint) {
-//                 user.deviceFingerprint = deviceFingerprint;
-//                 user.isDeviceVerified = true;
-//                 await user.save();
-//                 return res.status(200).json({
-//                     token: generateToken(user._id),
-//                     user: {
-//                         id: user._id, firstName: user.firstName, lastName: user.lastName, email: user.email,
-//                         phoneNumber: user.phoneNumber, isEmailVerified: user.isEmailVerified,
-//                         isVendor: user.isVendor, vendorStatus: user.vendorStatus
-//                     },
-//                     message: 'Login successful after password reset. New device trusted automatically.',
-//                 });
-//             }
-//         }
-
-//         // Existing Device Verification Logic (for non-admin users)
-//         if (!user.deviceFingerprint) {
-//             user.deviceFingerprint = deviceFingerprint;
-//             await user.save();
-//             res.status(200).json({
-//                 token: generateToken(user._id),
-//                 user: {
-//                     id: user._id, firstName: user.firstName, lastName: user.lastName, email: user.email,
-//                     phoneNumber: user.phoneNumber, isEmailVerified: user.isEmailVerified,
-//                     isVendor: user.isVendor, vendorStatus: user.vendorStatus
-//                 },
-//                 message: 'Login successful. Device captured as original.',
-//             });
-//         } else {
-//             if (user.deviceFingerprint !== deviceFingerprint) {
-//                 const deviceVerificationToken = crypto.randomBytes(32).toString('hex');
-//                 user.deviceVerificationToken = deviceVerificationToken;
-//                 user.deviceVerificationExpires = Date.now() + 24 * 60 * 60 * 1000;
-//                 await user.save();
-//                 await sendVerificationEmail(user.email, deviceVerificationToken, 'device');
-
-//                 return res.status(403).json({
-//                     message: 'New device detected. Please check your email to verify this device.',
-//                 });
-//             } else {
-//                 res.status(200).json({
-//                     token: generateToken(user._id),
-//                     user: {
-//                         id: user._id, firstName: user.firstName, lastName: user.lastName, email: user.email,
-//                         phoneNumber: user.phoneNumber, isEmailVerified: user.isEmailVerified,
-//                         isVendor: user.isVendor, vendorStatus: user.vendorStatus
-//                     },
-//                     message: 'Login successful from original device.',
-//                 });
-//             }
-//         }
-//     } catch (error) {
-//         console.error('Login error:', error);
-//         res.status(500).json({ message: 'Server error during login' });
-//     }
-// });
-
 
 router.get('/me', protect, async (req, res) => {
     console.log('Backend: /api/auth/me route hit. User ID:', req.user?._id); // DEBUG LOG
@@ -582,6 +485,7 @@ router.post('/forgot-password', async (req, res) => {
 });
 
 // --- Route 6: Render Password Reset Form (GET request from email link) ---
+
 router.get('/reset-password-form/:token', async (req, res) => {
     const { token } = req.params;
     try {
@@ -593,291 +497,580 @@ router.get('/reset-password-form/:token', async (req, res) => {
             return res.status(400).send('<h1>Invalid or Expired Password Reset Link</h1><p>The link you clicked is either invalid or has expired. Please request a new password reset.</p>');
         }
         res.send(`
-            <!DOCTYPE html>
-                <html lang="en">
-                <head>
-                <meta charset="UTF-8">
-                <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                <title>Reset Your Password</title>
-                <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap" rel="stylesheet">
-                <style>
-                    :root {
-                    --primary-color: #007bff;
-                    --primary-dark-color: #0056b3;
-                    --background-gradient: linear-gradient(135deg, #e3f2fd, #f0f2f5);
-                    --card-background: #ffffff;
-                    --text-color: #333;
-                    --border-color: #e0e0e0;
-                    --success-color: #28a745;
-                    --error-color: #dc3545;
-                    }
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Reset Your Password</title>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+    <style>
+        :root {
+            --primary-color: #4CAF50;
+            --primary-dark-color: #388E3C;
+            --background-color: #f7f9fc;
+            --card-background: #ffffff;
+            --text-color: #333;
+            --secondary-text-color: #666;
+            --border-color: #e0e0e0;
+            --input-border-color: #c0c0c0;
+            --success-color: #2e7d32;
+            --success-background: #e8f5e9;
+            --error-color: #c62828;
+            --error-background: #ffebee;
+        }
+        body {
+            font-family: 'Poppins', sans-serif;
+            background-color: var(--background-color);
+            margin: 0;
+            padding: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            color: var(--text-color);
+        }
+        .container {
+            background-color: var(--card-background);
+            padding: 40px;
+            border-radius: 12px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.08);
+            width: 100%;
+            max-width: 440px;
+            text-align: center;
+            box-sizing: border-box;
+            border: 1px solid var(--border-color);
+            animation: fadeIn 0.8s ease-in-out;
+        }
+        .logo {
+            width: 100px;
+            height: auto;
+            margin-bottom: 25px;
+            border-radius: 50%;
+        }
+        h1 {
+            color: var(--primary-dark-color);
+            margin-bottom: 10px;
+            font-weight: 600;
+            font-size: 2rem;
+        }
+        p.subtitle {
+            margin-top: 0;
+            margin-bottom: 30px;
+            color: var(--secondary-text-color);
+            font-size: 1rem;
+        }
+        .input-group {
+            margin-bottom: 20px;
+            text-align: left;
+            position: relative;
+        }
+        label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: var(--secondary-text-color);
+        }
+        input[type="password"], input[type="text"] {
+            width: 100%;
+            padding: 16px 50px 16px 18px;
+            border: 2px solid var(--input-border-color);
+            border-radius: 8px;
+            font-size: 1rem;
+            box-sizing: border-box;
+            transition: border-color 0.3s, box-shadow 0.3s;
+        }
+        input:focus {
+            border-color: var(--primary-color);
+            outline: none;
+            box-shadow: 0 0 0 4px rgba(76, 175, 80, 0.15);
+        }
+        .toggle-password {
+            position: absolute;
+            top: 50%;
+            right: 18px;
+            transform: translateY(-50%);
+            cursor: pointer;
+            font-size: 1rem;
+            color: var(--secondary-text-color);
+            background: none;
+            border: none;
+            outline: none;
+            padding: 0;
+        }
+        button.submit-btn {
+            background-color: var(--primary-color);
+            color: white;
+            padding: 16px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 1.1rem;
+            font-weight: 600;
+            width: 100%;
+            transition: background-color 0.3s, transform 0.2s, box-shadow 0.3s;
+            box-shadow: 0 4px 15px rgba(76, 175, 80, 0.3);
+        }
+        button.submit-btn:hover {
+            background-color: var(--primary-dark-color);
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(56, 142, 60, 0.4);
+        }
+        button.submit-btn:active {
+            transform: translateY(0);
+        }
+        .message {
+            margin-top: 25px;
+            font-weight: 500;
+            padding: 15px;
+            border-radius: 8px;
+            transition: all 0.4s ease-in-out;
+            opacity: 0;
+            transform: translateY(10px);
+            visibility: hidden;
+            text-align: left;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        .message.show {
+            opacity: 1;
+            transform: translateY(0);
+            visibility: visible;
+        }
+        .success {
+            color: var(--success-color);
+            background-color: var(--success-background);
+            border: 1px solid var(--primary-color);
+        }
+        .error {
+            color: var(--error-color);
+            background-color: var(--error-background);
+            border: 1px solid var(--error-color);
+        }
+        .message i {
+            font-size: 1.2rem;
+        }
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+                transform: translateY(20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        @media (max-width: 500px) {
+            .container {
+                padding: 30px 20px;
+            }
+            h1 {
+                font-size: 1.6rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <img src="https://naijago-backend.onrender.com/naijago-app.jpg" alt="Naijago Logo" class="logo">
+        <h1>Reset Your Password</h1>
+        <p class="subtitle">Enter and confirm your new password below.</p>
+        <form id="resetForm" action="${BASE_URL}/api/auth/reset-password-submit" method="POST">
+            <input type="hidden" name="token" value="${token}">
+            <div class="input-group">
+                <label for="newPassword">New Password</label>
+                <input type="password" id="newPassword" name="newPassword" placeholder="Enter new password" required>
+                <button type="button" class="toggle-password" data-target="newPassword">
+                    <i class="fas fa-eye"></i>
+                </button>
+            </div>
+            
+            <div class="input-group">
+                <label for="confirmNewPassword">Confirm New Password</label>
+                <input type="password" id="confirmNewPassword" name="confirmNewPassword" placeholder="Confirm new password" required>
+                <button type="button" class="toggle-password" data-target="confirmNewPassword">
+                    <i class="fas fa-eye"></i>
+                </button>
+            </div>
+            
+            <button type="submit" class="submit-btn">Reset Password</button>
+        </form>
+        <div id="message" class="message"></div>
+    </div>
 
-                    body {
-                    font-family: 'Roboto', sans-serif;
-                    background: var(--background-gradient);
-                    margin: 0;
-                    padding: 0;
-                    display: flex;
-                    justify-content: center;
-                    align-items: center;
-                    min-height: 100vh;
-                    color: var(--text-color);
-                    }
+    <script>
+        // Toggle password visibility
+        document.querySelectorAll('.toggle-password').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const targetId = btn.getAttribute('data-target');
+                const input = document.getElementById(targetId);
+                const icon = btn.querySelector('i');
+                if (input.type === "password") {
+                    input.type = "text";
+                    icon.classList.remove('fa-eye');
+                    icon.classList.add('fa-eye-slash');
+                } else {
+                    input.type = "password";
+                    icon.classList.remove('fa-eye-slash');
+                    icon.classList.add('fa-eye');
+                }
+            });
+        });
 
-                    .container {
-                    background-color: var(--card-background);
-                    padding: 40px 30px;
-                    border-radius: 16px;
-                    box-shadow: 0 6px 25px rgba(0, 0, 0, 0.1);
-                    width: 100%;
-                    max-width: 460px;
-                    text-align: center;
-                    box-sizing: border-box;
-                    border: 1px solid var(--border-color);
-                    animation: fadeIn 0.6s ease-in-out;
-                    }
+        // Handle form submit
+        document.getElementById('resetForm').addEventListener('submit', async function(event) {
+            event.preventDefault();
+            const form = event.target;
+            const newPassword = form.newPassword.value;
+            const confirmNewPassword = form.confirmNewPassword.value;
+            const messageDiv = document.getElementById('message');
 
-                    .logo {
-                    width: 120px;
-                    height: auto;
-                    margin-bottom: 20px;
-                    }
+            messageDiv.className = 'message';
+            messageDiv.textContent = '';
+            messageDiv.innerHTML = '';
 
-                    h1 {
-                    color: var(--primary-dark-color);
-                    margin-bottom: 10px;
-                    font-weight: 700;
-                    font-size: 1.9rem;
-                    letter-spacing: -0.5px;
-                    }
-
-                    p.subtitle {
-                    margin-top: 0;
-                    margin-bottom: 30px;
-                    color: #6c757d;
-                    font-size: 1rem;
-                    }
-
-                    .input-group {
-                    margin-bottom: 20px;
-                    text-align: left;
-                    position: relative;
-                    }
-
-                    label {
-                    display: block;
-                    margin-bottom: 8px;
-                    font-weight: 500;
-                    color: #444;
-                    }
-
-                    input[type="password"], input[type="text"] {
-                    width: 100%;
-                    padding: 14px 40px 14px 14px; /* space for toggle button */
-                    border: 1px solid var(--border-color);
-                    border-radius: 10px;
-                    font-size: 1rem;
-                    box-sizing: border-box;
-                    transition: border-color 0.3s, box-shadow 0.3s;
-                    }
-
-                    input:focus {
-                    border-color: var(--primary-color);
-                    outline: none;
-                    box-shadow: 0 0 0 3px rgba(0, 123, 255, 0.25);
-                    }
-
-                    .toggle-password {
-                    position: absolute;
-                    top: 38px;
-                    right: 12px;
-                    cursor: pointer;
-                    font-size: 0.9rem;
-                    color: var(--primary-dark-color);
-                    background: none;
-                    border: none;
-                    outline: none;
-                    padding: 0;
-                    }
-
-                    button {
-                    background: var(--primary-color);
-                    color: white;
-                    padding: 15px 25px;
-                    border: none;
-                    border-radius: 10px;
-                    cursor: pointer;
-                    font-size: 1.1rem;
-                    font-weight: 600;
-                    width: 100%;
-                    transition: background-color 0.3s, transform 0.2s, box-shadow 0.3s;
-                    box-shadow: 0 4px 12px rgba(0, 123, 255, 0.25);
-                    }
-
-                    button:hover {
-                    background-color: var(--primary-dark-color);
-                    transform: translateY(-2px);
-                    box-shadow: 0 6px 16px rgba(0, 86, 179, 0.3);
-                    }
-
-                    button:active {
-                    transform: translateY(0);
-                    }
-
-                    .message {
-                    margin-top: 25px;
-                    font-weight: 500;
-                    padding: 12px;
-                    border-radius: 10px;
-                    transition: all 0.4s ease-in-out;
-                    opacity: 0;
-                    transform: translateY(10px);
-                    visibility: hidden;
-                    }
-
-                    .message.show {
-                    opacity: 1;
-                    transform: translateY(0);
-                    visibility: visible;
-                    }
-
-                    .success {
-                    color: var(--success-color);
-                    background-color: #e6f7ee;
-                    border: 1px solid #c8e6c9;
-                    }
-
-                    .error {
-                    color: var(--error-color);
-                    background-color: #fdeded;
-                    border: 1px solid #f2c7c7;
-                    }
-
-                    @keyframes fadeIn {
-                    from {
-                        opacity: 0;
-                        transform: translateY(15px);
-                    }
-                    to {
-                        opacity: 1;
-                        transform: translateY(0);
-                    }
-                    }
-
-                    /* Mobile responsive */
-                    @media (max-width: 500px) {
-                    .container {
-                        padding: 30px 20px;
-                    }
-                    h1 {
-                        font-size: 1.6rem;
-                    }
-                    }
-                </style>
-                </head>
-                <body>
-                <div class="container">
-                    <img src="https://naijago-backend.onrender.com/naijago-app.jpg" alt="Naijago Logo" class="logo">
-                    <h1>Reset Your Password</h1>
-                    <p class="subtitle">Enter and confirm your new password below.</p>
-                    <form id="resetForm" action="${BASE_URL}/api/auth/reset-password-submit" method="POST">
-                    <input type="hidden" name="token" value="${token}">
-                    
-                    <div class="input-group">
-                        <label for="newPassword">New Password</label>
-                        <input type="password" id="newPassword" name="newPassword" placeholder="Enter new password" required>
-                        <button type="button" class="toggle-password" data-target="newPassword">👁</button>
-                    </div>
-                    
-                    <div class="input-group">
-                        <label for="confirmNewPassword">Confirm New Password</label>
-                        <input type="password" id="confirmNewPassword" name="confirmNewPassword" placeholder="Confirm new password" required>
-                        <button type="button" class="toggle-password" data-target="confirmNewPassword">👁</button>
-                    </div>
-                    
-                    <button type="submit">Reset Password</button>
-                    </form>
-                    <div id="message" class="message"></div>
-                </div>
-
-                <script>
-                    // Toggle password visibility
-                    document.querySelectorAll('.toggle-password').forEach(btn => {
-                    btn.addEventListener('click', () => {
-                        const targetId = btn.getAttribute('data-target');
-                        const input = document.getElementById(targetId);
-                        if (input.type === "password") {
-                        input.type = "text";
-                        btn.textContent = "🙈";
-                        } else {
-                        input.type = "password";
-                        btn.textContent = "👁";
-                        }
-                    });
-                    });
-
-                    // Handle form submit
-                    document.getElementById('resetForm').addEventListener('submit', async function(event) {
-                    event.preventDefault();
-                    const form = event.target;
-                    const newPassword = form.newPassword.value;
-                    const confirmNewPassword = form.confirmNewPassword.value;
-                    const messageDiv = document.getElementById('message');
-
-                    messageDiv.className = 'message';
-                    messageDiv.textContent = '';
-
-                    if (newPassword !== confirmNewPassword) {
-                        messageDiv.className = 'message error show';
-                        messageDiv.textContent = 'Passwords do not match!';
-                        return;
-                    }
-                    
-                    try {
-                        const response = await fetch(form.action, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ token: form.token.value, newPassword: newPassword })
-                        });
-                        const data = await response.json();
-                        
-                        if (response.ok) {
-                        messageDiv.className = 'message success show';
-                        messageDiv.textContent = data.message || 'Password reset successfully!';
-                        form.reset();
-                        } else {
-                        messageDiv.className = 'message error show';
-                        messageDiv.textContent = data.message || 'Failed to reset password.';
-                        }
-                    } catch (error) {
-                        console.error('Error:', error);
-                        messageDiv.className = 'message error show';
-                        messageDiv.textContent = 'An error occurred while resetting password.';
-                    }
-                    });
-                        document.querySelectorAll('.toggle-password').forEach(toggle => {
-                            toggle.addEventListener('click', function () {
-                                const input = this.previousElementSibling;
-                                if (input.type === "password") {
-                                    input.type = "text";
-                                    this.textContent = "Hide";
-                                } else {
-                                    input.type = "password";
-                                    this.textContent = "Show";
-                                }
-                            });
-                        });
-
-                </script>
-                </body>
-                </html>
-
-        `);
+            if (newPassword !== confirmNewPassword) {
+                messageDiv.className = 'message error show';
+                messageDiv.innerHTML = '<i class="fas fa-exclamation-circle"></i> Passwords do not match!';
+                return;
+            }
+            
+            try {
+                const response = await fetch(form.action, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ token: form.token.value, newPassword: newPassword })
+                });
+                const data = await response.json();
+                
+                if (response.ok) {
+                    messageDiv.className = 'message success show';
+                    messageDiv.innerHTML = '<i class="fas fa-check-circle"></i> ${data.message || 'Password reset successfully!'}';
+                    form.reset();
+                } else {
+                    messageDiv.className = 'message error show';
+                    messageDiv.innerHTML = '<i class="fas fa-exclamation-circle"></i> ${data.message || 'Failed to reset password.'}';
+                }
+            } catch (error) {
+                console.error('Error:', error);
+                messageDiv.className = 'message error show';
+                messageDiv.innerHTML = '<i class="fas fa-exclamation-circle"></i> An error occurred while resetting password.';
+            }
+        });
+    </script>
+</body>
+</html>
+`)
     } catch (error) {
         console.error('Error rendering reset password form:', error);
         res.status(500).send('Server error when trying to render password reset form.');
     }
 });
+
+// router.get('/reset-password-form/:token', async (req, res) => {
+//     const { token } = req.params;
+//     try {
+//         const user = await User.findOne({
+//             passwordResetToken: token,
+//             passwordResetExpires: { $gt: Date.now() },
+//         });
+//         if (!user) {
+//             return res.status(400).send('<h1>Invalid or Expired Password Reset Link</h1><p>The link you clicked is either invalid or has expired. Please request a new password reset.</p>');
+//         }
+//        res.send(`
+//     <!DOCTYPE html>
+//     <html lang="en">
+//     <head>
+//     <meta charset="UTF-8">
+//     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+//     <title>Reset Your Password</title>
+//     <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700&display=swap" rel="stylesheet">
+//     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+//     <style>
+//         :root {
+//             --primary-color: #4CAF50; /* A professional green */
+//             --primary-dark-color: #388E3C;
+//             --background-color: #f7f9fc; /* A light, clean background */
+//             --card-background: #ffffff;
+//             --text-color: #333;
+//             --secondary-text-color: #666;
+//             --border-color: #e0e0e0;
+//             --input-border-color: #c0c0c0;
+//             --success-color: #2e7d32;
+//             --success-background: #e8f5e9;
+//             --error-color: #c62828;
+//             --error-background: #ffebee;
+//         }
+
+//         body {
+//             font-family: 'Poppins', sans-serif;
+//             background-color: var(--background-color);
+//             margin: 0;
+//             padding: 0;
+//             display: flex;
+//             justify-content: center;
+//             align-items: center;
+//             min-height: 100vh;
+//             color: var(--text-color);
+//         }
+
+//         .container {
+//             background-color: var(--card-background);
+//             padding: 40px;
+//             border-radius: 12px;
+//             box-shadow: 0 10px 30px rgba(0, 0, 0, 0.08);
+//             width: 100%;
+//             max-width: 440px;
+//             text-align: center;
+//             box-sizing: border-box;
+//             border: 1px solid var(--border-color);
+//             animation: fadeIn 0.8s ease-in-out;
+//         }
+
+//         .logo {
+//             width: 100px;
+//             height: auto;
+//             margin-bottom: 25px;
+//             border-radius: 50%;
+//         }
+
+//         h1 {
+//             color: var(--primary-dark-color);
+//             margin-bottom: 10px;
+//             font-weight: 600;
+//             font-size: 2rem;
+//         }
+
+//         p.subtitle {
+//             margin-top: 0;
+//             margin-bottom: 30px;
+//             color: var(--secondary-text-color);
+//             font-size: 1rem;
+//         }
+
+//         .input-group {
+//             margin-bottom: 20px;
+//             text-align: left;
+//             position: relative;
+//         }
+
+//         label {
+//             display: block;
+//             margin-bottom: 8px;
+//             font-weight: 600;
+//             color: var(--secondary-text-color);
+//         }
+
+//         input[type="password"], input[type="text"] {
+//             width: 100%;
+//             padding: 16px 50px 16px 18px;
+//             border: 2px solid var(--input-border-color);
+//             border-radius: 8px;
+//             font-size: 1rem;
+//             box-sizing: border-box;
+//             transition: border-color 0.3s, box-shadow 0.3s;
+//         }
+
+//         input:focus {
+//             border-color: var(--primary-color);
+//             outline: none;
+//             box-shadow: 0 0 0 4px rgba(76, 175, 80, 0.15);
+//         }
+
+//         .toggle-password {
+//             position: absolute;
+//             top: 50%;
+//             right: 18px;
+//             transform: translateY(-50%);
+//             cursor: pointer;
+//             font-size: 1rem;
+//             color: var(--secondary-text-color);
+//             background: none;
+//             border: none;
+//             outline: none;
+//             padding: 0;
+//         }
+
+//         button.submit-btn {
+//             background-color: var(--primary-color);
+//             color: white;
+//             padding: 16px;
+//             border: none;
+//             border-radius: 8px;
+//             cursor: pointer;
+//             font-size: 1.1rem;
+//             font-weight: 600;
+//             width: 100%;
+//             transition: background-color 0.3s, transform 0.2s, box-shadow 0.3s;
+//             box-shadow: 0 4px 15px rgba(76, 175, 80, 0.3);
+//         }
+
+//         button.submit-btn:hover {
+//             background-color: var(--primary-dark-color);
+//             transform: translateY(-2px);
+//             box-shadow: 0 6px 20px rgba(56, 142, 60, 0.4);
+//         }
+
+//         button.submit-btn:active {
+//             transform: translateY(0);
+//         }
+
+//         .message {
+//             margin-top: 25px;
+//             font-weight: 500;
+//             padding: 15px;
+//             border-radius: 8px;
+//             transition: all 0.4s ease-in-out;
+//             opacity: 0;
+//             transform: translateY(10px);
+//             visibility: hidden;
+//             text-align: left;
+//             display: flex;
+//             align-items: center;
+//             gap: 12px;
+//         }
+
+//         .message.show {
+//             opacity: 1;
+//             transform: translateY(0);
+//             visibility: visible;
+//         }
+
+//         .success {
+//             color: var(--success-color);
+//             background-color: var(--success-background);
+//             border: 1px solid var(--primary-color);
+//         }
+
+//         .error {
+//             color: var(--error-color);
+//             background-color: var(--error-background);
+//             border: 1px solid var(--error-color);
+//         }
+        
+//         .message i {
+//             font-size: 1.2rem;
+//         }
+
+//         @keyframes fadeIn {
+//             from {
+//                 opacity: 0;
+//                 transform: translateY(20px);
+//             }
+//             to {
+//                 opacity: 1;
+//                 transform: translateY(0);
+//             }
+//         }
+
+//         @media (max-width: 500px) {
+//             .container {
+//                 padding: 30px 20px;
+//             }
+//             h1 {
+//                 font-size: 1.6rem;
+//             }
+//         }
+//     </style>
+//     </head>
+//     <body>
+//     <div class="container">
+//         <img src="https://naijago-backend.onrender.com/naijago-app.jpg" alt="Naijago Logo" class="logo">
+//         <h1>Reset Your Password</h1>
+//         <p class="subtitle">Enter and confirm your new password below.</p>
+//         <form id="resetForm" action="${BASE_URL}/api/auth/reset-password-submit" method="POST">
+//             <input type="hidden" name="token" value="${token}">
+//             <div class="input-group">
+//                 <label for="newPassword">New Password</label>
+//                 <input type="password" id="newPassword" name="newPassword" placeholder="Enter new password" required>
+//                 <button type="button" class="toggle-password" data-target="newPassword">
+//                     <i class="fas fa-eye"></i>
+//                 </button>
+//             </div>
+            
+//             <div class="input-group">
+//                 <label for="confirmNewPassword">Confirm New Password</label>
+//                 <input type="password" id="confirmNewPassword" name="confirmNewPassword" placeholder="Confirm new password" required>
+//                 <button type="button" class="toggle-password" data-target="confirmNewPassword">
+//                     <i class="fas fa-eye"></i>
+//                 </button>
+//             </div>
+            
+//             <button type="submit" class="submit-btn">Reset Password</button>
+//         </form>
+//         <div id="message" class="message"></div>
+//     </div>
+
+//     <script>
+//         // Toggle password visibility
+//         document.querySelectorAll('.toggle-password').forEach(btn => {
+//             btn.addEventListener('click', () => {
+//                 const targetId = btn.getAttribute('data-target');
+//                 const input = document.getElementById(targetId);
+//                 const icon = btn.querySelector('i');
+//                 if (input.type === "password") {
+//                     input.type = "text";
+//                     icon.classList.remove('fa-eye');
+//                     icon.classList.add('fa-eye-slash');
+//                 } else {
+//                     input.type = "password";
+//                     icon.classList.remove('fa-eye-slash');
+//                     icon.classList.add('fa-eye');
+//                 }
+//             });
+//         });
+
+//         // Handle form submit
+//         document.getElementById('resetForm').addEventListener('submit', async function(event) {
+//             event.preventDefault();
+//             const form = event.target;
+//             const newPassword = form.newPassword.value;
+//             const confirmNewPassword = form.confirmNewPassword.value;
+//             const messageDiv = document.getElementById('message');
+
+//             messageDiv.className = 'message';
+//             messageDiv.textContent = '';
+//             messageDiv.innerHTML = '';
+
+//             if (newPassword !== confirmNewPassword) {
+//                 messageDiv.className = 'message error show';
+//                 messageDiv.innerHTML = '<i class="fas fa-exclamation-circle"></i> Passwords do not match!';
+//                 return;
+//             }
+            
+//             try {
+//                 const response = await fetch(form.action, {
+//                     method: 'POST',
+//                     headers: { 'Content-Type': 'application/json' },
+//                     body: JSON.stringify({ token: form.token.value, newPassword: newPassword })
+//                 });
+//                 const data = await response.json();
+                
+//                 if (response.ok) {
+//                     messageDiv.className = 'message success show';
+//                     messageDiv.innerHTML = `<i class="fas fa-check-circle"></i> ${data.message || 'Password reset successfully!'}`;
+//                     form.reset();
+//                 } else {
+//                     messageDiv.className = 'message error show';
+//                     messageDiv.innerHTML = `<i class="fas fa-exclamation-circle"></i> ${data.message || 'Failed to reset password.'}`;
+//                 }
+//             } catch (error) {
+//                 console.error('Error:', error);
+//                 messageDiv.className = 'message error show';
+//                 messageDiv.innerHTML = '<i class="fas fa-exclamation-circle"></i> An error occurred while resetting password.';
+//             }
+//         });
+//     </script>
+//     </body>
+//     </html>
+// `)
+//     } catch (error) {
+//         console.error('Error rendering reset password form:', error);
+//         res.status(500).send('Server error when trying to render password reset form.');
+//     }
+// });
 
 // --- Route 7: Submit New Password (POST request from the HTML form) ---
 router.post('/reset-password-submit', async (req, res) => {
@@ -912,30 +1105,6 @@ router.post('/reset-password-submit', async (req, res) => {
   }
 });
 
-// router.post('/reset-password-submit', async (req, res) => {
-//     const { token, newPassword } = req.body;
-//     if (!newPassword || !token) {
-//         return res.status(400).json({ message: 'New password and token are required.' });
-//     }
-//     try {
-//         const user = await User.findOne({
-//             passwordResetToken: token,
-//             passwordResetExpires: { $gt: Date.now() },
-//         });
-//         if (!user) {
-//             return res.status(400).json({ message: 'Password reset link is invalid or has expired.' });
-//         }
-//         const salt = await bcrypt.genSalt(10);
-//         user.password = await bcrypt.hash(newPassword, salt);
-//         user.passwordResetToken = undefined;
-//         user.passwordResetExpires = undefined;
-//         await user.save();
-//         res.status(200).json({ message: 'Password has been reset successfully. You can now log in with your new password.' });
-//     } catch (error) {
-//         console.error('Reset password error:', error);
-//         res.status(500).json({ message: 'Server error during password reset.' });
-//     }
-// });
 
 // @desc    Mark a user's notification as read
 // @route   PUT /api/auth/notifications/mark-read/:notificationId
