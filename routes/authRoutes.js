@@ -486,6 +486,8 @@ router.post('/forgot-password', async (req, res) => {
 
 // --- Route 6: Render Password Reset Form (GET request from email link) ---
 
+
+
 router.get('/reset-password-form/:token', async (req, res) => {
     const { token } = req.params;
     try {
@@ -496,10 +498,10 @@ router.get('/reset-password-form/:token', async (req, res) => {
         if (!user) {
             return res.status(400).send('<h1>Invalid or Expired Password Reset Link</h1><p>The link you clicked is either invalid or has expired. Please request a new password reset.</p>');
         }
-        res.send(`
-<!DOCTYPE html>
-<html lang="en">
-<head>
+       res.send(`
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Reset Your Password</title>
@@ -507,9 +509,9 @@ router.get('/reset-password-form/:token', async (req, res) => {
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
     <style>
         :root {
-            --primary-color: #4CAF50;
+            --primary-color: #4CAF50; /* A professional green */
             --primary-dark-color: #388E3C;
-            --background-color: #f7f9fc;
+            --background-color: #f7f9fc; /* A light, clean background */
             --card-background: #ffffff;
             --text-color: #333;
             --secondary-text-color: #666;
@@ -520,6 +522,7 @@ router.get('/reset-password-form/:token', async (req, res) => {
             --error-color: #c62828;
             --error-background: #ffebee;
         }
+
         body {
             font-family: 'Poppins', sans-serif;
             background-color: var(--background-color);
@@ -531,6 +534,7 @@ router.get('/reset-password-form/:token', async (req, res) => {
             min-height: 100vh;
             color: var(--text-color);
         }
+
         .container {
             background-color: var(--card-background);
             padding: 40px;
@@ -543,35 +547,41 @@ router.get('/reset-password-form/:token', async (req, res) => {
             border: 1px solid var(--border-color);
             animation: fadeIn 0.8s ease-in-out;
         }
+
         .logo {
             width: 100px;
             height: auto;
             margin-bottom: 25px;
             border-radius: 50%;
         }
+
         h1 {
             color: var(--primary-dark-color);
             margin-bottom: 10px;
             font-weight: 600;
             font-size: 2rem;
         }
+
         p.subtitle {
             margin-top: 0;
             margin-bottom: 30px;
             color: var(--secondary-text-color);
             font-size: 1rem;
         }
+
         .input-group {
             margin-bottom: 20px;
             text-align: left;
             position: relative;
         }
+
         label {
             display: block;
             margin-bottom: 8px;
             font-weight: 600;
             color: var(--secondary-text-color);
         }
+
         input[type="password"], input[type="text"] {
             width: 100%;
             padding: 16px 50px 16px 18px;
@@ -581,11 +591,13 @@ router.get('/reset-password-form/:token', async (req, res) => {
             box-sizing: border-box;
             transition: border-color 0.3s, box-shadow 0.3s;
         }
+
         input:focus {
             border-color: var(--primary-color);
             outline: none;
             box-shadow: 0 0 0 4px rgba(76, 175, 80, 0.15);
         }
+
         .toggle-password {
             position: absolute;
             top: 50%;
@@ -599,6 +611,7 @@ router.get('/reset-password-form/:token', async (req, res) => {
             outline: none;
             padding: 0;
         }
+
         button.submit-btn {
             background-color: var(--primary-color);
             color: white;
@@ -612,14 +625,17 @@ router.get('/reset-password-form/:token', async (req, res) => {
             transition: background-color 0.3s, transform 0.2s, box-shadow 0.3s;
             box-shadow: 0 4px 15px rgba(76, 175, 80, 0.3);
         }
+
         button.submit-btn:hover {
             background-color: var(--primary-dark-color);
             transform: translateY(-2px);
             box-shadow: 0 6px 20px rgba(56, 142, 60, 0.4);
         }
+
         button.submit-btn:active {
             transform: translateY(0);
         }
+
         .message {
             margin-top: 25px;
             font-weight: 500;
@@ -634,24 +650,29 @@ router.get('/reset-password-form/:token', async (req, res) => {
             align-items: center;
             gap: 12px;
         }
+
         .message.show {
             opacity: 1;
             transform: translateY(0);
             visibility: visible;
         }
+
         .success {
             color: var(--success-color);
             background-color: var(--success-background);
             border: 1px solid var(--primary-color);
         }
+
         .error {
             color: var(--error-color);
             background-color: var(--error-background);
             border: 1px solid var(--error-color);
         }
+        
         .message i {
             font-size: 1.2rem;
         }
+
         @keyframes fadeIn {
             from {
                 opacity: 0;
@@ -662,6 +683,7 @@ router.get('/reset-password-form/:token', async (req, res) => {
                 transform: translateY(0);
             }
         }
+
         @media (max-width: 500px) {
             .container {
                 padding: 30px 20px;
@@ -671,8 +693,8 @@ router.get('/reset-password-form/:token', async (req, res) => {
             }
         }
     </style>
-</head>
-<body>
+    </head>
+    <body>
     <div class="container">
         <img src="https://naijago-backend.onrender.com/naijago-app.jpg" alt="Naijago Logo" class="logo">
         <h1>Reset Your Password</h1>
@@ -760,317 +782,14 @@ router.get('/reset-password-form/:token', async (req, res) => {
             }
         });
     </script>
-</body>
-</html>
+    </body>
+    </html>
 `)
     } catch (error) {
         console.error('Error rendering reset password form:', error);
         res.status(500).send('Server error when trying to render password reset form.');
     }
 });
-
-// router.get('/reset-password-form/:token', async (req, res) => {
-//     const { token } = req.params;
-//     try {
-//         const user = await User.findOne({
-//             passwordResetToken: token,
-//             passwordResetExpires: { $gt: Date.now() },
-//         });
-//         if (!user) {
-//             return res.status(400).send('<h1>Invalid or Expired Password Reset Link</h1><p>The link you clicked is either invalid or has expired. Please request a new password reset.</p>');
-//         }
-//        res.send(`
-//     <!DOCTYPE html>
-//     <html lang="en">
-//     <head>
-//     <meta charset="UTF-8">
-//     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-//     <title>Reset Your Password</title>
-//     <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700&display=swap" rel="stylesheet">
-//     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
-//     <style>
-//         :root {
-//             --primary-color: #4CAF50; /* A professional green */
-//             --primary-dark-color: #388E3C;
-//             --background-color: #f7f9fc; /* A light, clean background */
-//             --card-background: #ffffff;
-//             --text-color: #333;
-//             --secondary-text-color: #666;
-//             --border-color: #e0e0e0;
-//             --input-border-color: #c0c0c0;
-//             --success-color: #2e7d32;
-//             --success-background: #e8f5e9;
-//             --error-color: #c62828;
-//             --error-background: #ffebee;
-//         }
-
-//         body {
-//             font-family: 'Poppins', sans-serif;
-//             background-color: var(--background-color);
-//             margin: 0;
-//             padding: 0;
-//             display: flex;
-//             justify-content: center;
-//             align-items: center;
-//             min-height: 100vh;
-//             color: var(--text-color);
-//         }
-
-//         .container {
-//             background-color: var(--card-background);
-//             padding: 40px;
-//             border-radius: 12px;
-//             box-shadow: 0 10px 30px rgba(0, 0, 0, 0.08);
-//             width: 100%;
-//             max-width: 440px;
-//             text-align: center;
-//             box-sizing: border-box;
-//             border: 1px solid var(--border-color);
-//             animation: fadeIn 0.8s ease-in-out;
-//         }
-
-//         .logo {
-//             width: 100px;
-//             height: auto;
-//             margin-bottom: 25px;
-//             border-radius: 50%;
-//         }
-
-//         h1 {
-//             color: var(--primary-dark-color);
-//             margin-bottom: 10px;
-//             font-weight: 600;
-//             font-size: 2rem;
-//         }
-
-//         p.subtitle {
-//             margin-top: 0;
-//             margin-bottom: 30px;
-//             color: var(--secondary-text-color);
-//             font-size: 1rem;
-//         }
-
-//         .input-group {
-//             margin-bottom: 20px;
-//             text-align: left;
-//             position: relative;
-//         }
-
-//         label {
-//             display: block;
-//             margin-bottom: 8px;
-//             font-weight: 600;
-//             color: var(--secondary-text-color);
-//         }
-
-//         input[type="password"], input[type="text"] {
-//             width: 100%;
-//             padding: 16px 50px 16px 18px;
-//             border: 2px solid var(--input-border-color);
-//             border-radius: 8px;
-//             font-size: 1rem;
-//             box-sizing: border-box;
-//             transition: border-color 0.3s, box-shadow 0.3s;
-//         }
-
-//         input:focus {
-//             border-color: var(--primary-color);
-//             outline: none;
-//             box-shadow: 0 0 0 4px rgba(76, 175, 80, 0.15);
-//         }
-
-//         .toggle-password {
-//             position: absolute;
-//             top: 50%;
-//             right: 18px;
-//             transform: translateY(-50%);
-//             cursor: pointer;
-//             font-size: 1rem;
-//             color: var(--secondary-text-color);
-//             background: none;
-//             border: none;
-//             outline: none;
-//             padding: 0;
-//         }
-
-//         button.submit-btn {
-//             background-color: var(--primary-color);
-//             color: white;
-//             padding: 16px;
-//             border: none;
-//             border-radius: 8px;
-//             cursor: pointer;
-//             font-size: 1.1rem;
-//             font-weight: 600;
-//             width: 100%;
-//             transition: background-color 0.3s, transform 0.2s, box-shadow 0.3s;
-//             box-shadow: 0 4px 15px rgba(76, 175, 80, 0.3);
-//         }
-
-//         button.submit-btn:hover {
-//             background-color: var(--primary-dark-color);
-//             transform: translateY(-2px);
-//             box-shadow: 0 6px 20px rgba(56, 142, 60, 0.4);
-//         }
-
-//         button.submit-btn:active {
-//             transform: translateY(0);
-//         }
-
-//         .message {
-//             margin-top: 25px;
-//             font-weight: 500;
-//             padding: 15px;
-//             border-radius: 8px;
-//             transition: all 0.4s ease-in-out;
-//             opacity: 0;
-//             transform: translateY(10px);
-//             visibility: hidden;
-//             text-align: left;
-//             display: flex;
-//             align-items: center;
-//             gap: 12px;
-//         }
-
-//         .message.show {
-//             opacity: 1;
-//             transform: translateY(0);
-//             visibility: visible;
-//         }
-
-//         .success {
-//             color: var(--success-color);
-//             background-color: var(--success-background);
-//             border: 1px solid var(--primary-color);
-//         }
-
-//         .error {
-//             color: var(--error-color);
-//             background-color: var(--error-background);
-//             border: 1px solid var(--error-color);
-//         }
-        
-//         .message i {
-//             font-size: 1.2rem;
-//         }
-
-//         @keyframes fadeIn {
-//             from {
-//                 opacity: 0;
-//                 transform: translateY(20px);
-//             }
-//             to {
-//                 opacity: 1;
-//                 transform: translateY(0);
-//             }
-//         }
-
-//         @media (max-width: 500px) {
-//             .container {
-//                 padding: 30px 20px;
-//             }
-//             h1 {
-//                 font-size: 1.6rem;
-//             }
-//         }
-//     </style>
-//     </head>
-//     <body>
-//     <div class="container">
-//         <img src="https://naijago-backend.onrender.com/naijago-app.jpg" alt="Naijago Logo" class="logo">
-//         <h1>Reset Your Password</h1>
-//         <p class="subtitle">Enter and confirm your new password below.</p>
-//         <form id="resetForm" action="${BASE_URL}/api/auth/reset-password-submit" method="POST">
-//             <input type="hidden" name="token" value="${token}">
-//             <div class="input-group">
-//                 <label for="newPassword">New Password</label>
-//                 <input type="password" id="newPassword" name="newPassword" placeholder="Enter new password" required>
-//                 <button type="button" class="toggle-password" data-target="newPassword">
-//                     <i class="fas fa-eye"></i>
-//                 </button>
-//             </div>
-            
-//             <div class="input-group">
-//                 <label for="confirmNewPassword">Confirm New Password</label>
-//                 <input type="password" id="confirmNewPassword" name="confirmNewPassword" placeholder="Confirm new password" required>
-//                 <button type="button" class="toggle-password" data-target="confirmNewPassword">
-//                     <i class="fas fa-eye"></i>
-//                 </button>
-//             </div>
-            
-//             <button type="submit" class="submit-btn">Reset Password</button>
-//         </form>
-//         <div id="message" class="message"></div>
-//     </div>
-
-//     <script>
-//         // Toggle password visibility
-//         document.querySelectorAll('.toggle-password').forEach(btn => {
-//             btn.addEventListener('click', () => {
-//                 const targetId = btn.getAttribute('data-target');
-//                 const input = document.getElementById(targetId);
-//                 const icon = btn.querySelector('i');
-//                 if (input.type === "password") {
-//                     input.type = "text";
-//                     icon.classList.remove('fa-eye');
-//                     icon.classList.add('fa-eye-slash');
-//                 } else {
-//                     input.type = "password";
-//                     icon.classList.remove('fa-eye-slash');
-//                     icon.classList.add('fa-eye');
-//                 }
-//             });
-//         });
-
-//         // Handle form submit
-//         document.getElementById('resetForm').addEventListener('submit', async function(event) {
-//             event.preventDefault();
-//             const form = event.target;
-//             const newPassword = form.newPassword.value;
-//             const confirmNewPassword = form.confirmNewPassword.value;
-//             const messageDiv = document.getElementById('message');
-
-//             messageDiv.className = 'message';
-//             messageDiv.textContent = '';
-//             messageDiv.innerHTML = '';
-
-//             if (newPassword !== confirmNewPassword) {
-//                 messageDiv.className = 'message error show';
-//                 messageDiv.innerHTML = '<i class="fas fa-exclamation-circle"></i> Passwords do not match!';
-//                 return;
-//             }
-            
-//             try {
-//                 const response = await fetch(form.action, {
-//                     method: 'POST',
-//                     headers: { 'Content-Type': 'application/json' },
-//                     body: JSON.stringify({ token: form.token.value, newPassword: newPassword })
-//                 });
-//                 const data = await response.json();
-                
-//                 if (response.ok) {
-//                     messageDiv.className = 'message success show';
-//                     messageDiv.innerHTML = `<i class="fas fa-check-circle"></i> ${data.message || 'Password reset successfully!'}`;
-//                     form.reset();
-//                 } else {
-//                     messageDiv.className = 'message error show';
-//                     messageDiv.innerHTML = `<i class="fas fa-exclamation-circle"></i> ${data.message || 'Failed to reset password.'}`;
-//                 }
-//             } catch (error) {
-//                 console.error('Error:', error);
-//                 messageDiv.className = 'message error show';
-//                 messageDiv.innerHTML = '<i class="fas fa-exclamation-circle"></i> An error occurred while resetting password.';
-//             }
-//         });
-//     </script>
-//     </body>
-//     </html>
-// `)
-//     } catch (error) {
-//         console.error('Error rendering reset password form:', error);
-//         res.status(500).send('Server error when trying to render password reset form.');
-//     }
-// });
 
 // --- Route 7: Submit New Password (POST request from the HTML form) ---
 router.post('/reset-password-submit', async (req, res) => {
