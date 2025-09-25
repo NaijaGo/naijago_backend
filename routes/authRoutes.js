@@ -209,109 +209,127 @@ router.get('/email/verify/:token', async (req, res) => {
 });
 
 router.post('/login', async (req, res) => {
-    const { email, password, deviceFingerprint } = req.body;
+  const { email, password, deviceFingerprint } = req.body;
 
-    if (!email || !password) {
-        return res.status(400).json({ message: 'Please enter all fields' });
+  if (!email || !password) {
+    return res.status(400).json({ message: 'Please enter all fields' });
+  }
+
+  try {
+    const user = await User.findOne({ email });
+
+    if (!user) {
+      return res.status(400).json({ message: 'Invalid credentials' });
     }
 
-    try {
-        const user = await User.findOne({ email });
-
-        if (!user) {
-            return res.status(400).json({ message: 'Invalid credentials' });
-        }
-
-        if (!user.isEmailVerified) {
-            return res.status(403).json({ message: 'Please verify your email before logging in.' });
-        }
-
-        // 1. ALWAYS VALIDATE THE PASSWORD FIRST
-        const isMatch = await bcrypt.compare(password, user.password);
-        if (!isMatch) {
-            return res.status(400).json({ message: 'Invalid credentials' });
-        }
-
-        // 2. NOW, HANDLE DEVICE VERIFICATION LOGIC
-
-        // If the user is an admin, bypass device verification for development convenience
-        if (user.isAdmin) {
-            if (deviceFingerprint && user.deviceFingerprint !== deviceFingerprint) {
-                user.deviceFingerprint = deviceFingerprint;
-                user.isDeviceVerified = true;
-                await user.save();
-            }
-            return res.status(200).json({
-                token: generateToken(user._id),
-                user: {
-                    id: user._id, firstName: user.firstName, lastName: user.lastName, email: user.email,
-                    phoneNumber: user.phoneNumber, isEmailVerified: user.isEmailVerified, isAdmin: user.isAdmin,
-                    isVendor: user.isVendor, vendorStatus: user.vendorStatus
-                },
-                message: 'Admin login successful. Device verification bypassed for convenience.',
-            });
-        }
-
-        // Auto-trust new device if password was recently reset
-        // The password has already been validated above, so this is safe.
-        if (user.passwordResetToken === undefined && user.passwordResetExpires === undefined) {
-            if (deviceFingerprint && user.deviceFingerprint !== user.deviceFingerprint) {
-                user.deviceFingerprint = deviceFingerprint;
-                user.isDeviceVerified = true;
-                await user.save();
-                return res.status(200).json({
-                    token: generateToken(user._id),
-                    user: {
-                        id: user._id, firstName: user.firstName, lastName: user.lastName, email: user.email,
-                        phoneNumber: user.phoneNumber, isEmailVerified: user.isEmailVerified,
-                        isVendor: user.isVendor, vendorStatus: user.vendorStatus
-                    },
-                    message: 'Login successful after password reset. New device trusted automatically.',
-                });
-            }
-        }
-
-        // Standard device verification logic for non-admin, non-reset users
-        if (!user.deviceFingerprint) {
-            user.deviceFingerprint = deviceFingerprint;
-            user.isDeviceVerified = true;
-            await user.save();
-            res.status(200).json({
-                token: generateToken(user._id),
-                user: {
-                    id: user._id, firstName: user.firstName, lastName: user.lastName, email: user.email,
-                    phoneNumber: user.phoneNumber, isEmailVerified: user.isEmailVerified,
-                    isVendor: user.isVendor, vendorStatus: user.vendorStatus
-                },
-                message: 'Login successful. Device captured as original.',
-            });
-        } else {
-            if (user.deviceFingerprint !== deviceFingerprint) {
-                const deviceVerificationToken = crypto.randomBytes(32).toString('hex');
-                user.deviceVerificationToken = deviceVerificationToken;
-                user.deviceVerificationExpires = Date.now() + 24 * 60 * 60 * 1000;
-                await user.save();
-                await sendVerificationEmail(user.email, deviceVerificationToken, 'device');
-
-                return res.status(403).json({
-                    message: 'New device detected. Please check your email to verify this device.',
-                });
-            } else {
-                res.status(200).json({
-                    token: generateToken(user._id),
-                    user: {
-                        id: user._id, firstName: user.firstName, lastName: user.lastName, email: user.email,
-                        phoneNumber: user.phoneNumber, isEmailVerified: user.isEmailVerified,
-                        isVendor: user.isVendor, vendorStatus: user.vendorStatus
-                    },
-                    message: 'Login successful from original device.',
-                });
-            }
-        }
-    } catch (error) {
-        console.error('Login error:', error);
-        res.status(500).json({ message: 'Server error during login' });
+    if (!user.isEmailVerified) {
+      return res.status(403).json({ message: 'Please verify your email before logging in.' });
     }
+
+    // ✅ Always check password first
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch) {
+      return res.status(400).json({ message: 'Invalid credentials' });
+    }
+
+    // ✅ Admin bypass for convenience
+    if (user.isAdmin) {
+      if (deviceFingerprint && user.deviceFingerprint !== deviceFingerprint) {
+        user.deviceFingerprint = deviceFingerprint;
+        user.isDeviceVerified = true;
+        await user.save();
+      }
+      return res.status(200).json({
+        token: generateToken(user._id),
+        user: {
+          id: user._id,
+          firstName: user.firstName,
+          lastName: user.lastName,
+          email: user.email,
+          phoneNumber: user.phoneNumber,
+          isEmailVerified: user.isEmailVerified,
+          isAdmin: user.isAdmin,
+          isVendor: user.isVendor,
+          vendorStatus: user.vendorStatus,
+        },
+        message: 'Admin login successful. Device verification bypassed for convenience.',
+      });
+    }
+
+    // ✅ Auto-trust new device after password reset
+    if (!user.passwordResetToken && !user.passwordResetExpires) {
+      if (deviceFingerprint && user.deviceFingerprint !== deviceFingerprint) {
+        user.deviceFingerprint = deviceFingerprint;
+        user.isDeviceVerified = true;
+        await user.save();
+        return res.status(200).json({
+          token: generateToken(user._id),
+          user: {
+            id: user._id,
+            firstName: user.firstName,
+            lastName: user.lastName,
+            email: user.email,
+            phoneNumber: user.phoneNumber,
+            isEmailVerified: user.isEmailVerified,
+            isVendor: user.isVendor,
+            vendorStatus: user.vendorStatus,
+          },
+          message: 'Login successful after password reset. New device trusted automatically.',
+        });
+      }
+    }
+
+    // ✅ Standard device verification for regular users
+    if (!user.deviceFingerprint) {
+      user.deviceFingerprint = deviceFingerprint;
+      user.isDeviceVerified = true;
+      await user.save();
+      return res.status(200).json({
+        token: generateToken(user._id),
+        user: {
+          id: user._id,
+          firstName: user.firstName,
+          lastName: user.lastName,
+          email: user.email,
+          phoneNumber: user.phoneNumber,
+          isEmailVerified: user.isEmailVerified,
+          isVendor: user.isVendor,
+          vendorStatus: user.vendorStatus,
+        },
+        message: 'Login successful. Device captured as original.',
+      });
+    } else {
+      if (user.deviceFingerprint !== deviceFingerprint) {
+        const deviceVerificationToken = crypto.randomBytes(32).toString('hex');
+        user.deviceVerificationToken = deviceVerificationToken;
+        user.deviceVerificationExpires = Date.now() + 24 * 60 * 60 * 1000;
+        await user.save();
+        await sendVerificationEmail(user.email, deviceVerificationToken, 'device');
+
+        return res.status(403).json({
+          message: 'New device detected. Please check your email to verify this device.',
+        });
+      } else {
+        return res.status(200).json({
+          token: generateToken(user._id),
+          user: {
+            id: user._id,
+            firstName: user.firstName,
+            lastName: user.lastName,
+            email: user.email,
+            phoneNumber: user.phoneNumber,
+            isEmailVerified: user.isEmailVerified,
+            isVendor: user.isVendor,
+            vendorStatus: user.vendorStatus,
+          },
+          message: 'Login successful from original device.',
+        });
+      }
+    }
+  } catch (error) {
+    console.error('Login error:', error);
+    res.status(500).json({ message: 'Server error during login' });
+  }
 });
 
 // --- Route 3: User Login ---
@@ -556,7 +574,7 @@ router.post('/forgot-password', async (req, res) => {
         user.passwordResetExpires = Date.now() + 3600000; // 1 hour
         await user.save();
         await sendVerificationEmail(user.email, resetToken, 'password');
-        res.status(200).json({ message: 'If an account with that email exists, a password reset link has been sent.' });
+        res.status(200).json({ message: 'A password reset link has been sent. to this email' });
     } catch (error) {
         console.error('Forgot password error:', error);
         res.status(500).json({ message: 'Server error during password reset request.' });
@@ -863,29 +881,61 @@ router.get('/reset-password-form/:token', async (req, res) => {
 
 // --- Route 7: Submit New Password (POST request from the HTML form) ---
 router.post('/reset-password-submit', async (req, res) => {
-    const { token, newPassword } = req.body;
-    if (!newPassword || !token) {
-        return res.status(400).json({ message: 'New password and token are required.' });
+  const { token, newPassword } = req.body;
+  if (!newPassword || !token) {
+    return res.status(400).json({ message: 'New password and token are required.' });
+  }
+
+  try {
+    const user = await User.findOne({
+      passwordResetToken: token,
+      passwordResetExpires: { $gt: Date.now() },
+    });
+
+    if (!user) {
+      return res.status(400).json({ message: 'Password reset link is invalid or has expired.' });
     }
-    try {
-        const user = await User.findOne({
-            passwordResetToken: token,
-            passwordResetExpires: { $gt: Date.now() },
-        });
-        if (!user) {
-            return res.status(400).json({ message: 'Password reset link is invalid or has expired.' });
-        }
-        const salt = await bcrypt.genSalt(10);
-        user.password = await bcrypt.hash(newPassword, salt);
-        user.passwordResetToken = undefined;
-        user.passwordResetExpires = undefined;
-        await user.save();
-        res.status(200).json({ message: 'Password has been reset successfully. You can now log in with your new password.' });
-    } catch (error) {
-        console.error('Reset password error:', error);
-        res.status(500).json({ message: 'Server error during password reset.' });
-    }
+
+    // ✅ Don’t hash here, let pre-save hook handle it
+    user.password = newPassword;
+    user.passwordResetToken = undefined;
+    user.passwordResetExpires = undefined;
+
+    await user.save();
+
+    return res.status(200).json({
+      message: 'Password has been reset successfully. You can now log in with your new password.',
+    });
+  } catch (error) {
+    console.error('Reset password error:', error);
+    return res.status(500).json({ message: 'Server error during password reset.' });
+  }
 });
+
+// router.post('/reset-password-submit', async (req, res) => {
+//     const { token, newPassword } = req.body;
+//     if (!newPassword || !token) {
+//         return res.status(400).json({ message: 'New password and token are required.' });
+//     }
+//     try {
+//         const user = await User.findOne({
+//             passwordResetToken: token,
+//             passwordResetExpires: { $gt: Date.now() },
+//         });
+//         if (!user) {
+//             return res.status(400).json({ message: 'Password reset link is invalid or has expired.' });
+//         }
+//         const salt = await bcrypt.genSalt(10);
+//         user.password = await bcrypt.hash(newPassword, salt);
+//         user.passwordResetToken = undefined;
+//         user.passwordResetExpires = undefined;
+//         await user.save();
+//         res.status(200).json({ message: 'Password has been reset successfully. You can now log in with your new password.' });
+//     } catch (error) {
+//         console.error('Reset password error:', error);
+//         res.status(500).json({ message: 'Server error during password reset.' });
+//     }
+// });
 
 // @desc    Mark a user's notification as read
 // @route   PUT /api/auth/notifications/mark-read/:notificationId
