@@ -1046,7 +1046,15 @@ router.delete('/addresses/:index', protect, async (req, res) => {
 // @desc    Update user profile (first name, last name, email, phone, profile pic)
 // @route   PUT /api/auth/profile
 // @access  Private
+
+
+// Example: routes/userRoutes.js or similar file
+
 router.put('/profile', protect, async (req, res) => {
+    // Assuming 'path' and 'fs' are imported: 
+    // const path = require('path'); 
+    // const fs = require('fs');
+
     const { firstName, lastName, email, phoneNumber, profilePicBase64 } = req.body;
 
     try {
@@ -1068,19 +1076,16 @@ router.put('/profile', protect, async (req, res) => {
                 return res.status(400).json({ message: 'Email already in use by another account.' });
             }
             user.email = email;
-            // You might want to set isEmailVerified to false here and trigger re-verification
-            // For now, we'll assume email change doesn't invalidate verification without explicit logic
         }
 
         // Handle profile picture upload if base64 data is provided
         if (profilePicBase64) {
-            // It's highly recommended to use Cloudinary for profile pictures too,
-            // similar to how product images are handled.
-            // For local storage (as currently implemented):
             const base64Data = profilePicBase64.replace(/^data:image\/\w+;base64,/, "");
             const buffer = Buffer.from(base64Data, 'base64');
-            const fileName = `profile_${user._id}_${Date.now()}.png`; // Unique filename
-            const uploadDir = path.join(__dirname, '../uploads/profile_pics'); // Define upload directory
+            
+            // Using user ID and current timestamp ensures a globally unique filename
+            const fileName = `profile_${user._id}_${Date.now()}.png`; 
+            const uploadDir = path.join(__dirname, '../uploads/profile_pics'); 
 
             // Create directory if it doesn't exist
             if (!fs.existsSync(uploadDir)) {
@@ -1090,8 +1095,15 @@ router.put('/profile', protect, async (req, res) => {
             const filePath = path.join(uploadDir, fileName);
             fs.writeFileSync(filePath, buffer);
 
-            // Store the relative URL in the database
-            user.profilePicUrl = `/uploads/profile_pics/${fileName}`;
+            // 🌟 CACHE-BUSTING FIX 🌟
+            // 1. Get the base URL path (e.g., /uploads/profile_pics/...)
+            const newProfilePath = `/uploads/profile_pics/${fileName}`;
+
+            // 2. Append a cache-busting query parameter using the current timestamp
+            const cacheBustingUrl = `${newProfilePath}?v=${Date.now()}`;
+            
+            // 3. Store the new, unique URL in the database
+            user.profilePicUrl = cacheBustingUrl; 
         }
 
         await user.save();
@@ -1099,9 +1111,12 @@ router.put('/profile', protect, async (req, res) => {
         // Respond with updated user data (excluding sensitive info)
         const updatedUser = await User.findById(req.user._id).select('-password -emailVerificationToken -emailVerificationExpires -deviceVerificationToken -deviceVerificationExpires -passwordResetToken -passwordResetExpires');
 
+        // Ensure you return the entire updated user object, which contains the new profilePicUrl
         res.status(200).json({
             message: 'Profile updated successfully!',
-            user: updatedUser
+            user: updatedUser,
+            // You can optionally return the profilePicUrl at the root for easier client access:
+            profilePicUrl: updatedUser.profilePicUrl 
         });
 
     } catch (error) {
@@ -1109,6 +1124,69 @@ router.put('/profile', protect, async (req, res) => {
         res.status(500).json({ message: 'Server error updating profile.' });
     }
 });
+// router.put('/profile', protect, async (req, res) => {
+//     const { firstName, lastName, email, phoneNumber, profilePicBase64 } = req.body;
+
+//     try {
+//         const user = await User.findById(req.user._id);
+
+//         if (!user) {
+//             return res.status(404).json({ message: 'User not found.' });
+//         }
+
+//         // Update basic profile fields
+//         user.firstName = firstName || user.firstName;
+//         user.lastName = lastName || user.lastName;
+//         user.phoneNumber = phoneNumber || user.phoneNumber;
+
+//         // Only update email if it's different and not already taken by another user
+//         if (email && email !== user.email) {
+//             const emailExists = await User.findOne({ email });
+//             if (emailExists && emailExists._id.toString() !== user._id.toString()) {
+//                 return res.status(400).json({ message: 'Email already in use by another account.' });
+//             }
+//             user.email = email;
+//             // You might want to set isEmailVerified to false here and trigger re-verification
+//             // For now, we'll assume email change doesn't invalidate verification without explicit logic
+//         }
+
+//         // Handle profile picture upload if base64 data is provided
+//         if (profilePicBase64) {
+//             // It's highly recommended to use Cloudinary for profile pictures too,
+//             // similar to how product images are handled.
+//             // For local storage (as currently implemented):
+//             const base64Data = profilePicBase64.replace(/^data:image\/\w+;base64,/, "");
+//             const buffer = Buffer.from(base64Data, 'base64');
+//             const fileName = `profile_${user._id}_${Date.now()}.png`; // Unique filename
+//             const uploadDir = path.join(__dirname, '../uploads/profile_pics'); // Define upload directory
+
+//             // Create directory if it doesn't exist
+//             if (!fs.existsSync(uploadDir)) {
+//                 fs.mkdirSync(uploadDir, { recursive: true });
+//             }
+
+//             const filePath = path.join(uploadDir, fileName);
+//             fs.writeFileSync(filePath, buffer);
+
+//             // Store the relative URL in the database
+//             user.profilePicUrl = `/uploads/profile_pics/${fileName}`;
+//         }
+
+//         await user.save();
+
+//         // Respond with updated user data (excluding sensitive info)
+//         const updatedUser = await User.findById(req.user._id).select('-password -emailVerificationToken -emailVerificationExpires -deviceVerificationToken -deviceVerificationExpires -passwordResetToken -passwordResetExpires');
+
+//         res.status(200).json({
+//             message: 'Profile updated successfully!',
+//             user: updatedUser
+//         });
+
+//     } catch (error) {
+//         console.error('Error updating profile:', error);
+//         res.status(500).json({ message: 'Server error updating profile.' });
+//     }
+// });
 
 
 module.exports = router;
