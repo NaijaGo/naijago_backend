@@ -163,150 +163,309 @@ router.get('/vendor', protect, authorizeRoles('vendor', 'admin'), async (req, re
 });
 
 
+// @desc     Update order to paid + verify Flutterwave + credit vendor (85%) + update metrics
+// @route    PUT /api/orders/:id/pay
+// @access   Private
+router.put('/:id/pay', protect, async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const order = await Order.findById(req.params.id)
+      .populate({
+        path: 'orderItems.vendor',
+        select: 'businessName'
+      })
+      .session(session);
+
+    if (!order) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(404).json({ message: 'Order not found' });
+    }
+
+    if (order.isPaid) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({ message: 'Order is already paid' });
+    }
+
+    if (order.user.toString() !== req.user.id.toString()) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(401).json({ message: 'Not authorized to modify this order' });
+    }
+
+    const { transaction_id } = req.body;
+    if (!transaction_id) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({ message: 'Transaction ID is required' });
+    }
+
+    // ✅ Verify payment with Flutterwave
+    const flwResponse = await axios.get(
+      `https://api.flutterwave.com/v3/transactions/${transaction_id}/verify`,
+      {
+        headers: { Authorization: `Bearer ${process.env.FLUTTERWAVE_SECRET_KEY}` }
+      }
+    );
+
+    const flwData = flwResponse.data;
+
+    // ❌ If verification fails, remove order
+    if (flwData.status !== "success" || flwData.data.status !== "successful") {
+      await Order.deleteOne({ _id: order._id }, { session });
+      await session.commitTransaction();
+      session.endSession();
+      return res.status(400).json({
+        message: 'Payment verification failed and order has been removed.',
+        flutterwave: flwData
+      });
+    }
+
+    // ✅ Verified — update payment and metrics
+    order.isPaid = true;
+    order.paidAt = Date.now();
+    order.paymentResult = {
+      id: flwData.data.id,
+      status: flwData.data.status,
+      tx_ref: flwData.data.tx_ref,
+      flw_ref: flwData.data.flw_ref,
+      amount: flwData.data.amount,
+      currency: flwData.data.currency,
+      email_address: flwData.data.customer.email,
+    };
+
+    const vendorUpdates = new Map();
+    const productUpdates = [];
+
+    // Loop through order items
+    for (const item of order.orderItems) {
+      if (!item.vendor) continue;
+
+      const vendorId = item.vendor._id.toString();
+      const revenue = item.price * item.quantity;
+      const vendorEarning = revenue * 0.85;   // 💰 Vendor gets 85%
+      const commission = revenue * 0.15;      // 💼 Platform keeps 15%
+
+      // TODO: track commission here later (e.g., save to Commission collection)
+
+      const soldCount = item.quantity;
+
+      if (!vendorUpdates.has(vendorId)) {
+        vendorUpdates.set(vendorId, { revenue: 0, soldCount: 0 });
+      }
+
+      vendorUpdates.get(vendorId).revenue += vendorEarning;
+      vendorUpdates.get(vendorId).soldCount += soldCount;
+
+      productUpdates.push(
+        Product.findByIdAndUpdate(
+          item.product,
+          { $inc: { salesCount: soldCount, stockQuantity: -soldCount } },
+          { new: true, session }
+        )
+      );
+    }
+
+    await Promise.all(productUpdates);
+
+    // Apply vendor wallet credits
+    const userUpdatePromises = [];
+    for (const [vendorId, updates] of vendorUpdates.entries()) {
+      userUpdatePromises.push(
+        User.findByIdAndUpdate(
+          vendorId,
+          {
+            $inc: {
+              vendorWalletBalance: updates.revenue,
+              productsSold: updates.soldCount,
+              productsUnsold: -updates.soldCount,
+            },
+            $push: {
+              notifications: {
+                $each: [
+                  {
+                    type: 'payment_received',
+                    message: `You have received ₦${updates.revenue.toFixed(2)} (after 15% commission) for a new order.`,
+                    isRead: false,
+                    createdAt: new Date(),
+                  },
+                ],
+                $position: 0,
+              },
+            },
+          },
+          { new: true, session }
+        )
+      );
+    }
+
+    await Promise.all(userUpdatePromises);
+
+    const updatedOrder = await order.save({ session });
+    await session.commitTransaction();
+    session.endSession();
+
+    res.json(updatedOrder);
+
+  } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
+    console.error('Error verifying payment and updating order:', error.response?.data || error.message);
+    res.status(500).json({ message: 'Server Error', error: error.response?.data || error.message });
+  }
+});
+
+
+
+
+
 // @desc    Update order to paid + verify Flutterwave + credit vendor + update metrics
 // @route   PUT /api/orders/:id/pay
 // @access  Private
-router.put('/:id/pay', protect, async (req, res) => {
-    const session = await mongoose.startSession();
-    session.startTransaction();
+// router.put('/:id/pay', protect, async (req, res) => {
+//     const session = await mongoose.startSession();
+//     session.startTransaction();
 
-    try {
-        const order = await Order.findById(req.params.id)
-            .populate({
-                path: 'orderItems.vendor',
-                select: 'businessName'
-            })
-            .session(session);
+//     try {
+//         const order = await Order.findById(req.params.id)
+//             .populate({
+//                 path: 'orderItems.vendor',
+//                 select: 'businessName'
+//             })
+//             .session(session);
 
-        if (!order) {
-            await session.abortTransaction();
-            session.endSession();
-            return res.status(404).json({ message: 'Order not found' });
-        }
+//         if (!order) {
+//             await session.abortTransaction();
+//             session.endSession();
+//             return res.status(404).json({ message: 'Order not found' });
+//         }
 
-        if (order.isPaid) {
-            await session.abortTransaction();
-            session.endSession();
-            return res.status(400).json({ message: 'Order is already paid' });
-        }
+//         if (order.isPaid) {
+//             await session.abortTransaction();
+//             session.endSession();
+//             return res.status(400).json({ message: 'Order is already paid' });
+//         }
 
-        if (order.user.toString() !== req.user.id.toString()) {
-            await session.abortTransaction();
-            session.endSession();
-            return res.status(401).json({ message: 'Not authorized to modify this order' });
-        }
+//         if (order.user.toString() !== req.user.id.toString()) {
+//             await session.abortTransaction();
+//             session.endSession();
+//             return res.status(401).json({ message: 'Not authorized to modify this order' });
+//         }
 
-        const { transaction_id } = req.body;
-        if (!transaction_id) {
-            await session.abortTransaction();
-            session.endSession();
-            return res.status(400).json({ message: 'Transaction ID is required' });
-        }
+//         const { transaction_id } = req.body;
+//         if (!transaction_id) {
+//             await session.abortTransaction();
+//             session.endSession();
+//             return res.status(400).json({ message: 'Transaction ID is required' });
+//         }
 
-        const flwResponse = await axios.get(
-            `https://api.flutterwave.com/v3/transactions/${transaction_id}/verify`,
-            {
-                headers: { Authorization: `Bearer ${process.env.FLUTTERWAVE_SECRET_KEY}` }
-            }
-        );
+//         const flwResponse = await axios.get(
+//             `https://api.flutterwave.com/v3/transactions/${transaction_id}/verify`,
+//             {
+//                 headers: { Authorization: `Bearer ${process.env.FLUTTERWAVE_SECRET_KEY}` }
+//             }
+//         );
 
-        const flwData = flwResponse.data;
+//         const flwData = flwResponse.data;
 
-        // ✅ IMPORTANT: If verification fails, delete the order to prevent orphaned data.
-        if (flwData.status !== "success" || flwData.data.status !== "successful") {
-            // Delete the order record because the payment failed
-            await Order.deleteOne({ _id: order._id }, { session });
-            await session.commitTransaction();
-            session.endSession();
-            return res.status(400).json({
-                message: 'Payment verification failed and order has been removed.',
-                flutterwave: flwData
-            });
-        }
+//         // ✅ IMPORTANT: If verification fails, delete the order to prevent orphaned data.
+//         if (flwData.status !== "success" || flwData.data.status !== "successful") {
+//             // Delete the order record because the payment failed
+//             await Order.deleteOne({ _id: order._id }, { session });
+//             await session.commitTransaction();
+//             session.endSession();
+//             return res.status(400).json({
+//                 message: 'Payment verification failed and order has been removed.',
+//                 flutterwave: flwData
+//             });
+//         }
 
-        // If verified, proceed with updating the order and user/product data
-        order.isPaid = true;
-        order.paidAt = Date.now();
-        order.paymentResult = {
-            id: flwData.data.id,
-            status: flwData.data.status,
-            tx_ref: flwData.data.tx_ref,
-            flw_ref: flwData.data.flw_ref,
-            amount: flwData.data.amount,
-            currency: flwData.data.currency,
-            email_address: flwData.data.customer.email,
-        };
+//         // If verified, proceed with updating the order and user/product data
+//         order.isPaid = true;
+//         order.paidAt = Date.now();
+//         order.paymentResult = {
+//             id: flwData.data.id,
+//             status: flwData.data.status,
+//             tx_ref: flwData.data.tx_ref,
+//             flw_ref: flwData.data.flw_ref,
+//             amount: flwData.data.amount,
+//             currency: flwData.data.currency,
+//             email_address: flwData.data.customer.email,
+//         };
 
-        const vendorUpdates = new Map();
-        const productUpdates = [];
+//         const vendorUpdates = new Map();
+//         const productUpdates = [];
 
-        for (const item of order.orderItems) {
-            if (!item.vendor) continue;
+//         for (const item of order.orderItems) {
+//             if (!item.vendor) continue;
 
-            const vendorId = item.vendor._id.toString();
-            const revenue = item.price * item.quantity;
-            const soldCount = item.quantity;
+//             const vendorId = item.vendor._id.toString();
+//             const revenue = item.price * item.quantity;
+//             const soldCount = item.quantity;
 
-            if (!vendorUpdates.has(vendorId)) {
-                vendorUpdates.set(vendorId, { revenue: 0, soldCount: 0 });
-            }
-            vendorUpdates.get(vendorId).revenue += revenue;
-            vendorUpdates.get(vendorId).soldCount += soldCount;
+//             if (!vendorUpdates.has(vendorId)) {
+//                 vendorUpdates.set(vendorId, { revenue: 0, soldCount: 0 });
+//             }
+//             vendorUpdates.get(vendorId).revenue += revenue;
+//             vendorUpdates.get(vendorId).soldCount += soldCount;
 
-            productUpdates.push(
-                Product.findByIdAndUpdate(
-                    item.product,
-                    { $inc: { salesCount: soldCount, stockQuantity: -soldCount } },
-                    { new: true, session }
-                )
-            );
-        }
+//             productUpdates.push(
+//                 Product.findByIdAndUpdate(
+//                     item.product,
+//                     { $inc: { salesCount: soldCount, stockQuantity: -soldCount } },
+//                     { new: true, session }
+//                 )
+//             );
+//         }
 
-        await Promise.all(productUpdates);
+//         await Promise.all(productUpdates);
 
-        const userUpdatePromises = [];
-        for (const [vendorId, updates] of vendorUpdates.entries()) {
-            userUpdatePromises.push(
-                User.findByIdAndUpdate(
-                    vendorId,
-                    {
-                        $inc: {
-                            vendorWalletBalance: updates.revenue,
-                            productsSold: updates.soldCount,
-                            productsUnsold: -updates.soldCount,
-                        },
-                        $push: {
-                            notifications: {
-                                $each: [{
-                                    type: 'payment_received',
-                                    message: `You have received ₦${updates.revenue.toFixed(2)} for a new order.`,
-                                    isRead: false,
-                                    createdAt: new Date(),
-                                }],
-                                $position: 0,
-                            },
-                        },
-                    },
-                    { new: true, session }
-                )
-            );
-        }
+//         const userUpdatePromises = [];
+//         for (const [vendorId, updates] of vendorUpdates.entries()) {
+//             userUpdatePromises.push(
+//                 User.findByIdAndUpdate(
+//                     vendorId,
+//                     {
+//                         $inc: {
+//                             vendorWalletBalance: updates.revenue,
+//                             productsSold: updates.soldCount,
+//                             productsUnsold: -updates.soldCount,
+//                         },
+//                         $push: {
+//                             notifications: {
+//                                 $each: [{
+//                                     type: 'payment_received',
+//                                     message: `You have received ₦${updates.revenue.toFixed(2)} for a new order.`,
+//                                     isRead: false,
+//                                     createdAt: new Date(),
+//                                 }],
+//                                 $position: 0,
+//                             },
+//                         },
+//                     },
+//                     { new: true, session }
+//                 )
+//             );
+//         }
 
-        await Promise.all(userUpdatePromises);
+//         await Promise.all(userUpdatePromises);
 
-        const updatedOrder = await order.save({ session });
-        await session.commitTransaction();
-        session.endSession();
+//         const updatedOrder = await order.save({ session });
+//         await session.commitTransaction();
+//         session.endSession();
 
-        res.json(updatedOrder);
+//         res.json(updatedOrder);
 
-    } catch (error) {
-        await session.abortTransaction();
-        session.endSession();
-        console.error('Error verifying payment and updating order:', error.response?.data || error.message);
-        res.status(500).json({ message: 'Server Error', error: error.response?.data || error.message });
-    }
-});
+//     } catch (error) {
+//         await session.abortTransaction();
+//         session.endSession();
+//         console.error('Error verifying payment and updating order:', error.response?.data || error.message);
+//         res.status(500).json({ message: 'Server Error', error: error.response?.data || error.message });
+//     }
+// });
 
 // @desc    Update order status by dispatch rider
 // @route   PUT /api/orders/:id/dispatch-status
