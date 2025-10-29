@@ -56,6 +56,8 @@ app.use('/api/orders', require('./routes/orderRoutes'));
 app.use('/api/reviews', require('./routes/reviewsRoutes'));
 app.use('/api/wallet', require('./routes/walletRoutes'));
 app.use('/api/returns', require('./routes/returnsRoutes'));
+app.use('/api/chat', require('./routes/chatRoutes'));
+app.use('/api/chatbot', require('./routes/chatbotRoutes'));
 app.use('/api/disputes', require('./routes/disputesRoutes'));
 app.use('/api/uploads', require('./routes/uploadsRoutes'));
 
