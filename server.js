@@ -215,73 +215,29 @@ io.on('connection', (socket) => {
 
     // ========== Chat session handlers (UPDATED) ==========
 
-//     // join_chat: client joins room and requests history
-//     socket.on('join_chat', async (payload, cb) => {
-//       try {
-//         const { sessionId } = payload || {};
-//         if (!sessionId) return cb && cb({ error: 'sessionId required' });
-
-//         socket.join(`chat_${sessionId}`);
-
-//         const session = await ChatSession.findById(sessionId).lean();
-//         const messages = session
-//           ? await ChatMessage.find({ session: session._id }).sort({ createdAt: 1 }).lean()
-//           : [];
-//         
-//         // If a pharmacist is connecting, update their availability status in DB and notify user if they are the assigned pharmacist
-//         if (userRole === 'pharmacist' && userId) {
-//           // This ensures that if a pharmacist connects, they are marked as available in the DB
-//           await User.findByIdAndUpdate(userId, { isAvailable: true }); 
-//         }
-
-//         return cb && cb({ success: true, session, messages });
-//       } catch (err) {
-//         console.error('join_chat error', err);
-//         return cb && cb({ error: 'join failed' });
-//       }
-//     });
-
-    // ... (Lines 265 - 280)
-
     // join_chat: client joins room and requests history
     socket.on('join_chat', async (payload, cb) => {
       try {
         const { sessionId } = payload || {};
-        if (!sessionId) {
-            console.error('join_chat: sessionId required');
-            // 🔑 FIX: Return a clean error object on missing ID
-            return cb && cb({ success: false, message: 'Session ID is required' });
-        }
+        if (!sessionId) return cb && cb({ error: 'sessionId required' });
 
         socket.join(`chat_${sessionId}`);
 
         const session = await ChatSession.findById(sessionId).lean();
-        
-        if (!session) {
-            console.error(`join_chat: Session not found for ID: ${sessionId}`);
-            // 🔑 FIX: Return a clean error object if session is not found
-            return cb && cb({ success: false, message: 'Chat session not found' });
-        }
-        
-        const messages = await ChatMessage.find({ session: session._id }).sort({ createdAt: 1 }).lean();
-
+        const messages = session
+          ? await ChatMessage.find({ session: session._id }).sort({ createdAt: 1 }).lean()
+          : [];
+        
         // If a pharmacist is connecting, update their availability status in DB and notify user if they are the assigned pharmacist
         if (userRole === 'pharmacist' && userId) {
+          // This ensures that if a pharmacist connects, they are marked as available in the DB
           await User.findByIdAndUpdate(userId, { isAvailable: true }); 
         }
 
-        // 🔑 CRITICAL FIX: Ensure the successful object keys match Flutter's expected structure
-        // This is what Flutter is now expecting: { success: true, session: {...}, messages: [...] }
-        return cb && cb({ 
-            success: true, 
-            session: session, // The full session object
-            messages: messages // The array of messages (can be empty)
-        });
-        
+        return cb && cb({ success: true, session, messages });
       } catch (err) {
-        console.error('join_chat error:', err);
-        // 🔑 FIX: Return a clean error object on server error
-        return cb && cb({ success: false, message: 'Server error during chat join' });
+        console.error('join_chat error', err);
+        return cb && cb({ error: 'join failed' });
       }
     });
 
