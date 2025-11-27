@@ -260,116 +260,237 @@ io.on('connection', (socket) => {
       }
     });
 
+    // send_chat_message: core message flow (user -> AI/human)
+socket.on('send_chat_message', async (payload, cb) => {
+  try {
+    const { sessionId, text } = payload || {};
+    if (!sessionId || !text) return cb && cb({ error: 'sessionId and text required' });
+
+    const session = await ChatSession.findById(sessionId);
+    if (!session) return cb && cb({ error: 'session not found' });
+
+    // determine sender type
+    const senderType = userRole === 'pharmacist' ? 'pharmacist' : 'user';
+    const sender = userId || null;
+
+    // If session already assigned to a pharmacist and the sender is a pharmacist
+    if (session.pharmacist || senderType === 'pharmacist') {
+      // Only allow assigned pharmacist to send
+      if (userRole === 'pharmacist' && String(session.pharmacist) !== String(userId)) {
+        return cb && cb({ error: 'pharmacist is not assigned to this session' });
+      }
+      // Broadcast user's message even if pharmacist is handling
+      const userMsg = await ChatMessage.create({
+        session: session._id,
+        senderType,
+        sender,
+        message: text,
+      });
+      const outUser = {
+        id: userMsg._id,
+        session: String(session._id),
+        senderType: userMsg.senderType,
+        sender,
+        text: userMsg.message,
+        createdAt: userMsg.createdAt,
+      };
+      io.to(`chat_${sessionId}`).emit('new_message', outUser);
+      return cb && cb({ success: true, message: outUser });
+    }
+
+    // persist user message for AI/human flow
+    const userMsg = await ChatMessage.create({
+      session: session._id,
+      senderType,
+      sender,
+      message: text,
+    });
+
+    const outUser = {
+      id: userMsg._id,
+      session: String(session._id),
+      senderType: userMsg.senderType,
+      sender,
+      text: userMsg.message,
+      createdAt: userMsg.createdAt,
+    };
+
+    // broadcast user's message
+    io.to(`chat_${sessionId}`).emit('new_message', outUser);
+
+    // --- AI/Pharmacist Logic ---
+    // Check available pharmacists (online or DB flag)
+    let availablePharmacistId = onlinePharmacists.keys().next().value;
+    let availablePharmacistDetails = null;
+
+    if (availablePharmacistId) {
+      availablePharmacistDetails = await User.findById(availablePharmacistId, 'name');
+    } else {
+      availablePharmacistDetails = await User.findOne({ role: 'pharmacist', isAvailable: true }).lean();
+    }
+
+    // Notify pharmacist if available
+    if (availablePharmacistDetails) {
+      const pharmId = String(availablePharmacistDetails._id || availablePharmacistId);
+      const pharmacistSocketId = onlinePharmacists.get(pharmId);
+      if (pharmacistSocketId) {
+        io.to(pharmacistSocketId).emit('incoming_chat_request', {
+          sessionId: String(session._id),
+          userId: session.user,
+          textPreview: text.slice(0, 300),
+          createdAt: new Date(),
+        });
+      }
+
+      // system message to user
+      await emitSystemMessage(
+        session._id,
+        'A certified pharmacist has been notified. They will join the chat shortly. The AI is on standby.'
+      );
+
+      // 🔑 do NOT return here — allow AI fallback to run
+    }
+
+    // AI fallback
+    const aiReplyText = await getAIResponse(text);
+
+    const aiMsg = await ChatMessage.create({
+      session: session._id,
+      senderType: 'ai',
+      sender: null,
+      message: aiReplyText,
+    });
+
+    const outAi = {
+      id: aiMsg._id,
+      session: String(session._id),
+      senderType: 'ai',
+      sender: null,
+      text: aiMsg.message,
+      createdAt: aiMsg.createdAt,
+    };
+
+    io.to(`chat_${sessionId}`).emit('new_message', outAi);
+
+    return cb && cb({ success: true, message: outUser, aiReply: outAi });
+
+  } catch (err) {
+    console.error('send_chat_message error', err);
+    return cb && cb({ error: 'failed to send' });
+  }
+});
+
+
     // send_chat_message: core message flow (user -> AI/human)
-    socket.on('send_chat_message', async (payload, cb) => {
-      try {
-        const { sessionId, text } = payload || {};
-        if (!sessionId || !text) return cb && cb({ error: 'sessionId and text required' });
+//     socket.on('send_chat_message', async (payload, cb) => {
+//       try {
+//         const { sessionId, text } = payload || {};
+//         if (!sessionId || !text) return cb && cb({ error: 'sessionId and text required' });
 
-        const session = await ChatSession.findById(sessionId);
-        if (!session) return cb && cb({ error: 'session not found' });
+//         const session = await ChatSession.findById(sessionId);
+//         if (!session) return cb && cb({ error: 'session not found' });
 
-        // If session already assigned to a pharmacist (or pharmacist sent the message) -> human handles replies. AI stops.
-        if (session.pharmacist || senderType === 'pharmacist') {
-             // Only allow human pharmacist to send if they are assigned.
-             if (userRole === 'pharmacist' && String(session.pharmacist) !== String(userId)) {
-                 return cb && cb({ error: 'pharmacist is not assigned to this session' });
-            }
-            // 🛑 AI STOP POINT 🛑 The AI fallback is skipped when a pharmacist is assigned.
-            return cb && cb({ success: true, message: outUser }); 
-        }
+//         // If session already assigned to a pharmacist (or pharmacist sent the message) -> human handles replies. AI stops.
+//         if (session.pharmacist || senderType === 'pharmacist') {
+//              // Only allow human pharmacist to send if they are assigned.
+//              if (userRole === 'pharmacist' && String(session.pharmacist) !== String(userId)) {
+//                  return cb && cb({ error: 'pharmacist is not assigned to this session' });
+//             }
+//             // 🛑 AI STOP POINT 🛑 The AI fallback is skipped when a pharmacist is assigned.
+//             return cb && cb({ success: true, message: outUser }); 
+//         }
 
-        // determine sender type
-        const senderType = userRole === 'pharmacist' ? 'pharmacist' : 'user';
-        const sender = userId || null;
+//         // determine sender type
+//         const senderType = userRole === 'pharmacist' ? 'pharmacist' : 'user';
+//         const sender = userId || null;
 
-        // persist user message
-        const userMsg = await ChatMessage.create({
-          session: session._id,
-          senderType,
-          sender,
-          message: text,
-        });
+//         // persist user message
+//         const userMsg = await ChatMessage.create({
+//           session: session._id,
+//           senderType,
+//           sender,
+//           message: text,
+//         });
 
-        const outUser = {
-          id: userMsg._id,
-          session: String(session._id),
-          senderType: userMsg.senderType,
-          sender,
-          text: userMsg.message,
-          createdAt: userMsg.createdAt,
-        };
+//         const outUser = {
+//           id: userMsg._id,
+//           session: String(session._id),
+//           senderType: userMsg.senderType,
+//           sender,
+//           text: userMsg.message,
+//           createdAt: userMsg.createdAt,
+//         };
 
-        // broadcast user's message to the room
-        io.to(`chat_${sessionId}`).emit('new_message', outUser);
+//         // broadcast user's message to the room
+//         io.to(`chat_${sessionId}`).emit('new_message', outUser);
 
-        // *** AI/Pharmacist Logic: Only AI replies if pharmacist is NULL ***
+//         // *** AI/Pharmacist Logic: Only AI replies if pharmacist is NULL ***
 
-        // If no pharmacist assigned, check for availability / fall back to AI
-        
-        // Check for available pharmacists (online via socket OR marked isAvailable: true in DB)
-        let availablePharmacistId = onlinePharmacists.keys().next().value;
-        let availablePharmacistDetails = null;
+//         // If no pharmacist assigned, check for availability / fall back to AI
+//         
+//         // Check for available pharmacists (online via socket OR marked isAvailable: true in DB)
+//         let availablePharmacistId = onlinePharmacists.keys().next().value;
+//         let availablePharmacistDetails = null;
 
-        if (availablePharmacistId) {
-          availablePharmacistDetails = await User.findById(availablePharmacistId, 'name');
-        } else {
-          // No socket-connected pharmacist — check DB for any pharmacist marked isAvailable: true
-          availablePharmacistDetails = await User.findOne({ role: 'pharmacist', isAvailable: true }).lean();
-        }
+//         if (availablePharmacistId) {
+//           availablePharmacistDetails = await User.findById(availablePharmacistId, 'name');
+//         } else {
+//           // No socket-connected pharmacist — check DB for any pharmacist marked isAvailable: true
+//           availablePharmacistDetails = await User.findOne({ role: 'pharmacist', isAvailable: true }).lean();
+//         }
 
-        // If any pharmacist is available (either via socket or DB flag), notify them and queue the user.
-        if (availablePharmacistDetails) {
-          const pharmId = String(availablePharmacistDetails._id || availablePharmacistId);
+//         // If any pharmacist is available (either via socket or DB flag), notify them and queue the user.
+//         if (availablePharmacistDetails) {
+//           const pharmId = String(availablePharmacistDetails._id || availablePharmacistId);
 
-          // Send notification event to the specific pharmacist's socket (if they are online)
-          const pharmacistSocketId = onlinePharmacists.get(pharmId);
-          if (pharmacistSocketId) {
-            io.to(pharmacistSocketId).emit('incoming_chat_request', {
-              sessionId: String(session._id),
-              userId: session.user,
-              textPreview: text.slice(0, 300),
-              createdAt: new Date(),
-            });
-          }
+//           // Send notification event to the specific pharmacist's socket (if they are online)
+//           const pharmacistSocketId = onlinePharmacists.get(pharmId);
+//           if (pharmacistSocketId) {
+//             io.to(pharmacistSocketId).emit('incoming_chat_request', {
+//               sessionId: String(session._id),
+//               userId: session.user,
+//               textPreview: text.slice(0, 300),
+//               createdAt: new Date(),
+//             });
+//           }
 
-          // system message to user while waiting for claim
-          await emitSystemMessage(
-            session._id,
-            'A certified pharmacist has been notified. They will join the chat shortly. The AI is on standby.'
-          );
+//           // system message to user while waiting for claim
+//           await emitSystemMessage(
+//             session._id,
+//             'A certified pharmacist has been notified. They will join the chat shortly. The AI is on standby.'
+//           );
 
-          // 🔑 FIX: Removed the 'return' here to allow the AI fallback to run.
-          // return cb && cb({ success: true, message: outUser, waitingForPharmacist: true });
-        }
+//           // 🔑 FIX: Removed the 'return' here to allow the AI fallback to run.
+//           // return cb && cb({ success: true, message: outUser, waitingForPharmacist: true });
+//         }
 
-        // No pharmacist available OR if pharmacist was available but we continued -> call AI fallback
-        const aiReplyText = await getAIResponse(text);
+//         // No pharmacist available OR if pharmacist was available but we continued -> call AI fallback
+//         const aiReplyText = await getAIResponse(text);
 
-        const aiMsg = await ChatMessage.create({
-          session: session._id,
-          senderType: 'ai',
-          sender: null,
-          message: aiReplyText,
-        });
+//         const aiMsg = await ChatMessage.create({
+//           session: session._id,
+//           senderType: 'ai',
+//           sender: null,
+//           message: aiReplyText,
+//         });
 
-        const outAi = {
-          id: aiMsg._id,
-          session: String(session._id),
-          senderType: 'ai',
-          sender: null,
-          text: aiMsg.message,
-          createdAt: aiMsg.createdAt,
-        };
+//         const outAi = {
+//           id: aiMsg._id,
+//           session: String(session._id),
+//           senderType: 'ai',
+//           sender: null,
+//           text: aiMsg.message,
+//           createdAt: aiMsg.createdAt,
+//         };
 
-        io.to(`chat_${sessionId}`).emit('new_message', outAi);
+//         io.to(`chat_${sessionId}`).emit('new_message', outAi);
 
-        return cb && cb({ success: true, message: outUser, aiReply: outAi });
-      } catch (err) {
-        console.error('send_chat_message error', err);
-        return cb && cb({ error: 'failed to send' });
-      }
-    });
+//         return cb && cb({ success: true, message: outUser, aiReply: outAi });
+//       } catch (err) {
+//         console.error('send_chat_message error', err);
+//         return cb && cb({ error: 'failed to send' });
+//       }
+//     });
 
     // pharmacist_claim_session: pharmacist accepts a session (socket MUST be a pharmacist)
     socket.on('pharmacist_claim_session', async (payload, cb) => {
