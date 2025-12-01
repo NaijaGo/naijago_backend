@@ -259,6 +259,7 @@ router.post('/', protect, async (req, res) => {
         
         // --- Step 3: Create Shipment documents for each vendor ---
         for (const summary of shipmentSummaries) {
+            console.log("Incoming Shipment Summary for debugging:", summary);
             const newShipment = new Shipment({
                 mainOrder: createdMainOrder._id, // Link back to MainOrder
                 vendor: summary.vendorId,
@@ -274,7 +275,7 @@ router.post('/', protect, async (req, res) => {
                 platformFee: summary.platformFee,
                 shippingPrice: summary.shippingPrice,
                 
-                shipmentStatus: 'awaiting_payment', // Use this status until payment is confirmed
+                shipmentStatus: 'processing', // Use this status until payment is confirmed
                 isDelivered: false,
             });
 
