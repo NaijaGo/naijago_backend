@@ -75,7 +75,7 @@ router.get('/', protect, async (req, res) => {
 // @desc    Calculate total price, split by vendor, and return summary
 // @route   POST /api/orders/calculate_summary
 // @access  Private
-router.post('/calculate_summary', protect, async (req, res) => {
+router.post('/summary', protect, async (req, res) => {
     const { cartItems, shippingAddress, userLocation } = req.body;
     const PLATFORM_COMMISSION_RATE = 0.15; // 15% rate
 
