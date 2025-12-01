@@ -262,7 +262,7 @@ router.post('/', protect, async (req, res) => {
             console.log("Incoming Shipment Summary for debugging:", summary);
             const newShipment = new Shipment({
                 mainOrder: createdMainOrder._id, // Link back to MainOrder
-                vendor: summary.vendorId,
+                vendor: summary.vendor,
                 vendorLocation: summary.vendorLocation, 
                 items: summary.items.map(item => ({ // Ensure item structure is correct for Shipment model
                     product: item.product,
