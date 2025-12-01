@@ -2,7 +2,7 @@ const express = require('express');
 const User = require('../models/User'); // Import the User model
 const { protect, authorizeRoles } = require('../middleware/authMiddleware'); // Import the protect middleware
 const Product = require('../models/Product');
-const Order = require('../models/Order')
+const Order = require('../models/MainOrder')
 const router = express.Router();
 
 // --- Vendor Routes ---
