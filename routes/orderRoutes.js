@@ -33,7 +33,7 @@ function calculateDistance(lat1, lon1, lat2, lon2) {
 
 // --- Helper Function: Shipping Cost (Based on your N100/km rule) ---
 const calculateShippingCost = (distanceKm, city) => {
-    const ratePerKm = 100;
+    const ratePerKm = 200;
     let shippingPrice = distanceKm * ratePerKm;
     
     // Minimum flat fee as a business rule
@@ -457,10 +457,35 @@ router.put('/:id/pay/wallet', protect, async (req, res) => {
         const shipments = await Shipment.find({ mainOrder: mainOrder._id }).session(session);
         const productUpdates = [];
 
+
         for (const shipment of shipments) {
             // Update Shipment status to processing
             shipment.shipmentStatus = 'processing';
             await shipment.save({ session });
+
+            const message = `New paid order! Shipment ${shipment._id} is ready for processing. Platform Fee deducted: ₦${shipment.platformFee.toFixed(2)} will be retained.`;
+
+            await User.findByIdAndUpdate(
+                shipment.vendor,
+                {
+                    $push: {
+                        notifications: {
+                            $each: [
+                                {
+                                    type: 'new_order',
+                                    message: message,
+                                    isRead: false,
+                                    relatedModel: 'Shipment',
+                                    relatedId: shipment._id,
+                                },
+                            ],
+                            $position: 0, 
+                        },
+                    },
+                },
+                { new: true, session }
+            );
+            // END: NEW VENDOR NOTIFICATION FOR PAID ORDER
             
             // Queue product updates
             for (const item of shipment.items) {
@@ -664,7 +689,7 @@ router.put('/shipments/:id/deliver', protect, authorizeRoles('vendor', 'admin'),
                         $each: [
                             {
                                 type: 'delivery_payout',
-                                message: `Payout of ₦${vendorEarning.toFixed(2)} received for delivered shipment ${SHIPMENT_ID}.`,
+                                message: `Payout of ₦${vendorEarning.toFixed(2)} received for delivered shipment ${SHIPMENT_ID}. Platform Fee: ₦${commission.toFixed(2)}.`,
                                 isRead: false,
                                 relatedModel: 'Shipment',
                                 relatedId: shipment._id,
