@@ -741,6 +741,48 @@ router.put('/shipments/:id/deliver', protect, authorizeRoles('vendor', 'admin'),
 });
 
 
+
+// @desc    Update a specific Shipment's status to any valid non-delivered status
+// @route   PUT /api/orders/shipments/:id/status-update
+// @access  Private/Admin
+router.put('/shipments/:id/status-update', protect, authorizeRoles('admin'), async (req, res) => {
+    const { status } = req.body; // Expects a status like 'out_for_delivery'
+    const SHIPMENT_ID = req.params.id;
+
+    // Validate the incoming status against the Shipment enum values, excluding 'delivered' and 'awaiting_payment'
+    const validStatuses = ['processing', 'ready_for_pickup', 'out_for_delivery', 'returned', 'cancelled'];
+    
+    if (!validStatuses.includes(status)) {
+        return res.status(400).json({ 
+            message: `Invalid or non-updatable shipment status provided. Must be one of: ${validStatuses.join(', ')}` 
+        });
+    }
+
+    try {
+        const shipment = await Shipment.findById(SHIPMENT_ID);
+
+        if (!shipment) {
+            return res.status(404).json({ message: 'Shipment not found' });
+        }
+        
+        // Prevent accidental updates if already delivered
+        if (shipment.shipmentStatus === 'delivered') {
+            return res.status(400).json({ message: 'Cannot update status of an already delivered shipment.' });
+        }
+
+        // Update the status
+        shipment.shipmentStatus = status;
+        await shipment.save();
+
+        res.json({ message: `Shipment ${SHIPMENT_ID} status updated to ${status}.`, shipment });
+
+    } catch (error) {
+        console.error('Error during generic status update:', error);
+        res.status(500).json({ message: 'Server Error during status update.', error: error.message });
+    }
+});
+
+
 module.exports = router;
 
 
