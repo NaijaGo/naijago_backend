@@ -131,7 +131,126 @@ router.post(
 // GET ROUTES (UNCHANGED)
 // =============================================================
 
-// (All your GET routes remain the same — I DID NOT edit them)
+ //@desc    Get all products for the logged-in vendor
+// // @route   GET /api/products/myproducts
+// // @access  Private (Vendor only)
+// // IMPORTANT: This specific route MUST come BEFORE any general dynamic routes like /:id
+router.get('/myproducts', protect, async (req, res) => {
+    try {
+        // Ensure the user is a vendor
+        const user = await User.findById(req.user._id);
+        if (!user || !user.isVendor || user.vendorStatus !== 'approved') {
+            return res.status(403).json({ message: 'Access denied. Only approved vendors can view their products.' });
+        }
+
+        // Find products where the 'vendor' field matches the authenticated user's ID
+        const products = await Product.find({ vendor: req.user._id })
+            .populate('vendor', 'businessName');
+
+        res.status(200).json(products);
+    } catch (error) {
+        console.error('Error fetching vendor products:', error);
+        res.status(500).json({ message: 'Server error fetching vendor products.' });
+    }
+});
+
+// @desc    Get all new arrival products (for homepage)
+// @route   GET /api/products/newarrivals
+// @access  Public
+// NEW: This route must be placed before the /:id route.
+router.get('/newarrivals', async (req, res) => {
+    try {
+        const newArrivalsProducts = await Product.find({ isActive: true })
+            .sort({ createdAt: -1 }) // Sort by creation date, newest first
+            .limit(10) // Limit to a reasonable number of products
+            .populate('vendor', 'businessName');
+        
+        res.status(200).json(newArrivalsProducts);
+    } catch (error) {
+        console.error('Error fetching new arrival products:', error);
+        res.status(500).json({ message: 'Server error fetching new arrival products.' });
+    }
+});
+
+// @desc    Get all products on flash sale (for homepage)
+// @route   GET /api/products/flashsales
+// @access  Public
+// CORRECTED: This route is moved to come BEFORE the general /:id route.
+router.get('/flashsales', async (req, res) => {
+    try {
+        // Find all products that are active and marked as a flash sale
+        const flashSalesProducts = await Product.find({ isActive: true, is_flashsale: true }).populate('vendor', 'businessName');
+        
+        res.status(200).json(flashSalesProducts);
+    } catch (error) {
+        console.error('Error fetching flash sale products:', error);
+        res.status(500).json({ message: 'Server error fetching flash sale products.' });
+    }
+});
+
+// @desc    Get products by a specific vendor (publicly viewable vendor stores)
+// @route   GET /api/products/vendor/:vendorId
+// @access  Public
+// IMPORTANT: This specific route MUST come BEFORE the general /:id route
+router.get('/vendor/:vendorId', async (req, res) => {
+    try {
+        const products = await Product.find({ vendor: req.params.vendorId, isActive: true }).populate('vendor', 'firstName lastName businessName');
+        if (products.length === 0) {
+            return res.status(404).json({ message: 'No products found for this vendor.' });
+        }
+        res.status(200).json(products);
+    } catch (error) {
+        console.error('Error fetching products by vendor:', error);
+        if (error.name === 'CastError') {
+            return res.status(400).json({ message: 'Invalid vendor ID format.' });
+        }
+        res.status(500).json({ message: 'Server error fetching products for vendor.' });
+    }
+});
+
+
+// @desc    Get a single product by ID
+// @route   GET /api/products/:id
+// @access  Public
+// IMPORTANT: This general dynamic route MUST come AFTER all more specific GET routes
+router.get('/:id', async (req, res) => {
+    try {
+        const product = await Product.findById(req.params.id).populate('vendor', 'businessName');
+        if (!product) {
+            return res.status(404).json({ message: 'Product not found.' });
+        }
+        res.status(200).json(product);
+    } catch (error) {
+        console.error('Error fetching single product:', error);
+        if (error.name === 'CastError') {
+            return res.status(400).json({ message: 'Invalid product ID format.' });
+        }
+        res.status(500).json({ message: 'Server error fetching product.' });
+    }
+});
+
+// @desc    Get all products (for homepage, public access)
+// @route   GET /api/products
+// @access  Public
+router.get('/', async (req, res) => {
+  try {
+    const { category } = req.query;
+    const filter = { isActive: true };
+
+    if (category) {
+      filter.category = { $regex: new RegExp(`^${category}$`, 'i') };
+    }
+
+    const products = await Product.find(filter).populate('vendor', 'businessName');
+    console.log(`Backend: Fetched ${products.length} products${category ? ` for category "${category}"` : ''}.`);
+    
+    res.status(200).json(products);
+  } catch (error) {
+    console.error('Error fetching products:', error);
+    res.status(500).json({ message: 'Server error fetching products.' });
+  }
+});
+
 
 // =============================================================
 // UPDATE PRODUCT
