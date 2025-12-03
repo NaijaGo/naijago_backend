@@ -370,10 +370,22 @@ router.put('/:id/status', protect, authorizeRoles('admin'), async (req, res) => 
     const { status } = req.body;
     const MAIN_ORDER_ID = req.params.id;
     
-    // 1. Basic validation
-    const validStatuses = ['shipped', 'delivered', 'processing', 'cancelled', 'returned'];
-    if (!validStatuses.includes(status)) {
-        return res.status(400).json({ message: `Invalid main order status: ${status}` });
+    // 1. Basic validation: MUST match the Mongoose model's enum
+    const validStatuses = [
+        'pending_payment', 
+        'processing', 
+        'partially_shipped', 
+        'shipped', 
+        'delivered', 
+        'completed',
+        // 'cancelled' is also valid per enum, but typically managed separately
+    ];
+    
+    // Include 'cancelled' as it is a valid status change for an Admin to force
+    const allValidStatuses = [...validStatuses, 'cancelled'];
+
+    if (!allValidStatuses.includes(status)) {
+        return res.status(400).json({ message: `Invalid main order status: ${status}. Must be one of: ${allValidStatuses.join(', ')}` });
     }
 
     try {
@@ -386,17 +398,19 @@ router.put('/:id/status', protect, authorizeRoles('admin'), async (req, res) => 
         // 2. Update the status
         mainOrder.mainOrderStatus = status;
 
-        // Optionally, update the isDelivered flag if the status is 'delivered'
+        // Note: The isDelivered field does not exist on your MainOrder model (per the schema you provided)
+        // I'm commenting out the isDelivered logic to prevent errors, 
+        // as your filtering relies on mainOrderStatus
+        
+        /*
         if (status === 'delivered') {
-            mainOrder.isDelivered = true;
-            mainOrder.deliveredAt = Date.now();
+             // mainOrder.isDelivered = true; // Field is not in schema
+             // mainOrder.deliveredAt = Date.now(); // Field is not in schema
         }
+        */
 
         await mainOrder.save();
         
-        // NOTE: The frontend explicitly states this button only updates the Main Order Status,
-        // so no need to update individual Shipments here unless required by business logic.
-
         res.json({ 
             message: `Main Order ${MAIN_ORDER_ID} status updated to ${status}.`, 
             order: mainOrder 
@@ -407,6 +421,47 @@ router.put('/:id/status', protect, authorizeRoles('admin'), async (req, res) => 
         res.status(500).json({ message: 'Server Error during main order status update.', error: error.message });
     }
 });
+// router.put('/:id/status', protect, authorizeRoles('admin'), async (req, res) => {
+//     const { status } = req.body;
+//     const MAIN_ORDER_ID = req.params.id;
+    
+//     // 1. Basic validation
+//     const validStatuses = ['shipped', 'delivered', 'processing', 'cancelled', 'returned'];
+//     if (!validStatuses.includes(status)) {
+//         return res.status(400).json({ message: `Invalid main order status: ${status}` });
+//     }
+
+//     try {
+//         const mainOrder = await MainOrder.findById(MAIN_ORDER_ID);
+
+//         if (!mainOrder) {
+//             return res.status(404).json({ message: 'Main Order not found.' });
+//         }
+
+//         // 2. Update the status
+//         mainOrder.mainOrderStatus = status;
+
+//         // Optionally, update the isDelivered flag if the status is 'delivered'
+//         if (status === 'delivered') {
+//             mainOrder.isDelivered = true;
+//             mainOrder.deliveredAt = Date.now();
+//         }
+
+//         await mainOrder.save();
+        
+//         // NOTE: The frontend explicitly states this button only updates the Main Order Status,
+//         // so no need to update individual Shipments here unless required by business logic.
+
+//         res.json({ 
+//             message: `Main Order ${MAIN_ORDER_ID} status updated to ${status}.`, 
+//             order: mainOrder 
+//         });
+
+//     } catch (error) {
+//         console.error('Error updating main order status:', error);
+//         res.status(500).json({ message: 'Server Error during main order status update.', error: error.message });
+//     }
+// });
 
 
 // @desc    Get vendor-specific shipments (REPLACED monolithic order view with Shipments)
