@@ -44,12 +44,19 @@ const MainOrderSchema = new mongoose.Schema({
     paidAt: { type: Date },
     
     // High-level status (Derived from shipment statuses)
-    mainOrderStatus: { 
-        type: String,
-        enum: ['pending_payment', 'processing', 'partially_shipped', 'completed', 'cancelled'],
-        default: 'pending_payment',
-    },
-
+   mainOrderStatus: { 
+    type: String,
+    enum: [
+        'pending_payment', 
+        'processing', 
+        'partially_shipped', 
+        'shipped', // <-- ADD THIS
+        'delivered', // <-- ADD THIS, (You should probably replace 'completed' with 'delivered' or keep 'completed' for final closure)
+        'completed', // Keeping 'completed' for final closed status
+        'cancelled'
+    ],
+    default: 'pending_payment',
+},
 }, {
     timestamps: true,
 });
