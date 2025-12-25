@@ -2,6 +2,7 @@
 const express = require('express');
 const User = require('../models/User'); // Import the User model
 const Dispute = require('../models/DisputeRequest'); // Import the Dispute model
+const Rider = require('../models/Rider');
 const { protect } = require('../middleware/authMiddleware'); // Import the protect middleware
 
 const router = express.Router();
@@ -156,5 +157,60 @@ router.put('/disputes/:disputeId/status', protect, authorizeAdmin, async (req, r
         res.status(500).json({ message: 'Server error updating dispute status.' });
     }
 });
+
+
+
+// --- New Rider Management Routes ---
+
+// @desc    Get all pending rider applications
+// @route   GET /api/admin/riders/pending
+// @access  Private (Admin only)
+router.get('/riders/pending', protect, authorizeAdmin, async (req, res) => {
+    try {
+        // Find riders where status is 'pending'
+        const pendingRiders = await Rider.find({ status: 'pending' }).select('-password');
+        res.status(200).json(pendingRiders);
+    } catch (error) {
+        console.error('Error fetching rider requests:', error);
+        res.status(500).json({ message: 'Server error fetching rider requests.' });
+    }
+});
+
+// @desc    Update rider status (approve/reject)
+// @route   PUT /api/admin/riders/:riderId/status
+// @access  Private (Admin only)
+router.put('/riders/:riderId/status', protect, authorizeAdmin, async (req, res) => {
+    const { riderId } = req.params;
+    const { status } = req.body; // 'approved' or 'rejected'
+
+    if (!['approved', 'rejected'].includes(status)) {
+        return res.status(400).json({ message: 'Invalid status. Use "approved" or "rejected".' });
+    }
+
+    try {
+        const rider = await Rider.findById(riderId);
+        if (!rider) {
+            return res.status(404).json({ message: 'Rider not found.' });
+        }
+
+        rider.status = status;
+        
+        // If approved, we also set isVerified to true so they can log in/work
+        if (status === 'approved') {
+            rider.isVerified = true;
+        }
+
+        await rider.save();
+
+        res.status(200).json({ 
+            message: `Rider ${rider.fullName} has been ${status}.`,
+            status: rider.status 
+        });
+    } catch (error) {
+        console.error('Error updating rider status:', error);
+        res.status(500).json({ message: 'Server error updating rider status.' });
+    }
+});
+
 
 module.exports = router;
