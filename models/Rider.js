@@ -14,6 +14,11 @@ const riderSchema = new mongoose.Schema({
   },
   status: { type: String, enum: ['pending', 'approved', 'rejected'], default: 'pending' },
   isVerified: { type: Boolean, default: false },
+  // Add these fields to your riderSchema
+  emailVerificationToken: { type: String },
+  emailVerificationExpires: { type: Date },
+  isEmailVerified: { type: Boolean, default: false },
+  rejectionReason: { type: String }, // To store why they were rejected
   createdAt: { type: Date, default: Date.now }
 });
 

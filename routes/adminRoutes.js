@@ -181,7 +181,7 @@ router.get('/riders/pending', protect, authorizeAdmin, async (req, res) => {
 // @access  Private (Admin only)
 router.put('/riders/:riderId/status', protect, authorizeAdmin, async (req, res) => {
     const { riderId } = req.params;
-    const { status } = req.body; // 'approved' or 'rejected'
+    const { status } = req.body; 
 
     if (!['approved', 'rejected'].includes(status)) {
         return res.status(400).json({ message: 'Invalid status. Use "approved" or "rejected".' });
@@ -189,28 +189,34 @@ router.put('/riders/:riderId/status', protect, authorizeAdmin, async (req, res) 
 
     try {
         const rider = await Rider.findById(riderId);
-        if (!rider) {
-            return res.status(404).json({ message: 'Rider not found.' });
-        }
+        if (!rider) return res.status(404).json({ message: 'Rider not found.' });
 
         rider.status = status;
         
-        // If approved, we also set isVerified to true so they can log in/work
         if (status === 'approved') {
             rider.isVerified = true;
+            rider.rejectionReason = undefined; 
+        } else if (status === 'rejected') {
+            rider.isVerified = false;
+            // SETTING YOUR DEFAULT REASON HERE
+            rider.rejectionReason = "Photo was blurry or the documents are invalid. Please re-upload clear documents.";
         }
 
         await rider.save();
 
+        // Trigger the email notification
+        await sendVerificationEmail(rider.email, null, 'rider_status', { 
+            status: status, 
+            reason: rider.rejectionReason 
+        });
+
         res.status(200).json({ 
-            message: `Rider ${rider.fullName} has been ${status}.`,
+            message: `Rider ${rider.fullName} has been ${status} and notified.`,
             status: rider.status 
         });
     } catch (error) {
-        console.error('Error updating rider status:', error);
+        console.error('Admin status update error:', error);
         res.status(500).json({ message: 'Server error updating rider status.' });
     }
 });
-
-
 module.exports = router;
