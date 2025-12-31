@@ -11,24 +11,24 @@ const axios = require("axios");
 
 // 👇 START OF ADDITIONS 1: Distance Calculation Utility (KEEPING THIS)
 /**
- * Calculates the distance between two geographical coordinates using the Haversine formula.
- * @param {number} lat1 Latitude of point 1
- * @param {number} lon1 Longitude of point 1
- * @param {number} lat2 Latitude of point 2
- * @param {number} lon2 Longitude of point 2
- * @returns {number} Distance in Kilometers
- */
+ * Calculates the distance between two geographical coordinates using the Haversine formula.
+ * @param {number} lat1 Latitude of point 1
+ * @param {number} lon1 Longitude of point 1
+ * @param {number} lat2 Latitude of point 2
+ * @param {number} lon2 Longitude of point 2
+ * @returns {number} Distance in Kilometers
+ */
 function calculateDistance(lat1, lon1, lat2, lon2) {
-    const R = 6371; // Radius of the Earth in kilometers
-    const dLat = (lat2 - lat1) * (Math.PI / 180);
-    const dLon = (lon2 - lon1) * (Math.PI / 180);
-    const a =
-        Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-        Math.cos(lat1 * (Math.PI / 180)) * Math.cos(lat2 * (Math.PI / 180)) *
-        Math.sin(dLon / 2) * Math.sin(dLon / 2);
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    const distance = R * c; // Distance in km
-    return parseFloat(distance.toFixed(2)); // Round to 2 decimal places
+  const R = 6371; // Radius of the Earth in kilometers
+  const dLat = (lat2 - lat1) * (Math.PI / 180);
+  const dLon = (lon2 - lon1) * (Math.PI / 180);
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(lat1 * (Math.PI / 180)) * Math.cos(lat2 * (Math.PI / 180)) *
+    Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  const distance = R * c; // Distance in km
+  return parseFloat(distance.toFixed(2)); // Round to 2 decimal places
 }
 // 👆 END OF ADDITIONS 1
 
@@ -46,28 +46,28 @@ const calculateShippingCost = (distanceKm, city) => {
 };
 // ------------------------------------------------------------------
 
-// @desc    Get all orders (Admin access only)
-// @route   GET /api/orders
-// @access  Private/Admin
+// @desc    Get all orders (Admin access only)
+// @route   GET /api/orders
+// @access  Private/Admin
 router.get('/', protect, async (req, res) => {
-    try {
-        // Find MainOrder documents and populate the linked shipments
-        const orders = await MainOrder.find({}) 
-            .populate('user', 'firstName lastName email phoneNumber') 
-            .populate({
-                path: 'shipments',
-                populate: {
-                    path: 'vendor', // Populate vendor details within each shipment
-                    select: 'businessName phoneNumber businessLocation'
-                }
-            })
-            .sort({ createdAt: -1 });
+  try {
+      // Find MainOrder documents and populate the linked shipments
+      const orders = await MainOrder.find({}) 
+        .populate('user', 'firstName lastName email phoneNumber') 
+        .populate({
+            path: 'shipments',
+            populate: {
+                path: 'vendor', // Populate vendor details within each shipment
+                select: 'businessName phoneNumber businessLocation'
+            }
+        })
+        .sort({ createdAt: -1 });
 
-        res.status(200).json(orders);
-    } catch (error) {
-        console.error('Error fetching all orders:', error);
-        res.status(500).json({ message: 'Error fetching all orders.', error: error.message });
-    }
+      res.status(200).json(orders);
+  } catch (error) {
+      console.error('Error fetching all orders:', error);
+      res.status(500).json({ message: 'Error fetching all orders.', error: error.message });
+  }
 });
 
 // ---
@@ -393,7 +393,7 @@ router.get('/my', protect, async (req, res) => {
 //         const mainOrder = await MainOrder.findById(MAIN_ORDER_ID);
 
 //         if (!mainOrder) {
-//             return res.status(404).json({ message: 'Main Order not found.' });
+            // return res.status(404).json({ message: 'Main Order not found.' });
 //         }
 
 //         // 2. Update the status
@@ -968,8 +968,6 @@ router.put('/shipments/:id/deliver', protect, authorizeRoles('vendor', 'admin'),
         res.status(500).json({ message: 'Server Error', error: error.message });
     }
 });
-
-
 
 
 router.put('/shipments/:id/status-update', protect, authorizeRoles('admin'), async (req, res) => {
