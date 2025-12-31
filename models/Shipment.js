@@ -40,10 +40,16 @@ const ShipmentSchema = new mongoose.Schema({
     subtotal: { type: Number, required: true, default: 0.0 },
     platformFee: { type: Number, required: true, default: 0.0 }, // Commission for this sub-order
     shippingPrice: { type: Number, required: true, default: 0.0 }, // Cost for THIS shipment
+
+    // --- RIDER & LOGISTICS UPDATES ---
+    rider: { 
+        type: mongoose.Schema.Types.ObjectId, 
+        ref: 'Rider', 
+        default: null 
+    },
+    isClaimed: { type: Boolean, default: false },
+    claimedAt: { type: Date },
     
-    // Logistics and Tracking
-    trackingNumber: { type: String, sparse: true },
-    logisticsPartner: { type: String, sparse: true },
     
     shipmentStatus: { // Individual tracking status for this package
         type: String, 
@@ -51,6 +57,12 @@ const ShipmentSchema = new mongoose.Schema({
         default: 'processing',
     },
     
+    // Security Codes (OTP)
+    pickupOTP: { type: String },   // Generated when rider claims
+    deliveryOTP: { type: String }, // Generated when rider starts delivery
+    
+    trackingNumber: { type: String, sparse: true },
+    logisticsPartner: { type: String, sparse: true },
     deliveredAt: { type: Date },
     isDelivered: { type: Boolean, default: false },
     vendorPaidAt: { type: Date, sparse: true }, // Timestamp for vendor payout

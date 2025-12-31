@@ -19,6 +19,20 @@ const riderSchema = new mongoose.Schema({
   emailVerificationExpires: { type: Date },
   isEmailVerified: { type: Boolean, default: false },
   rejectionReason: { type: String }, // To store why they were rejected
+  // Add these to your riderSchema
+  walletBalance: { type: Number, default: 0 },
+  totalEarnings: { type: Number, default: 0 },
+  activeDeliveries: { type: Number, default: 0 },
+  withdrawalHistory: [{
+    amount: Number,
+    status: { type: String, enum: ['pending', 'completed', 'failed'], default: 'pending' },
+    createdAt: { type: Date, default: Date.now },
+    reference: String
+  }],
+  currentLocation: {
+    lat: Number,
+    lng: Number
+  },
   createdAt: { type: Date, default: Date.now }
 });
 

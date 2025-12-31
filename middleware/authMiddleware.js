@@ -1,5 +1,6 @@
-const jwt = require('jsonwebtoken'); // Import jsonwebtoken for token verification
-const User = require('../models/User'); // Import the User model
+const jwt = require('jsonwebtoken');
+const User = require('../models/User'); 
+const Rider = require('../models/Rider'); // NEW: Import Rider model
 
 // --- Middleware for protecting routes (authentication) ---
 const protect = async (req, res, next) => {
@@ -9,12 +10,21 @@ const protect = async (req, res, next) => {
         try {
             token = req.headers.authorization.split(' ')[1];
             const decoded = jwt.verify(token, process.env.JWT_SECRET);
-            req.user = await User.findById(decoded.id).select('-password');
 
-            if (!req.user) {
-                return res.status(401).json({ message: 'Not authorized, user not found for token' });
+            // 1. Try to find the user in the User collection first
+            let user = await User.findById(decoded.id).select('-password');
+            
+            // 2. If not found in User, look in the Rider collection
+            if (!user) {
+                user = await Rider.findById(decoded.id).select('-password');
             }
 
+            if (!user) {
+                return res.status(401).json({ message: 'Not authorized, account not found' });
+            }
+
+            // Attach the found user (or rider) to the request object
+            req.user = user;
             next();
         } catch (error) {
             console.error('Token verification failed:', error);
@@ -25,19 +35,17 @@ const protect = async (req, res, next) => {
     }
 };
 
-// --- Corrected Middleware for authorizing roles ---
+// --- Middleware for authorizing roles ---
 const authorizeRoles = (...roles) => {
     return (req, res, next) => {
-        // Ensure the protect middleware has run and attached a user to the request
         if (!req.user) {
-            return res.status(401).json({ message: 'Not authorized, no user found (protect middleware missing or failed)' });
+            return res.status(401).json({ message: 'Not authorized, no user found' });
         }
 
         let isAuthorized = false;
 
-        // Iterate through the roles required by the route
         for (const role of roles) {
-            // Check the specific boolean flag on the user object
+            // Check User roles
             if (role === 'admin' && req.user.isAdmin) {
                 isAuthorized = true;
                 break;
@@ -46,11 +54,17 @@ const authorizeRoles = (...roles) => {
                 isAuthorized = true;
                 break;
             }
-            // Add more roles if needed in the future
+            // Check Rider role (Riders are verified based on their model type or a specific flag)
+            // Since they come from the Rider model, we check if they have a plateNumber (unique to riders) 
+            // or you can check if they have a 'rider' role.
+            if (role === 'dispatch' && (req.user.plateNumber || req.user.role === 'dispatch')) {
+                isAuthorized = true;
+                break;
+            }
         }
 
         if (!isAuthorized) {
-            return res.status(403).json({ message: `Not authorized. User does not have the required role(s): ${roles.join(', ')}.` });
+            return res.status(403).json({ message: `Access denied. Requires: ${roles.join(', ')}.` });
         }
 
         next();
@@ -58,3 +72,68 @@ const authorizeRoles = (...roles) => {
 };
 
 module.exports = { protect, authorizeRoles };
+
+
+
+// const jwt = require('jsonwebtoken'); // Import jsonwebtoken for token verification
+// const User = require('../models/User'); // Import the User model
+// const Rider = require('../models/Rider'); // NEW: Import Rider model
+
+
+// // --- Middleware for protecting routes (authentication) ---
+// const protect = async (req, res, next) => {
+//     let token;
+
+//     if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
+//         try {
+//             token = req.headers.authorization.split(' ')[1];
+//             const decoded = jwt.verify(token, process.env.JWT_SECRET);
+//             req.user = await User.findById(decoded.id).select('-password');
+
+//             if (!req.user) {
+//                 return res.status(401).json({ message: 'Not authorized, user not found for token' });
+//             }
+
+//             next();
+//         } catch (error) {
+//             console.error('Token verification failed:', error);
+//             res.status(401).json({ message: 'Not authorized, token failed' });
+//         }
+//     } else {
+//         res.status(401).json({ message: 'Not authorized, no token provided' });
+//     }
+// };
+
+// // --- Corrected Middleware for authorizing roles ---
+// const authorizeRoles = (...roles) => {
+//     return (req, res, next) => {
+//         // Ensure the protect middleware has run and attached a user to the request
+//         if (!req.user) {
+//             return res.status(401).json({ message: 'Not authorized, no user found (protect middleware missing or failed)' });
+//         }
+
+//         let isAuthorized = false;
+
+//         // Iterate through the roles required by the route
+//         for (const role of roles) {
+//             // Check the specific boolean flag on the user object
+//             if (role === 'admin' && req.user.isAdmin) {
+//                 isAuthorized = true;
+//                 break;
+//             }
+//             if (role === 'vendor' && req.user.isVendor) {
+//                 isAuthorized = true;
+//                 break;
+//             }
+//             // Add more roles if needed in the future
+//         }
+
+//         if (!isAuthorized) {
+//             return res.status(403).json({ message: `Not authorized. User does not have the required role(s): ${roles.join(', ')}.` });
+//         }
+
+//         next();
+//     };
+// };
+
+// module.exports = { protect, authorizeRoles };
