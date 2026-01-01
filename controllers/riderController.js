@@ -274,3 +274,70 @@ exports.getAvailableOrdersForRider = async (req, res) => {
     res.status(500).json({ message: 'Server error' });
   }
 };
+
+
+/**
+ * @desc Rider claims an entire MainOrder (all shipments)
+ * @route PUT /api/riders/claim-order/:id
+ */
+exports.claimOrder = async (req, res) => {
+  try {
+    const orderId = req.params.id;
+    const riderId = req.user._id;
+
+    const mainOrder = await MainOrder.findById(orderId)
+      .populate('shipments');
+
+    if (!mainOrder) {
+      return res.status(404).json({ message: 'Order not found' });
+    }
+
+    if (!mainOrder.isPaid) {
+      return res.status(400).json({ message: 'Order is not paid' });
+    }
+
+    if (mainOrder.isClaimed) {
+      return res.status(400).json({ message: 'Order already claimed' });
+    }
+
+    // Optional: Check if order is in a claimable status
+    if (['delivered', 'completed', 'cancelled'].includes(mainOrder.mainOrderStatus)) {
+      return res.status(400).json({ message: 'Order is already delivered, completed, or cancelled' });
+    }
+
+    // Assign rider to the MainOrder
+    mainOrder.rider = riderId;
+    mainOrder.isClaimed = true;
+    mainOrder.claimedAt = Date.now();
+
+    // Optional: Generate OTPs for pickup/delivery (you can keep per-shipment or one per order)
+    // Example: one set for the whole order
+    const pickupOTP = Math.floor(1000 + Math.random() * 9000).toString();
+    const deliveryOTP = Math.floor(1000 + Math.random() * 9000).toString();
+
+    mainOrder.pickupOTP = pickupOTP;
+    mainOrder.deliveryOTP = deliveryOTP;
+
+    // Optional: Update all shipments' status to 'out_for_delivery'
+    for (const shipment of mainOrder.shipments) {
+      if (shipment.shipmentStatus === 'ready_for_pickup' && !shipment.isClaimed) {
+        shipment.rider = riderId;
+        shipment.isClaimed = true;
+        shipment.claimedAt = Date.now();
+        shipment.shipmentStatus = 'out_for_delivery';
+        await shipment.save();
+      }
+    }
+
+    await mainOrder.save();
+
+    res.json({ 
+      message: 'Order claimed successfully!', 
+      pickupOTP, 
+      deliveryOTP 
+    });
+  } catch (error) {
+    console.error('Error claiming order:', error);
+    res.status(500).json({ message: error.message });
+  }
+};

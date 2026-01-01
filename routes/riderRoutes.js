@@ -8,7 +8,8 @@ const {
   finalizeRiderDelivery,
   getRiderProfile,
   getCompletedShipments,
-  getAvailableOrdersForRider
+  getAvailableOrdersForRider,
+  claimOrder,
 } = require('../controllers/riderController');
 const { protect, authorizeRoles } = require('../middleware/authMiddleware');
 const Rider = require('../models/Rider');
@@ -52,5 +53,7 @@ router.get('/profile', protect, authorizeRoles('dispatch'), getRiderProfile);
 router.get('/completed', protect, authorizeRoles('dispatch'), getCompletedShipments);
 
 router.get('/orders/available', protect, authorizeRoles('dispatch'), getAvailableOrdersForRider);
+
+router.put('/claim-order/:id', protect, authorizeRoles('rider'), claimOrder);
 
 module.exports = router;

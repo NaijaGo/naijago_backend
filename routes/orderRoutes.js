@@ -1050,77 +1050,213 @@ router.put('/:id/dispatch-status', protect, authorizeRoles('dispatch', 'admin'),
 // @desc    Update order status (Vendor/Admin)
 // @route   PUT /api/orders/:id/status
 // @access  Private/Vendor/Admin
-router.put('/:id/status', protect, authorizeRoles('vendor', 'admin'), async (req, res) => {
-    const { status } = req.body;
+// router.put('/:id/status', protect, authorizeRoles('vendor', 'admin'), async (req, res) => {
+//     const { status } = req.body;
     
-    if (!['pending', 'processing', 'shipped', 'delivered', 'cancelled'].includes(status)) {
-        return res.status(400).json({ message: 'Invalid status provided.' });
+//     if (!['pending', 'processing', 'shipped', 'delivered', 'cancelled'].includes(status)) {
+//         return res.status(400).json({ message: 'Invalid status provided.' });
+//     }
+
+//     try {
+//         const order = await Order.findById(req.params.id);
+
+//         if (!order) {
+//             return res.status(404).json({ message: 'Order not found' });
+//         }
+
+//         const isAuthorizedVendor = order.orderItems.some(item =>
+//             item.vendor && item.vendor._id.toString() === req.user.id.toString()
+//         );
+
+//         if (!req.user.isAdmin && !isAuthorizedVendor) {
+//             return res.status(403).json({ message: 'Not authorized to update this order status' });
+//         }
+        
+//         switch (status) {
+//             case 'processing':
+//                 if (order.orderStatus === 'pending' || order.orderStatus === 'processing') {
+//                     order.orderStatus = 'processing';
+//                 } else {
+//                     return res.status(400).json({ message: `Invalid status transition from '${order.orderStatus}' to 'processing'` });
+//                 }
+//                 break;
+//             case 'shipped':
+//                 if (order.orderStatus === 'pending' || order.orderStatus === 'processing' || req.user.isAdmin) {
+//                     order.orderStatus = 'shipped';
+//                 } else {
+//                     return res.status(400).json({ message: `Invalid status transition from '${order.orderStatus}' to 'shipped'` });
+//                 }
+//                 break;
+//             case 'delivered':
+//                 if (order.orderStatus === 'shipped' || req.user.isAdmin) {
+//                     order.orderStatus = 'delivered';
+//                     order.isDelivered = true;
+//                     order.deliveredAt = Date.now();
+//                 } else {
+//                     return res.status(400).json({ message: `Invalid status transition from '${order.orderStatus}' to 'delivered'` });
+//                 }
+//                 break;
+//             case 'cancelled':
+//                 if (order.orderStatus !== 'delivered') {
+//                     order.orderStatus = 'cancelled';
+//                 } else {
+//                     return res.status(400).json({ message: `Cannot cancel a '${order.orderStatus}' order.` });
+//                 }
+//                 break;
+//             default:
+//                 if (req.user.isAdmin) {
+//                     order.orderStatus = status;
+//                 } else {
+//                     return res.status(400).json({ message: `Invalid status transition or insufficient permissions` });
+//                 }
+//                 break;
+//         }
+
+//         const updatedOrder = await order.save();
+//         res.json(updatedOrder);
+
+//     } catch (error) {
+//         console.error('Error updating order status:', error);
+//         if (error.kind === 'ObjectId') {
+//             return res.status(400).json({ message: 'Invalid Order ID format' });
+//         }
+//         res.status(500).json({ message: 'Server Error' });
+//     }
+// });
+
+
+// @desc    Update MainOrder status (Admin only)
+// @route   PUT /api/orders/:id/status
+// @access  Private/Admin
+router.put('/:id/status', protect, authorizeRoles('admin'), async (req, res) => {
+    const { status } = req.body;
+    const MAIN_ORDER_ID = req.params.id;
+
+    // 1. Basic validation: MUST match the Mongoose model's enum
+    const validStatuses = [
+        'pending_payment', 
+        'processing', 
+        'partially_shipped', 
+        'shipped', 
+        'delivered', 
+        'completed',
+        'cancelled'
+    ];
+
+    if (!validStatuses.includes(status)) {
+        return res.status(400).json({ 
+            message: `Invalid main order status: ${status}. Must be one of: ${validStatuses.join(', ')}` 
+        });
     }
 
+    const session = await mongoose.startSession();
+    session.startTransaction();
+
     try {
-        const order = await Order.findById(req.params.id);
+        const mainOrder = await MainOrder.findById(MAIN_ORDER_ID).session(session);
 
-        if (!order) {
-            return res.status(404).json({ message: 'Order not found' });
+        if (!mainOrder) {
+            await session.abortTransaction();
+            session.endSession();
+            return res.status(404).json({ message: 'Main Order not found.' });
         }
 
-        const isAuthorizedVendor = order.orderItems.some(item =>
-            item.vendor && item.vendor._id.toString() === req.user.id.toString()
-        );
-
-        if (!req.user.isAdmin && !isAuthorizedVendor) {
-            return res.status(403).json({ message: 'Not authorized to update this order status' });
-        }
-        
-        switch (status) {
-            case 'processing':
-                if (order.orderStatus === 'pending' || order.orderStatus === 'processing') {
-                    order.orderStatus = 'processing';
-                } else {
-                    return res.status(400).json({ message: `Invalid status transition from '${order.orderStatus}' to 'processing'` });
-                }
-                break;
-            case 'shipped':
-                if (order.orderStatus === 'pending' || order.orderStatus === 'processing' || req.user.isAdmin) {
-                    order.orderStatus = 'shipped';
-                } else {
-                    return res.status(400).json({ message: `Invalid status transition from '${order.orderStatus}' to 'shipped'` });
-                }
-                break;
-            case 'delivered':
-                if (order.orderStatus === 'shipped' || req.user.isAdmin) {
-                    order.orderStatus = 'delivered';
-                    order.isDelivered = true;
-                    order.deliveredAt = Date.now();
-                } else {
-                    return res.status(400).json({ message: `Invalid status transition from '${order.orderStatus}' to 'delivered'` });
-                }
-                break;
-            case 'cancelled':
-                if (order.orderStatus !== 'delivered') {
-                    order.orderStatus = 'cancelled';
-                } else {
-                    return res.status(400).json({ message: `Cannot cancel a '${order.orderStatus}' order.` });
-                }
-                break;
-            default:
-                if (req.user.isAdmin) {
-                    order.orderStatus = status;
-                } else {
-                    return res.status(400).json({ message: `Invalid status transition or insufficient permissions` });
-                }
-                break;
+        // NEW: Prevent double-crediting / double-delivery
+        if (status === 'delivered' && mainOrder.mainOrderStatus === 'delivered') {
+            await session.abortTransaction();
+            session.endSession();
+            return res.status(400).json({ 
+                message: 'Order already marked as delivered and credited. No further action allowed.' 
+            });
         }
 
-        const updatedOrder = await order.save();
-        res.json(updatedOrder);
+        // 2. Update the status
+        mainOrder.mainOrderStatus = status;
+
+        if (status === 'delivered') {
+            mainOrder.isDelivered = true;
+            mainOrder.deliveredAt = Date.now();
+            mainOrder.shipmentStatus = 'delivered'; // Update shipmentStatus on MainOrder
+
+            // Credit logic only if order is paid
+            if (mainOrder.isPaid) {
+                // Fetch all shipments for this order
+                const shipments = await Shipment.find({ mainOrder: MAIN_ORDER_ID }).session(session);
+
+                let totalRiderEarning = 0;
+
+                for (const shipment of shipments) {
+                    // Vendor crediting per shipment
+                    const revenue = shipment.subtotal;
+                    const commission = shipment.platformFee;
+                    const vendorEarning = revenue - commission;
+
+                    await User.findByIdAndUpdate(
+                        shipment.vendor,
+                        {
+                            $inc: { vendorWalletBalance: vendorEarning },
+                            $push: {
+                                notifications: {
+                                    $each: [{
+                                        type: 'delivery_payout',
+                                        message: `Payout of ₦${vendorEarning.toFixed(2)} received for delivered shipment ${shipment._id}. Platform Fee: ₦${commission.toFixed(2)}.`,
+                                        isRead: false,
+                                        relatedModel: 'Shipment',
+                                        relatedId: shipment._id,
+                                    }],
+                                    $position: 0,
+                                },
+                            },
+                        },
+                        { new: true, session }
+                    );
+
+                    // Recalculate distance for rider earning
+                    const distanceKm = calculateDistance(
+                        shipment.vendorLocation.latitude,
+                        shipment.vendorLocation.longitude,
+                        mainOrder.userLocation.latitude,
+                        mainOrder.userLocation.longitude
+                    );
+
+                    // Rider gets 150/km
+                    const riderEarningPerShipment = distanceKm * 150;
+                    totalRiderEarning += riderEarningPerShipment;
+
+                    // Auto-update each shipment to delivered
+                    shipment.shipmentStatus = 'delivered';
+                    shipment.isDelivered = true;
+                    shipment.deliveredAt = Date.now();
+                    await shipment.save({ session });
+                }
+
+                // Credit rider's wallet with total earning
+                if (mainOrder.rider) {
+                    await Rider.findByIdAndUpdate(
+                        mainOrder.rider,
+                        { $inc: { walletBalance: totalRiderEarning, totalEarnings: totalRiderEarning } },
+                        { session }
+                    );
+                } else {
+                    console.warn(`No rider assigned for delivered order ${MAIN_ORDER_ID} - skipping rider credit`);
+                }
+            }
+        }
+
+        const updatedMainOrder = await mainOrder.save({ session });
+        await session.commitTransaction();
+        session.endSession();
+
+        res.json({ 
+            message: `Main Order ${MAIN_ORDER_ID} status updated to ${status}.`, 
+            order: updatedMainOrder 
+        });
 
     } catch (error) {
-        console.error('Error updating order status:', error);
-        if (error.kind === 'ObjectId') {
-            return res.status(400).json({ message: 'Invalid Order ID format' });
-        }
-        res.status(500).json({ message: 'Server Error' });
+        await session.abortTransaction();
+        session.endSession();
+        console.error('Error updating main order status:', error);
+        res.status(500).json({ message: 'Server Error during main order status update.', error: error.message });
     }
 });
 
