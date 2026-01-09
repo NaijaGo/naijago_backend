@@ -209,6 +209,45 @@ router.get('/vendor/:vendorId', async (req, res) => {
 });
 
 
+
+
+/**
+ * @desc    Search products by name (case-insensitive partial match)
+ * @route   GET /api/products/search
+ * @access  Public
+ * @query   ?q=search term
+ */
+router.get('/search', async (req, res) => {
+  try {
+    const { q } = req.query;
+
+    if (!q || q.trim() === '') {
+      return res.status(200).json([]); // or 400 - your choice
+    }
+
+    const searchTerm = q.trim();
+
+    const products = await Product.find({
+      isActive: true,
+      $or: [
+        { name: { $regex: searchTerm, $options: 'i' } },           // name contains...
+        { description: { $regex: searchTerm, $options: 'i' } },    // optional: also search description
+        // { category: { $regex: searchTerm, $options: 'i' } }     // you can add this too
+      ]
+    })
+      .populate('vendor', 'businessName')
+      .limit(50); // ← prevent returning thousands of products
+
+    console.log(`Search for "${searchTerm}" → found ${products.length} products`);
+
+    res.status(200).json(products);
+  } catch (error) {
+    console.error('Search error:', error);
+    res.status(500).json({ message: 'Error performing search' });
+  }
+});
+
+
 // @desc    Get a single product by ID
 // @route   GET /api/products/:id
 // @access  Public
