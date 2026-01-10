@@ -11,11 +11,37 @@ const Product = require('../models/Product');
 const Review = require('../models/Review');
 const DisputeRequest = require('../models/DisputeRequest');
 const ReturnRequest = require('../models/ReturnRequest');
+const rateLimit = require('express-rate-limit');
 
 
 const router = express.Router();
 const resend = new Resend(process.env.RESEND_API_KEY);
 const BASE_URL = process.env.BASE_URL || 'http://localhost:5000';
+
+
+// Limit: max 4 resend attempts per email per hour
+const resendEmailLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: 4,                   // Limit each IP to 4 requests per windowMs
+  message: {
+    message: 'Too many resend requests. Please try again later (1 hour cooldown).'
+  },
+  standardHeaders: true,    // Return rate limit info in the `RateLimit-*` headers
+  legacyHeaders: false,
+  keyGenerator: (req) => {
+    // Combine IP + email for better protection
+    return `${req.ip}:${req.body.email?.toLowerCase() || 'unknown'}`;
+  }
+});
+
+// Extra global protection: max 10 requests per IP per hour (catches bots better)
+const globalResendLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 10,
+  message: {
+    message: 'Too many verification requests from this device. Try again later.'
+  }
+});
 
 // --- Helper Function: Generate JWT Token ---
 const generateToken = (id) => {
@@ -1124,4 +1150,50 @@ router.put('/profile', protect, async (req, res) => {
         res.status(500).json({ message: 'Server error updating profile.' });
     }
 });
+
+// Apply both limiters - global first, then per-email
+router.post('/resend-verification',
+  globalResendLimiter,
+  resendEmailLimiter,
+  async (req, res) => {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({ message: 'Email is required' });
+    }
+
+    try {
+      const user = await User.findOne({ email: email.toLowerCase() });
+
+      if (!user) {
+        return res.status(200).json({
+          message: 'If the email exists and is not verified, a new verification link has been sent.'
+        });
+      }
+
+      if (user.isEmailVerified) {
+        return res.status(200).json({
+          message: 'Your email is already verified. You can log in.'
+        });
+      }
+
+      const newToken = crypto.randomBytes(32).toString('hex');
+      user.emailVerificationToken = newToken;
+      user.emailVerificationExpires = Date.now() + 24 * 60 * 60 * 1000;
+
+      await user.save();
+
+      await sendVerificationEmail(user.email, newToken, 'email');
+
+      return res.status(200).json({
+        message: 'A new verification email has been sent. Please check your inbox and spam folder.'
+      });
+
+    } catch (error) {
+      console.error('Resend verification error:', error);
+      return res.status(500).json({ message: 'Server error. Please try again later.' });
+    }
+  }
+);
+
 module.exports = router;
