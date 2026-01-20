@@ -45,19 +45,19 @@ app.use(express.static(path.join(__dirname, 'public')));
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // Routes (unchanged)
-// app.use('/api/auth', require('./routes/authRoutes'));
-// app.use('/api/vendor', require('./routes/vendorRoutes'));
-// app.use('/api/admin', require('./routes/adminRoutes'));
-// app.use('/api/products', require('./routes/productRoutes'));
-// app.use('/api/orders', require('./routes/orderRoutes'));
-// app.use('/api/reviews', require('./routes/reviewsRoutes'));
-// app.use('/api/wallet', require('./routes/walletRoutes'));
-// app.use('/api/returns', require('./routes/returnsRoutes'));
-// app.use('/api/chat', require('./routes/chatRoutes'));
-// app.use('/api/chatbot', require('./routes/chatbotRoutes'));
-// app.use('/api/disputes', require('./routes/disputesRoutes'));
-// app.use('/api/riders', require('./routes/riderRoutes'));
-// app.use('/api/uploads', require('./routes/uploadsRoutes'));
+app.use('/api/auth', require('./routes/authRoutes'));
+app.use('/api/vendor', require('./routes/vendorRoutes'));
+app.use('/api/admin', require('./routes/adminRoutes'));
+app.use('/api/products', require('./routes/productRoutes'));
+app.use('/api/orders', require('./routes/orderRoutes'));
+app.use('/api/reviews', require('./routes/reviewsRoutes'));
+app.use('/api/wallet', require('./routes/walletRoutes'));
+app.use('/api/returns', require('./routes/returnsRoutes'));
+app.use('/api/chat', require('./routes/chatRoutes'));
+app.use('/api/chatbot', require('./routes/chatbotRoutes'));
+app.use('/api/disputes', require('./routes/disputesRoutes'));
+app.use('/api/riders', require('./routes/riderRoutes'));
+app.use('/api/uploads', require('./routes/uploadsRoutes'));
 
 // Health/root
 app.get('/', (req, res) => res.json({ message: 'NaijaGo Backend API is running!' }));
