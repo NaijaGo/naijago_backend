@@ -10,7 +10,7 @@ const disputeRequestSchema = new mongoose.Schema({
   },
   order: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'Order',
+    ref: 'MainOrder',
     required: true
   },
   reason: {
