@@ -1,4 +1,4 @@
-// models/MainOrder.js (This replaces the old models/Order.js)
+// models/MainOrder.js 
 const mongoose = require('mongoose');
 
 const MainOrderSchema = new mongoose.Schema({

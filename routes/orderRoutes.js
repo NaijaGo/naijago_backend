@@ -122,12 +122,21 @@ router.post('/summary', protect, async (req, res) => {
                 });
             }
             
+            // vendorCartMap.get(vendorId).items.push({
+            //     product: item.product,
+            //     name: item.name, // Use name from cart for frontend display
+            //     image: product.imageUrls[0], // Use product data for image
+            //     quantity: item.quantity,
+            //     price: product.price, // Use product data for price verification
+            // });
+
             vendorCartMap.get(vendorId).items.push({
                 product: item.product,
                 name: item.name, // Use name from cart for frontend display
                 image: product.imageUrls[0], // Use product data for image
                 quantity: item.quantity,
                 price: product.price, // Use product data for price verification
+                selectedSize: item.selectedSize || null, // NEW: Include selected size
             });
             
             vendorCartMap.get(vendorId).subtotal += itemPrice;
@@ -265,13 +274,22 @@ router.post('/', protect, async (req, res) => {
                 mainOrder: createdMainOrder._id, // Link back to MainOrder
                 vendor: summary.vendor,
                 vendorLocation: summary.vendorLocation, 
-                items: summary.items.map(item => ({ // Ensure item structure is correct for Shipment model
-                    product: item.product,
-                    name: item.name,
-                    image: item.image,
-                    quantity: item.quantity,
-                    price: item.price,
-                })),
+                // items: summary.items.map(item => ({ // Ensure item structure is correct for Shipment model
+                //     product: item.product,
+                //     name: item.name,
+                //     image: item.image,
+                //     quantity: item.quantity,
+                //     price: item.price,
+                // })),
+
+                items: summary.items.map(item => ({
+                product: item.product,
+                name: item.name,
+                image: item.image,
+                quantity: item.quantity,
+                price: item.price,
+                selectedSize: item.selectedSize || null, // NEW: Pass through selected size
+            })),
                 subtotal: summary.subtotal,
                 platformFee: summary.platformFee,
                 shippingPrice: summary.shippingPrice,
