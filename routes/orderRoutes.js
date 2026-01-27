@@ -362,24 +362,61 @@ router.post('/update-pending-to-processing', protect, async (req, res) => {
 // @desc    Get logged in user's orders (Now fetching MainOrders)
 // @route   GET /api/orders/my
 // @access  Private
+// router.get('/my', protect, async (req, res) => {
+//     try {
+//         // Fetch MainOrder and populate linked Shipments
+//         const orders = await MainOrder.find({ user: req.user.id })
+//             .populate({
+//                 path: 'shipments',
+//                 populate: [
+//                     { path: 'vendor', select: 'businessName' },
+//                     { path: 'items.product', select: 'name imageUrls price' }
+//                 ]
+//             })
+//             .sort({ createdAt: -1 });
+//         res.json(orders);
+//     } catch (error) {
+//         console.error('Error fetching user orders:', error);
+//         res.status(500).json({ message: 'Server Error' });
+//     }
+// });
+
 router.get('/my', protect, async (req, res) => {
-    try {
+    try {
         // Fetch MainOrder and populate linked Shipments
-        const orders = await MainOrder.find({ user: req.user.id })
-            .populate({
-                path: 'shipments',
-                populate: [
-                    { path: 'vendor', select: 'businessName' },
-                    { path: 'items.product', select: 'name imageUrls price' }
+        const orders = await MainOrder.find({ user: req.user.id })
+            .populate({
+                path: 'shipments',
+                populate: [
+                    { 
+                        path: 'vendor', 
+                        select: 'businessName businessLocation' 
+                    },
+                    { 
+                        path: 'items.product', 
+                        select: 'name imageUrls price category' 
+                    }
                 ]
-            })
-            .sort({ createdAt: -1 });
-        res.json(orders);
-    } catch (error) {
-        console.error('Error fetching user orders:', error);
-        res.status(500).json({ message: 'Server Error' });
-    }
+            })
+            .sort({ createdAt: -1 });
+        
+        // Add logging for debugging
+        console.log(`User ${req.user.id} fetched ${orders.length} orders`);
+        if (orders.length > 0 && orders[0].shipments && orders[0].shipments.length > 0) {
+            const firstShipment = orders[0].shipments[0];
+            if (firstShipment.items && firstShipment.items.length > 0) {
+                console.log('First item in user order:', JSON.stringify(firstShipment.items[0], null, 2));
+            }
+        }
+        
+        res.json(orders);
+    } catch (error) {
+        console.error('Error fetching user orders:', error);
+        res.status(500).json({ message: 'Server Error' });
+    }
 });
+
+
 
 
 // @desc    Update MainOrder status (Admin only)
@@ -511,21 +548,51 @@ router.put('/:id/status', protect, authorizeRoles('admin'), async (req, res) => 
 // @access  Private/Vendor
 
 
-router.get('/vendor', protect, authorizeRoles('vendor', 'admin'), async (req, res) => {
-    try {
-        // Vendors now only care about their Shipments, not the entire MainOrder
-        const shipments = await Shipment.find({ vendor: req.user.id })
-            .populate('mainOrder', 'shippingAddress userLocation totalPrice paymentMethod') // Link to the main order info
-            .populate('vendor', 'businessName')
-            .populate('items.product', 'name imageUrls price stockQuantity')
-            .sort({ createdAt: -1 });
+// router.get('/vendor', protect, authorizeRoles('vendor', 'admin'), async (req, res) => {
+//     try {
+//         // Vendors now only care about their Shipments, not the entire MainOrder
+//         const shipments = await Shipment.find({ vendor: req.user.id })
+//             .populate('mainOrder', 'shippingAddress userLocation totalPrice paymentMethod') // Link to the main order info
+//             .populate('vendor', 'businessName')
+//             .populate('items.product', 'name imageUrls price stockQuantity')
+//             .sort({ createdAt: -1 });
         
-        // Since we are finding by vendor ID, no need for the complex map filtering.
-        res.json(shipments);
-    } catch (error) {
-        console.error('Error fetching vendor orders:', error);
-        res.status(500).json({ message: 'Server Error' });
-    }
+//         // Since we are finding by vendor ID, no need for the complex map filtering.
+//         res.json(shipments);
+//     } catch (error) {
+//         console.error('Error fetching vendor orders:', error);
+//         res.status(500).json({ message: 'Server Error' });
+//     }
+// });
+
+
+router.get('/vendor', protect, authorizeRoles('vendor', 'admin'), async (req, res) => {
+    try {
+        // Vendors now only care about their Shipments, not the entire MainOrder
+        const shipments = await Shipment.find({ vendor: req.user.id })
+            .populate({
+                path: 'mainOrder',
+                select: 'shippingAddress userLocation totalPrice paymentMethod createdAt',
+                populate: {
+                    path: 'user',
+                    select: 'firstName lastName email phoneNumber'
+                }
+            })
+            .populate('vendor', 'businessName phoneNumber')
+            .populate('items.product', 'name imageUrls price stockQuantity category')
+            .sort({ createdAt: -1 });
+        
+        // Add logging to debug
+        console.log(`Vendor ${req.user.id} fetched ${shipments.length} shipments`);
+        if (shipments.length > 0 && shipments[0].items.length > 0) {
+            console.log('First item in first shipment:', JSON.stringify(shipments[0].items[0], null, 2));
+        }
+        
+        res.json(shipments);
+    } catch (error) {
+        console.error('Error fetching vendor orders:', error);
+        res.status(500).json({ message: 'Server Error' });
+    }
 });
 
 
