@@ -1,8 +1,7 @@
 // utils/emailHelper.js
 const { Resend } = require('resend');
 const resend = new Resend(process.env.RESEND_API_KEY);
-const BASE_URL = process.env.BASE_URL || 'http://localhost:5000';
-const FRONTEND_URL = 'https://naijagoapp.com';
+const BASE_URL = process.env.BASE_URL || 'https://naijago-backend.onrender.com';
 
 const sendVerificationEmail = async (email, token, type, extraData = null) => {
     // Determine verification link based on type
@@ -11,10 +10,9 @@ const sendVerificationEmail = async (email, token, type, extraData = null) => {
     if (type === 'password') {
         verificationLink = `${BASE_URL}/api/auth/reset-password-form/${token}`;
     } else if (type === 'rider') {
-        // For rider email verification - UPDATED to use frontend URL
-        verificationLink = `${FRONTEND_URL || 'https://naijagoapp.com'}/rider/verify-email/${token}`;
+        // SIMPLE FIX: Point to backend API (not frontend)
+        verificationLink = `${BASE_URL}/api/riders/verify-email/${token}`;
     } else if (type === 'email') {
-        // For general email verification
         verificationLink = `${BASE_URL}/api/verify-email/${token}`;
     } else {
         verificationLink = `${BASE_URL}/api/verify/${token}`;
@@ -34,7 +32,7 @@ const sendVerificationEmail = async (email, token, type, extraData = null) => {
                     <meta name="viewport" content="width=device-width, initial-scale=1.0">
                     <style>
                         body { 
-                            font-family: 'Times New Roman', Times, serif; 
+                            font-family: Arial, sans-serif; 
                             background-color: #f5f5f5; 
                             padding: 40px 20px; 
                             text-align: center; 
