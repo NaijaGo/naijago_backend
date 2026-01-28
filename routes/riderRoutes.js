@@ -5,6 +5,7 @@ const {
   // Authentication
   registerRider, 
   loginRider,
+  verifyRiderEmail,
   
   // Profile Management
   getRiderProfile,
@@ -54,6 +55,13 @@ router.post('/register', registerRider);
  * @access  Public
  */
 router.post('/login', loginRider);
+
+/**
+ * @route   GET /api/riders/verify-email/:token
+ * @desc    Verify rider email with token
+ * @access  Public
+ */
+router.get('/verify-email/:token', verifyRiderEmail);
 
 // ============================================
 // PROTECTED ROUTES (Rider authentication required)
@@ -205,45 +213,3 @@ router.post('/withdraw', requestWithdrawal);
 router.get('/nearby', authorizeRoles('admin', 'dispatch'), getNearbyRiders);
 
 module.exports = router;
-
-
-
-
-// const express = require('express');
-// const router = express.Router();
-// const { 
-//   registerRider, 
-//   loginRider, 
-//   getRiderProfile,
-//   getAvailableOrdersForRider,
-//   claimOrder,
-//   verifyPickupOTP,
-//   verifyDeliveryOTP,
-//   getActiveDeliveries,
-//   getCompletedShipments,
-//   updateRiderLocation,
-//   updateRiderStatus
-// } = require('../controllers/riderController');
-// const { protect } = require('../middleware/authMiddleware');
-
-// // Public routes
-// router.post('/register', registerRider);
-// router.post('/login', loginRider);
-
-// // Protected routes (require rider authentication)
-// router.use(protect);
-
-// // Profile & status
-// router.get('/profile', getRiderProfile);
-// router.put('/location', updateRiderLocation); // Optional: for real-time tracking
-// router.put('/status', updateRiderStatus); // Optional: mark available/unavailable
-
-// // Order management
-// router.get('/orders/available', getAvailableOrdersForRider);
-// router.put('/orders/claim/:id', claimOrder);
-// router.post('/orders/verify-pickup', verifyPickupOTP);
-// router.post('/orders/verify-delivery', verifyDeliveryOTP);
-// router.get('/orders/active', getActiveDeliveries);
-// router.get('/orders/completed', getCompletedShipments);
-
-// module.exports = router;

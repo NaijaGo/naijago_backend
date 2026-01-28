@@ -23,7 +23,24 @@ exports.registerRider = async (req, res) => {
     const riderExists = await Rider.findOne({ $or: [{ email }, { plateNumber }] });
     if (riderExists) {
       return res.status(400).json({ 
+        success: false,
         message: 'Rider with this email or plate number already exists' 
+      });
+    }
+
+    // Validate required fields
+    if (!fullName || !email || !password || !plateNumber || !phoneNumber) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide all required fields'
+      });
+    }
+
+    // Validate document URLs
+    if (!documentUrls || !documentUrls.ninFront || !documentUrls.ninBack || !documentUrls.platePhoto || !documentUrls.selfie) {
+      return res.status(400).json({
+        success: false,
+        message: 'All document URLs are required'
       });
     }
 
@@ -34,20 +51,31 @@ exports.registerRider = async (req, res) => {
       email,
       password,
       phoneNumber,
-      plateNumber,
+      plateNumber: plateNumber.toUpperCase().trim(),
       vehicleType: vehicleType || 'motorcycle',
       documents: {
-        ninFront: documentUrls?.ninFront,
-        ninBack: documentUrls?.ninBack,
-        platePhoto: documentUrls?.platePhoto,
-        selfie: documentUrls?.selfie,
+        ninFront: documentUrls.ninFront,
+        ninBack: documentUrls.ninBack,
+        platePhoto: documentUrls.platePhoto,
+        selfie: documentUrls.selfie,
       },
-      emailVerificationToken: verificationToken,
-      emailVerificationExpires: Date.now() + 24 * 60 * 60 * 1000 
+      emailVerificationToken: crypto
+        .createHash('sha256')
+        .update(verificationToken)
+        .digest('hex'),
+      emailVerificationExpires: Date.now() + 24 * 60 * 60 * 1000,
+      // Auto-verify in development mode for testing
+      isEmailVerified: process.env.NODE_ENV === 'development'
     });
 
     // Send verification email
-    await sendVerificationEmail(rider.email, verificationToken, 'rider');
+    try {
+      await sendVerificationEmail(rider.email, verificationToken, 'rider');
+    } catch (emailError) {
+      console.error('Failed to send verification email:', emailError);
+      // Don't fail registration if email fails
+      // You might want to implement retry logic or queue system here
+    }
 
     res.status(201).json({
       success: true,
@@ -55,13 +83,80 @@ exports.registerRider = async (req, res) => {
       fullName: rider.fullName,
       email: rider.email,
       status: rider.status,
+      isEmailVerified: rider.isEmailVerified,
       token: generateToken(rider._id),
-      message: "Registration successful! Please check your email to verify your account."
+      message: process.env.NODE_ENV === 'development'
+        ? "Registration successful! Email verification is disabled in development mode."
+        : "Registration successful! Please check your email to verify your account."
     });
     
   } catch (error) {
     console.error('Rider registration error:', error);
-    res.status(500).json({ message: error.message });
+    res.status(500).json({ 
+      success: false,
+      message: error.message || 'Registration failed. Please try again.' 
+    });
+  }
+};
+
+/**
+ * @desc Verify rider email with token
+ */
+exports.verifyRiderEmail = async (req, res) => {
+  try {
+    const { token } = req.params;
+    
+    if (!token) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Verification token is required' 
+      });
+    }
+
+    // Hash the token to compare with stored hash
+    const hashedToken = crypto
+      .createHash('sha256')
+      .update(token)
+      .digest('hex');
+
+    // Find rider with this token and check expiration
+    const rider = await Rider.findOne({
+      emailVerificationToken: hashedToken,
+      emailVerificationExpires: { $gt: Date.now() }
+    });
+
+    if (!rider) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Invalid or expired verification token' 
+      });
+    }
+
+    // Mark email as verified
+    rider.isEmailVerified = true;
+    rider.emailVerificationToken = undefined;
+    rider.emailVerificationExpires = undefined;
+    
+    await rider.save();
+
+    // Return success response
+    res.json({
+      success: true,
+      message: 'Email verified successfully! You can now login.',
+      rider: {
+        id: rider._id,
+        email: rider.email,
+        fullName: rider.fullName,
+        isEmailVerified: rider.isEmailVerified
+      }
+    });
+
+  } catch (error) {
+    console.error('Email verification error:', error);
+    res.status(500).json({ 
+      success: false,
+      message: 'Server error during email verification' 
+    });
   }
 };
 
@@ -72,21 +167,36 @@ exports.loginRider = async (req, res) => {
   const { email, password } = req.body;
   
   try {
+    // Validate input
+    if (!email || !password) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Please provide email and password' 
+      });
+    }
+
     const rider = await Rider.findOne({ email }).select('+password');
     
     if (!rider) {
-      return res.status(401).json({ message: 'Invalid email or password' });
+      return res.status(401).json({ 
+        success: false,
+        message: 'Invalid email or password' 
+      });
     }
 
     // Compare password
     const isPasswordValid = await rider.comparePassword(password);
     if (!isPasswordValid) {
-      return res.status(401).json({ message: 'Invalid email or password' });
+      return res.status(401).json({ 
+        success: false,
+        message: 'Invalid email or password' 
+      });
     }
 
     // Check email verification
     if (!rider.isEmailVerified) {
       return res.status(401).json({ 
+        success: false,
         message: 'Please verify your email address.', 
         requiresVerification: true 
       });
@@ -95,12 +205,14 @@ exports.loginRider = async (req, res) => {
     // Check application status
     if (rider.status === 'pending') {
       return res.status(401).json({ 
+        success: false,
         message: 'Application is under review. Please wait for admin approval.' 
       });
     }
 
     if (rider.status === 'rejected') {
       return res.status(401).json({ 
+        success: false,
         message: 'Application rejected.', 
         reason: rider.rejectionReason || 'Requirements not met.' 
       });
@@ -108,6 +220,7 @@ exports.loginRider = async (req, res) => {
 
     if (rider.status === 'suspended') {
       return res.status(401).json({ 
+        success: false,
         message: 'Account suspended. Please contact support.' 
       });
     }
@@ -117,6 +230,7 @@ exports.loginRider = async (req, res) => {
     await rider.save();
 
     res.json({
+      success: true,
       _id: rider._id,
       fullName: rider.fullName,
       email: rider.email,
@@ -133,7 +247,10 @@ exports.loginRider = async (req, res) => {
 
   } catch (error) {
     console.error('Rider login error:', error);
-    res.status(500).json({ message: error.message });
+    res.status(500).json({ 
+      success: false,
+      message: error.message || 'Login failed. Please try again.' 
+    });
   }
 };
 
@@ -148,7 +265,10 @@ exports.getRiderProfile = async (req, res) => {
       .lean();
 
     if (!rider) {
-      return res.status(404).json({ message: 'Rider not found' });
+      return res.status(404).json({ 
+        success: false,
+        message: 'Rider not found' 
+      });
     }
 
     // Calculate additional stats
@@ -162,6 +282,7 @@ exports.getRiderProfile = async (req, res) => {
     };
 
     res.json({
+      success: true,
       ...rider,
       stats,
       canWithdraw: rider.walletBalance >= 100, // Minimum withdrawal amount
@@ -169,7 +290,10 @@ exports.getRiderProfile = async (req, res) => {
     
   } catch (error) {
     console.error('Get rider profile error:', error);
-    res.status(500).json({ message: 'Server error while fetching profile' });
+    res.status(500).json({ 
+      success: false,
+      message: 'Server error while fetching profile' 
+    });
   }
 };
 
@@ -187,6 +311,14 @@ exports.updateRiderProfile = async (req, res) => {
     if (vehicleBrand) updateData.vehicleBrand = vehicleBrand;
     if (vehicleColor) updateData.vehicleColor = vehicleColor;
 
+    // Validate at least one field is being updated
+    if (Object.keys(updateData).length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'No fields to update'
+      });
+    }
+
     const rider = await Rider.findByIdAndUpdate(
       req.user._id,
       updateData,
@@ -194,13 +326,17 @@ exports.updateRiderProfile = async (req, res) => {
     ).select('-password');
 
     res.json({
+      success: true,
       message: 'Profile updated successfully',
       rider
     });
     
   } catch (error) {
     console.error('Update rider profile error:', error);
-    res.status(500).json({ message: error.message });
+    res.status(500).json({ 
+      success: false,
+      message: error.message 
+    });
   }
 };
 
@@ -212,18 +348,37 @@ exports.updateRiderLocation = async (req, res) => {
     const { lat, lng, address } = req.body;
     
     if (!lat || !lng) {
-      return res.status(400).json({ message: 'Latitude and longitude are required' });
+      return res.status(400).json({ 
+        success: false,
+        message: 'Latitude and longitude are required' 
+      });
     }
 
     const rider = await Rider.findById(req.user._id);
     if (!rider) {
-      return res.status(404).json({ message: 'Rider not found' });
+      return res.status(404).json({ 
+        success: false,
+        message: 'Rider not found' 
+      });
+    }
+
+    // Validate coordinates
+    const latitude = parseFloat(lat);
+    const longitude = parseFloat(lng);
+    
+    if (isNaN(latitude) || isNaN(longitude) || 
+        latitude < -90 || latitude > 90 || 
+        longitude < -180 || longitude > 180) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid coordinates'
+      });
     }
 
     // Update location
     rider.currentLocation = {
-      lat: parseFloat(lat),
-      lng: parseFloat(lng),
+      lat: latitude,
+      lng: longitude,
       lastUpdated: Date.now(),
       address: address || ''
     };
@@ -243,13 +398,17 @@ exports.updateRiderLocation = async (req, res) => {
     }
 
     res.json({
+      success: true,
       message: 'Location updated successfully',
       location: rider.currentLocation
     });
     
   } catch (error) {
     console.error('Update rider location error:', error);
-    res.status(500).json({ message: error.message });
+    res.status(500).json({ 
+      success: false,
+      message: error.message 
+    });
   }
 };
 
@@ -264,11 +423,20 @@ exports.updateRiderStatus = async (req, res) => {
     if (isAvailable !== undefined) updateData.isAvailable = isAvailable;
     if (isActive !== undefined) updateData.isActive = isActive;
 
+    // Validate at least one field is being updated
+    if (Object.keys(updateData).length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'No status fields to update'
+      });
+    }
+
     // If rider is marking themselves as active, ensure they're approved
     if (isActive === true) {
       const rider = await Rider.findById(req.user._id);
       if (rider.status !== 'approved') {
         return res.status(400).json({ 
+          success: false,
           message: 'Cannot activate account. Rider account must be approved by admin.' 
         });
       }
@@ -281,6 +449,7 @@ exports.updateRiderStatus = async (req, res) => {
     ).select('-password');
 
     res.json({
+      success: true,
       message: 'Status updated successfully',
       isAvailable: updatedRider.isAvailable,
       isActive: updatedRider.isActive
@@ -288,7 +457,10 @@ exports.updateRiderStatus = async (req, res) => {
     
   } catch (error) {
     console.error('Update rider status error:', error);
-    res.status(500).json({ message: error.message });
+    res.status(500).json({ 
+      success: false,
+      message: error.message 
+    });
   }
 };
 
@@ -299,9 +471,19 @@ exports.getAvailableOrders = async (req, res) => {
   try {
     // Get rider's current location for distance calculation
     const rider = await Rider.findById(req.user._id);
+    
     if (!rider.isAvailable || !rider.isActive) {
       return res.status(400).json({ 
+        success: false,
         message: 'Please mark yourself as available and active to see orders' 
+      });
+    }
+
+    // Check if rider is approved
+    if (rider.status !== 'approved') {
+      return res.status(400).json({
+        success: false,
+        message: 'Your account is not yet approved by admin'
       });
     }
 
@@ -326,7 +508,8 @@ exports.getAvailableOrders = async (req, res) => {
         }
       ]
     })
-    .sort({ createdAt: -1 });
+    .sort({ createdAt: -1 })
+    .limit(50); // Limit results for performance
 
     // Filter out orders with no available shipments
     const filteredOrders = availableOrders.filter(order => 
@@ -353,15 +536,23 @@ exports.getAvailableOrders = async (req, res) => {
         ...order.toObject(),
         estimatedDistance: distance,
         totalShipments: order.shipments.length,
-        totalShippingPrice: order.totalShippingPrice
+        totalShippingPrice: order.totalShippingPrice,
+        estimatedEarnings: order.totalShippingPrice * 0.7 // Example: rider gets 70% of shipping fee
       };
     });
 
-    res.json(ordersWithDistance);
+    res.json({
+      success: true,
+      count: ordersWithDistance.length,
+      orders: ordersWithDistance
+    });
     
   } catch (error) {
     console.error('Get available orders error:', error);
-    res.status(500).json({ message: 'Error fetching available orders' });
+    res.status(500).json({ 
+      success: false,
+      message: 'Error fetching available orders' 
+    });
   }
 };
 
@@ -376,6 +567,16 @@ exports.claimOrder = async (req, res) => {
     const orderId = req.params.id;
     const riderId = req.user._id;
 
+    // Validate order ID
+    if (!mongoose.Types.ObjectId.isValid(orderId)) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({ 
+        success: false,
+        message: 'Invalid order ID' 
+      });
+    }
+
     const mainOrder = await MainOrder.findById(orderId)
       .populate('shipments')
       .session(session);
@@ -383,32 +584,47 @@ exports.claimOrder = async (req, res) => {
     if (!mainOrder) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(404).json({ message: 'Order not found' });
+      return res.status(404).json({ 
+        success: false,
+        message: 'Order not found' 
+      });
     }
 
     // Validation checks
     if (!mainOrder.isPaid) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(400).json({ message: 'Order is not paid yet' });
+      return res.status(400).json({ 
+        success: false,
+        message: 'Order is not paid yet' 
+      });
     }
 
     if (mainOrder.isClaimed) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(400).json({ message: 'Order already claimed by another rider' });
+      return res.status(400).json({ 
+        success: false,
+        message: 'Order already claimed by another rider' 
+      });
     }
 
     if (mainOrder.rider) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(400).json({ message: 'Order already assigned to a rider' });
+      return res.status(400).json({ 
+        success: false,
+        message: 'Order already assigned to a rider' 
+      });
     }
 
     if (['delivered', 'completed', 'cancelled'].includes(mainOrder.mainOrderStatus)) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(400).json({ message: 'Order is already delivered, completed, or cancelled' });
+      return res.status(400).json({ 
+        success: false,
+        message: 'Order is already delivered, completed, or cancelled' 
+      });
     }
 
     // Check rider availability
@@ -417,7 +633,18 @@ exports.claimOrder = async (req, res) => {
       await session.abortTransaction();
       session.endSession();
       return res.status(400).json({ 
+        success: false,
         message: 'Please mark yourself as available and active to claim orders' 
+      });
+    }
+
+    // Check if rider has too many active deliveries (limit to 5)
+    if (rider.activeDeliveries >= 5) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({
+        success: false,
+        message: 'You have reached the maximum limit of active deliveries (5). Complete some deliveries first.'
       });
     }
 
@@ -434,6 +661,7 @@ exports.claimOrder = async (req, res) => {
     mainOrder.shipmentStatus = 'out_for_delivery';
 
     // Update all shipments
+    const shipmentUpdates = [];
     for (const shipment of mainOrder.shipments) {
       if (shipment.shipmentStatus === 'ready_for_pickup' && !shipment.isClaimed) {
         shipment.rider = riderId;
@@ -442,9 +670,12 @@ exports.claimOrder = async (req, res) => {
         shipment.shipmentStatus = 'out_for_delivery';
         shipment.pickupOTP = pickupOTP;
         shipment.deliveryOTP = deliveryOTP;
-        await shipment.save({ session });
+        shipmentUpdates.push(shipment.save({ session }));
       }
     }
+
+    // Wait for all shipment updates
+    await Promise.all(shipmentUpdates);
 
     // Update rider's active deliveries count
     await Rider.findByIdAndUpdate(
@@ -467,8 +698,18 @@ exports.claimOrder = async (req, res) => {
           orderId: mainOrder._id,
           shipmentId: shipment._id,
           riderName: rider.fullName,
-          riderPhone: rider.phoneNumber
+          riderPhone: rider.phoneNumber,
+          pickupOTP: pickupOTP
         });
+      });
+
+      // Notify customer
+      io.emit(`user_${mainOrder.user}`, {
+        type: 'order_claimed',
+        message: `Your order has been picked up by rider ${rider.fullName}`,
+        orderId: mainOrder._id,
+        riderName: rider.fullName,
+        riderPhone: rider.phoneNumber
       });
     }
 
@@ -480,7 +721,8 @@ exports.claimOrder = async (req, res) => {
       order: {
         id: mainOrder._id,
         shippingAddress: mainOrder.shippingAddress,
-        userPhone: mainOrder.user?.phoneNumber
+        userPhone: mainOrder.user?.phoneNumber,
+        totalShipments: mainOrder.shipments.length
       }
     });
     
@@ -488,7 +730,10 @@ exports.claimOrder = async (req, res) => {
     await session.abortTransaction();
     session.endSession();
     console.error('Claim order error:', error);
-    res.status(500).json({ message: error.message });
+    res.status(500).json({ 
+      success: false,
+      message: error.message 
+    });
   }
 };
 
@@ -500,35 +745,79 @@ exports.verifyPickupOTP = async (req, res) => {
     const { orderId, pickupOTP } = req.body;
     
     if (!orderId || !pickupOTP) {
-      return res.status(400).json({ message: 'Order ID and pickup OTP are required' });
+      return res.status(400).json({ 
+        success: false,
+        message: 'Order ID and pickup OTP are required' 
+      });
+    }
+
+    // Validate order ID
+    if (!mongoose.Types.ObjectId.isValid(orderId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid order ID'
+      });
     }
 
     const mainOrder = await MainOrder.findById(orderId);
     if (!mainOrder) {
-      return res.status(404).json({ message: 'Order not found' });
+      return res.status(404).json({ 
+        success: false,
+        message: 'Order not found' 
+      });
     }
 
     // Check if rider is assigned to this order
     if (mainOrder.rider.toString() !== req.user._id.toString()) {
-      return res.status(403).json({ message: 'Not authorized for this order' });
+      return res.status(403).json({ 
+        success: false,
+        message: 'Not authorized for this order' 
+      });
     }
 
     // Verify OTP
     if (mainOrder.pickupOTP !== pickupOTP) {
-      return res.status(400).json({ message: 'Invalid pickup OTP' });
+      return res.status(400).json({ 
+        success: false,
+        message: 'Invalid pickup OTP' 
+      });
+    }
+
+    // Check if already picked up
+    if (mainOrder.shipmentStatus === 'out_for_delivery') {
+      return res.status(400).json({
+        success: false,
+        message: 'Order already picked up'
+      });
     }
 
     // Update shipment statuses to 'out_for_delivery'
     await Shipment.updateMany(
       { mainOrder: orderId, rider: req.user._id },
-      { shipmentStatus: 'out_for_delivery' }
+      { 
+        shipmentStatus: 'out_for_delivery',
+        pickedUpAt: Date.now()
+      }
     );
 
     // Update MainOrder status
     mainOrder.shipmentStatus = 'out_for_delivery';
+    mainOrder.pickedUpAt = Date.now();
     await mainOrder.save();
 
+    // Send notification
+    const io = req.app.get('io');
+    if (io) {
+      io.emit(`user_${mainOrder.user}`, {
+        type: 'order_picked_up',
+        message: `Your order has been picked up and is on the way`,
+        orderId: mainOrder._id,
+        riderName: req.user.fullName
+      });
+    }
+
     res.json({ 
+      success: true,
       message: 'Pickup verified successfully! Proceed to delivery location.',
       deliveryAddress: mainOrder.shippingAddress,
       deliveryOTP: mainOrder.deliveryOTP
@@ -536,7 +825,10 @@ exports.verifyPickupOTP = async (req, res) => {
     
   } catch (error) {
     console.error('Verify pickup OTP error:', error);
-    res.status(500).json({ message: error.message });
+    res.status(500).json({ 
+      success: false,
+      message: error.message 
+    });
   }
 };
 
@@ -553,28 +845,60 @@ exports.verifyDeliveryOTP = async (req, res) => {
     if (!orderId || !deliveryOTP) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(400).json({ message: 'Order ID and delivery OTP are required' });
+      return res.status(400).json({ 
+        success: false,
+        message: 'Order ID and delivery OTP are required' 
+      });
+    }
+
+    // Validate order ID
+    if (!mongoose.Types.ObjectId.isValid(orderId)) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid order ID'
+      });
     }
 
     const mainOrder = await MainOrder.findById(orderId).session(session);
     if (!mainOrder) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(404).json({ message: 'Order not found' });
+      return res.status(404).json({ 
+        success: false,
+        message: 'Order not found' 
+      });
     }
 
     // Check if rider is assigned to this order
     if (mainOrder.rider.toString() !== req.user._id.toString()) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(403).json({ message: 'Not authorized for this order' });
+      return res.status(403).json({ 
+        success: false,
+        message: 'Not authorized for this order' 
+      });
     }
 
     // Verify OTP
     if (mainOrder.deliveryOTP !== deliveryOTP) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(400).json({ message: 'Invalid delivery OTP' });
+      return res.status(400).json({ 
+        success: false,
+        message: 'Invalid delivery OTP' 
+      });
+    }
+
+    // Check if already delivered
+    if (mainOrder.mainOrderStatus === 'delivered') {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({
+        success: false,
+        message: 'Order already delivered'
+      });
     }
 
     // Mark order as delivered (but not completed yet - admin will mark as completed for payout)
@@ -607,6 +931,19 @@ exports.verifyDeliveryOTP = async (req, res) => {
       { session }
     );
 
+    // Calculate rider earnings (70% of total shipping price)
+    const riderEarnings = mainOrder.totalShippingPrice * 0.7;
+    await Rider.findByIdAndUpdate(
+      req.user._id,
+      { 
+        $inc: { 
+          walletBalance: riderEarnings,
+          totalEarnings: riderEarnings
+        }
+      },
+      { session }
+    );
+
     await mainOrder.save({ session });
     await session.commitTransaction();
     session.endSession();
@@ -615,24 +952,48 @@ exports.verifyDeliveryOTP = async (req, res) => {
     const io = req.app.get('io');
     if (io) {
       io.emit('admin_notification', {
-        type: 'order_ready_for_completion',
-        message: `Order ${mainOrder._id} has been delivered and is ready for final verification and payout.`,
+        type: 'order_delivered',
+        message: `Order ${mainOrder._id} has been delivered by rider ${req.user.fullName}`,
         orderId: mainOrder._id,
         riderId: req.user._id,
+        riderName: req.user.fullName,
         timestamp: Date.now()
+      });
+
+      // Notify customer
+      io.emit(`user_${mainOrder.user}`, {
+        type: 'order_delivered',
+        message: `Your order has been delivered successfully!`,
+        orderId: mainOrder._id,
+        riderName: req.user.fullName
+      });
+
+      // Notify vendor(s)
+      const shipments = await Shipment.find({ mainOrder: orderId });
+      shipments.forEach(shipment => {
+        io.emit(`vendor_${shipment.vendor}`, {
+          type: 'order_delivered',
+          message: `Order ${mainOrder._id} has been delivered to customer`,
+          orderId: mainOrder._id,
+          shipmentId: shipment._id
+        });
       });
     }
 
     res.json({ 
       success: true,
-      message: 'Delivery verified successfully! Order marked as delivered. Payout will be processed after admin verification.'
+      message: 'Delivery verified successfully! Order marked as delivered.',
+      earnings: riderEarnings
     });
     
   } catch (error) {
     await session.abortTransaction();
     session.endSession();
     console.error('Verify delivery OTP error:', error);
-    res.status(500).json({ message: error.message });
+    res.status(500).json({ 
+      success: false,
+      message: error.message 
+    });
   }
 };
 
@@ -655,13 +1016,21 @@ exports.getActiveDeliveries = async (req, res) => {
         }
       ]
     })
-    .sort({ claimedAt: -1 });
+    .sort({ claimedAt: -1 })
+    .limit(20);
 
-    res.json(activeOrders);
+    res.json({
+      success: true,
+      count: activeOrders.length,
+      orders: activeOrders
+    });
     
   } catch (error) {
     console.error('Get active deliveries error:', error);
-    res.status(500).json({ message: 'Error fetching active deliveries' });
+    res.status(500).json({ 
+      success: false,
+      message: 'Error fetching active deliveries' 
+    });
   }
 };
 
@@ -687,11 +1056,18 @@ exports.getCompletedDeliveries = async (req, res) => {
     .sort({ deliveredAt: -1 })
     .limit(50);
 
-    res.json(completedOrders);
+    res.json({
+      success: true,
+      count: completedOrders.length,
+      orders: completedOrders
+    });
     
   } catch (error) {
     console.error('Get completed deliveries error:', error);
-    res.status(500).json({ message: 'Error fetching completed deliveries' });
+    res.status(500).json({ 
+      success: false,
+      message: 'Error fetching completed deliveries' 
+    });
   }
 };
 
@@ -702,31 +1078,62 @@ exports.getEarnings = async (req, res) => {
   try {
     const rider = await Rider.findById(req.user._id)
       .select('walletBalance totalEarnings pendingEarnings totalWithdrawn withdrawalHistory')
-      .populate('withdrawalHistory', 'amount status createdAt completedAt paymentMethod');
+      .populate('withdrawalHistory', 'amount status createdAt completedAt paymentMethod reference');
 
     if (!rider) {
-      return res.status(404).json({ message: 'Rider not found' });
+      return res.status(404).json({ 
+        success: false,
+        message: 'Rider not found' 
+      });
     }
 
     // Calculate weekly and monthly earnings
     const oneWeekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
     const oneMonthAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
 
-    // This would need to query completed shipments for detailed breakdown
-    // For now, returning basic info
+    // Get recent completed shipments for detailed breakdown
+    const weeklyShipments = await Shipment.find({
+      rider: req.user._id,
+      isDelivered: true,
+      deliveredAt: { $gte: oneWeekAgo }
+    }).select('shippingPrice deliveredAt');
+
+    const monthlyShipments = await Shipment.find({
+      rider: req.user._id,
+      isDelivered: true,
+      deliveredAt: { $gte: oneMonthAgo }
+    }).select('shippingPrice deliveredAt');
+
+    const weeklyEarnings = weeklyShipments.reduce((sum, shipment) => sum + (shipment.shippingPrice || 0), 0);
+    const monthlyEarnings = monthlyShipments.reduce((sum, shipment) => sum + (shipment.shippingPrice || 0), 0);
+
+    // Get pending withdrawals
+    const pendingWithdrawals = rider.withdrawalHistory?.filter(w => w.status === 'pending') || [];
+
     res.json({
+      success: true,
       walletBalance: rider.walletBalance || 0,
       totalEarnings: rider.totalEarnings || 0,
       pendingEarnings: rider.pendingEarnings || 0,
       totalWithdrawn: rider.totalWithdrawn || 0,
+      weeklyEarnings,
+      monthlyEarnings,
       availableForWithdrawal: rider.walletBalance,
       withdrawalHistory: rider.withdrawalHistory || [],
+      pendingWithdrawals: pendingWithdrawals.map(w => ({
+        amount: w.amount,
+        reference: w.reference,
+        createdAt: w.createdAt
+      })),
       canWithdraw: rider.walletBalance >= 100 // Minimum withdrawal amount
     });
     
   } catch (error) {
     console.error('Get earnings error:', error);
-    res.status(500).json({ message: 'Error fetching earnings' });
+    res.status(500).json({ 
+      success: false,
+      message: 'Error fetching earnings' 
+    });
   }
 };
 
@@ -743,14 +1150,20 @@ exports.requestWithdrawal = async (req, res) => {
     if (!amount || amount < 100) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(400).json({ message: 'Minimum withdrawal amount is ₦100' });
+      return res.status(400).json({ 
+        success: false,
+        message: 'Minimum withdrawal amount is ₦100' 
+      });
     }
 
     const rider = await Rider.findById(req.user._id).session(session);
     if (!rider) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(404).json({ message: 'Rider not found' });
+      return res.status(404).json({ 
+        success: false,
+        message: 'Rider not found' 
+      });
     }
 
     // Check if rider can withdraw
@@ -758,7 +1171,18 @@ exports.requestWithdrawal = async (req, res) => {
       await session.abortTransaction();
       session.endSession();
       return res.status(400).json({ 
+        success: false,
         message: `Insufficient balance or amount below minimum. Available: ₦${rider.walletBalance}, Minimum: ₦100` 
+      });
+    }
+
+    // Check if rider has a verified bank account
+    if (!rider.bankAccount?.verified && paymentMethod === 'bank_transfer') {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({
+        success: false,
+        message: 'Please update and verify your bank account details first'
       });
     }
 
@@ -767,17 +1191,17 @@ exports.requestWithdrawal = async (req, res) => {
 
     // Create withdrawal record
     const withdrawalRecord = {
-      amount,
+      amount: parseFloat(amount),
       status: 'pending',
       createdAt: Date.now(),
       reference,
       paymentMethod: paymentMethod || 'bank_transfer',
-      accountDetails: accountDetails || {}
+      accountDetails: accountDetails || rider.bankAccount || {}
     };
 
     // Deduct from wallet and add to withdrawal history
-    rider.walletBalance -= amount;
-    rider.pendingEarnings += amount;
+    rider.walletBalance -= parseFloat(amount);
+    rider.pendingEarnings += parseFloat(amount);
     rider.withdrawalHistory.push(withdrawalRecord);
 
     await rider.save({ session });
@@ -810,7 +1234,10 @@ exports.requestWithdrawal = async (req, res) => {
     await session.abortTransaction();
     session.endSession();
     console.error('Withdrawal request error:', error);
-    res.status(500).json({ message: error.message });
+    res.status(500).json({ 
+      success: false,
+      message: error.message 
+    });
   }
 };
 
@@ -822,12 +1249,26 @@ exports.updateBankAccount = async (req, res) => {
     const { bankName, accountNumber, accountName, bankCode } = req.body;
     
     if (!bankName || !accountNumber || !accountName) {
-      return res.status(400).json({ message: 'Bank name, account number, and account name are required' });
+      return res.status(400).json({ 
+        success: false,
+        message: 'Bank name, account number, and account name are required' 
+      });
+    }
+
+    // Validate account number (Nigerian account numbers are 10 digits)
+    if (!/^\d{10}$/.test(accountNumber)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Account number must be 10 digits'
+      });
     }
 
     const rider = await Rider.findById(req.user._id);
     if (!rider) {
-      return res.status(404).json({ message: 'Rider not found' });
+      return res.status(404).json({ 
+        success: false,
+        message: 'Rider not found' 
+      });
     }
 
     rider.bankAccount = {
@@ -848,7 +1289,10 @@ exports.updateBankAccount = async (req, res) => {
     
   } catch (error) {
     console.error('Update bank account error:', error);
-    res.status(500).json({ message: error.message });
+    res.status(500).json({ 
+      success: false,
+      message: error.message 
+    });
   }
 };
 
@@ -860,7 +1304,10 @@ exports.getNearbyRiders = async (req, res) => {
     const { lat, lng, maxDistance = 10000 } = req.query; // Default 10km
     
     if (!lat || !lng) {
-      return res.status(400).json({ message: 'Latitude and longitude are required' });
+      return res.status(400).json({ 
+        success: false,
+        message: 'Latitude and longitude are required' 
+      });
     }
 
     const nearbyRiders = await Rider.findNearby(
@@ -870,11 +1317,18 @@ exports.getNearbyRiders = async (req, res) => {
       20 // Limit to 20 riders
     );
 
-    res.json(nearbyRiders);
+    res.json({
+      success: true,
+      count: nearbyRiders.length,
+      riders: nearbyRiders
+    });
     
   } catch (error) {
     console.error('Get nearby riders error:', error);
-    res.status(500).json({ message: error.message });
+    res.status(500).json({ 
+      success: false,
+      message: error.message 
+    });
   }
 };
 
@@ -891,28 +1345,70 @@ exports.cancelDelivery = async (req, res) => {
     if (!orderId || !reason) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(400).json({ message: 'Order ID and cancellation reason are required' });
+      return res.status(400).json({ 
+        success: false,
+        message: 'Order ID and cancellation reason are required' 
+      });
+    }
+
+    // Validate reason length
+    if (reason.length < 10) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide a detailed cancellation reason (minimum 10 characters)'
+      });
+    }
+
+    // Validate order ID
+    if (!mongoose.Types.ObjectId.isValid(orderId)) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid order ID'
+      });
     }
 
     const mainOrder = await MainOrder.findById(orderId).session(session);
     if (!mainOrder) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(404).json({ message: 'Order not found' });
+      return res.status(404).json({ 
+        success: false,
+        message: 'Order not found' 
+      });
     }
 
     // Check if rider is assigned to this order
     if (mainOrder.rider.toString() !== req.user._id.toString()) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(403).json({ message: 'Not authorized for this order' });
+      return res.status(403).json({ 
+        success: false,
+        message: 'Not authorized for this order' 
+      });
     }
 
     // Check if order can be cancelled (not already delivered/completed)
     if (['delivered', 'completed'].includes(mainOrder.mainOrderStatus)) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(400).json({ message: 'Cannot cancel already delivered order' });
+      return res.status(400).json({ 
+        success: false,
+        message: 'Cannot cancel already delivered order' 
+      });
+    }
+
+    // Check if order was picked up recently (within 30 minutes)
+    if (mainOrder.pickedUpAt && (Date.now() - new Date(mainOrder.pickedUpAt).getTime()) < 30 * 60 * 1000) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({
+        success: false,
+        message: 'Cannot cancel order that was picked up less than 30 minutes ago'
+      });
     }
 
     // Update order status
@@ -922,6 +1418,8 @@ exports.cancelDelivery = async (req, res) => {
     mainOrder.rider = null;
     mainOrder.pickupOTP = null;
     mainOrder.deliveryOTP = null;
+    mainOrder.cancelledAt = Date.now();
+    mainOrder.cancellationReason = reason;
 
     // Update all shipments
     await Shipment.updateMany(
@@ -974,6 +1472,14 @@ exports.cancelDelivery = async (req, res) => {
           shipmentId: shipment._id
         });
       });
+
+      // Notify customer
+      io.emit(`user_${mainOrder.user}`, {
+        type: 'order_cancelled',
+        message: `Your order has been cancelled by the rider. A new rider will be assigned shortly.`,
+        orderId,
+        reason: 'Rider cancellation'
+      });
     }
 
     res.json({
@@ -985,7 +1491,10 @@ exports.cancelDelivery = async (req, res) => {
     await session.abortTransaction();
     session.endSession();
     console.error('Cancel delivery error:', error);
-    res.status(500).json({ message: error.message });
+    res.status(500).json({ 
+      success: false,
+      message: error.message 
+    });
   }
 };
 
@@ -996,30 +1505,49 @@ exports.getVendorLocation = async (req, res) => {
   try {
     const { shipmentId } = req.params;
     
+    // Validate shipment ID
+    if (!mongoose.Types.ObjectId.isValid(shipmentId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid shipment ID'
+      });
+    }
+
     const shipment = await Shipment.findById(shipmentId)
       .populate('vendor', 'businessName businessLocation phoneNumber');
     
     if (!shipment) {
-      return res.status(404).json({ message: 'Shipment not found' });
+      return res.status(404).json({ 
+        success: false,
+        message: 'Shipment not found' 
+      });
     }
 
     // Check if rider is assigned to this shipment
     if (shipment.rider?.toString() !== req.user._id.toString()) {
-      return res.status(403).json({ message: 'Not authorized for this shipment' });
+      return res.status(403).json({ 
+        success: false,
+        message: 'Not authorized for this shipment' 
+      });
     }
 
     res.json({
+      success: true,
       vendor: {
         name: shipment.vendor.businessName,
         phone: shipment.vendor.phoneNumber,
         location: shipment.vendor.businessLocation
       },
-      shipmentId: shipment._id
+      shipmentId: shipment._id,
+      shipmentStatus: shipment.shipmentStatus
     });
     
   } catch (error) {
     console.error('Get vendor location error:', error);
-    res.status(500).json({ message: error.message });
+    res.status(500).json({ 
+      success: false,
+      message: error.message 
+    });
   }
 };
 
@@ -1030,31 +1558,50 @@ exports.getDeliveryLocation = async (req, res) => {
   try {
     const { orderId } = req.params;
     
+    // Validate order ID
+    if (!mongoose.Types.ObjectId.isValid(orderId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid order ID'
+      });
+    }
+
     const mainOrder = await MainOrder.findById(orderId)
       .select('shippingAddress userLocation user')
       .populate('user', 'firstName lastName phoneNumber');
     
     if (!mainOrder) {
-      return res.status(404).json({ message: 'Order not found' });
+      return res.status(404).json({ 
+        success: false,
+        message: 'Order not found' 
+      });
     }
 
     // Check if rider is assigned to this order
     if (mainOrder.rider?.toString() !== req.user._id.toString()) {
-      return res.status(403).json({ message: 'Not authorized for this order' });
+      return res.status(403).json({ 
+        success: false,
+        message: 'Not authorized for this order' 
+      });
     }
 
     res.json({
+      success: true,
       customer: {
         name: `${mainOrder.user.firstName} ${mainOrder.user.lastName}`,
         phone: mainOrder.user.phoneNumber
       },
       deliveryAddress: mainOrder.shippingAddress,
-      coordinates: mainOrder.userLocation
+      coordinates: mainOrder.userLocation,
+      orderStatus: mainOrder.mainOrderStatus
     });
     
   } catch (error) {
     console.error('Get delivery location error:', error);
-    res.status(500).json({ message: error.message });
+    res.status(500).json({ 
+      success: false,
+      message: error.message 
+    });
   }
 };
 
@@ -1067,52 +1614,90 @@ exports.getDashboardStats = async (req, res) => {
       .select('walletBalance totalEarnings completedDeliveries activeDeliveries rating totalRatings');
     
     if (!rider) {
-      return res.status(404).json({ message: 'Rider not found' });
+      return res.status(404).json({ 
+        success: false,
+        message: 'Rider not found' 
+      });
     }
 
     // Calculate recent earnings (last 7 days)
     const oneWeekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-    
-    // Get completed shipments in last 7 days
-    const recentShipments = await Shipment.find({
-      rider: req.user._id,
-      isDelivered: true,
-      deliveredAt: { $gte: oneWeekAgo }
-    }).select('shippingPrice');
-
-    const weeklyEarnings = recentShipments.reduce((sum, shipment) => sum + (shipment.shippingPrice || 0), 0);
-
-    // Get today's earnings
+    const oneMonthAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     
+    // Get completed shipments in last 7 days
+    const weeklyShipments = await Shipment.find({
+      rider: req.user._id,
+      isDelivered: true,
+      deliveredAt: { $gte: oneWeekAgo }
+    }).select('shippingPrice deliveredAt');
+
+    const monthlyShipments = await Shipment.find({
+      rider: req.user._id,
+      isDelivered: true,
+      deliveredAt: { $gte: oneMonthAgo }
+    }).select('shippingPrice deliveredAt');
+
     const todayShipments = await Shipment.find({
       rider: req.user._id,
       isDelivered: true,
       deliveredAt: { $gte: today }
-    }).select('shippingPrice');
+    }).select('shippingPrice deliveredAt');
 
+    const weeklyEarnings = weeklyShipments.reduce((sum, shipment) => sum + (shipment.shippingPrice || 0), 0);
+    const monthlyEarnings = monthlyShipments.reduce((sum, shipment) => sum + (shipment.shippingPrice || 0), 0);
     const todayEarnings = todayShipments.reduce((sum, shipment) => sum + (shipment.shippingPrice || 0), 0);
 
+    // Calculate on-time delivery rate (example: deliveries within 2 hours of estimated time)
+    const recentDeliveries = await Shipment.find({
+      rider: req.user._id,
+      isDelivered: true,
+      deliveredAt: { $gte: oneMonthAgo }
+    }).select('estimatedDeliveryTime deliveredAt');
+
+    let onTimeDeliveries = 0;
+    recentDeliveries.forEach(delivery => {
+      if (delivery.estimatedDeliveryTime && delivery.deliveredAt) {
+        const deliveryTime = new Date(delivery.deliveredAt).getTime();
+        const estimatedTime = new Date(delivery.estimatedDeliveryTime).getTime();
+        if (deliveryTime <= estimatedTime + (2 * 60 * 60 * 1000)) { // Within 2 hours
+          onTimeDeliveries++;
+        }
+      }
+    });
+
+    const onTimeRate = recentDeliveries.length > 0 ? (onTimeDeliveries / recentDeliveries.length) * 100 : 100;
+
     res.json({
+      success: true,
       walletBalance: rider.walletBalance || 0,
       totalEarnings: rider.totalEarnings || 0,
       weeklyEarnings,
+      monthlyEarnings,
       todayEarnings,
       completedDeliveries: rider.completedDeliveries || 0,
       activeDeliveries: rider.activeDeliveries || 0,
       averageRating: rider.totalRatings > 0 ? (rider.rating / rider.totalRatings).toFixed(1) : 0,
       totalRatings: rider.totalRatings || 0,
       performance: {
-        cancellationRate: rider.cancellationRate || 0,
-        onTimeRate: 95, // This would need actual calculation from delivery times
-        satisfactionRate: 98 // This would need actual customer ratings
+        cancellationRate: (rider.cancellationRate || 0) * 100, // Convert to percentage
+        onTimeRate: Math.round(onTimeRate),
+        satisfactionRate: rider.totalRatings > 0 ? Math.round((rider.rating / rider.totalRatings) * 20) : 100 // Convert 5-star to percentage
+      },
+      recentActivity: {
+        lastWeekCount: weeklyShipments.length,
+        lastMonthCount: monthlyShipments.length,
+        todayCount: todayShipments.length
       }
     });
     
   } catch (error) {
     console.error('Get dashboard stats error:', error);
-    res.status(500).json({ message: error.message });
+    res.status(500).json({ 
+      success: false,
+      message: error.message 
+    });
   }
 };
 
