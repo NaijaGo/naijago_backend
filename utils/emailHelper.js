@@ -2,6 +2,7 @@
 const { Resend } = require('resend');
 const resend = new Resend(process.env.RESEND_API_KEY);
 const BASE_URL = process.env.BASE_URL || 'http://localhost:5000';
+const FRONTEND_URL = 'https://naijagoapp.com';
 
 const sendVerificationEmail = async (email, token, type, extraData = null) => {
     // Determine verification link based on type
@@ -11,7 +12,7 @@ const sendVerificationEmail = async (email, token, type, extraData = null) => {
         verificationLink = `${BASE_URL}/api/auth/reset-password-form/${token}`;
     } else if (type === 'rider') {
         // For rider email verification - UPDATED to use frontend URL
-        verificationLink = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/rider/verify-email/${token}`;
+        verificationLink = `${FRONTEND_URL || 'https://naijagoapp.com'}/rider/verify-email/${token}`;
     } else if (type === 'email') {
         // For general email verification
         verificationLink = `${BASE_URL}/api/verify-email/${token}`;
