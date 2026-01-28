@@ -9,6 +9,242 @@ const Rider = require('../models/Rider');
 const { protect, authorizeRoles } = require('../middleware/authMiddleware');
 const axios = require("axios");
 
+
+// Category-based commission rates
+const CATEGORY_COMMISSION_RATES = {
+    // HIGH COMMISSION CATEGORIES (15%) - Luxury/High-margin items
+    'high': {
+        rate: 0.15,
+        categories: [
+            // Luxury Fashion
+            'Fashion > Men\'s Fashion',
+            'Fashion > Women\'s Fashion',
+            'Fashion > Watches',
+            'Fashion > Jewelry',
+            'Fashion > Eyewear',
+            
+            // Electronics & Tech
+            'Electronics > Televisions & Video',
+            'Electronics > Camera & Photo',
+            'Electronics > Gadgets',
+            'Electronics > Drones',
+            'Electronics > Smart Home Devices',
+            'Computing > Computers',
+            
+            // Luxury Items
+            'Home & Office > Furniture',
+            'Home & Office > Appliances',
+            'Home & Office > Lighting',
+            'Home & Office > Home Security',
+            
+            // Health & Beauty Luxury
+            'Health & Beauty > Make Up',
+            'Health & Beauty > Fragrance',
+            'Health & Beauty > Skin Care & Cosmetics',
+            
+            // Automotive
+            'Automobiles > Performance Parts',
+            
+            // Gaming
+            'Gaming > Play Station',
+            'Gaming > Xbox',
+            'Gaming > Nintendo',
+            'Gaming > PC Gaming',
+            'Gaming > VR Headsets',
+            
+            // Sporting Goods (High-end)
+            'Sporting Goods > Cardio Training',
+            'Sporting Goods > Strength & Training Equipment',
+            
+            // Musical Instruments
+            'Music & Instruments > Guitars',
+            'Music & Instruments > Keyboards & Pianos',
+            'Music & Instruments > Audio Equipment',
+            
+            // Photography
+            'Photography > Cameras',
+            'Photography > Lenses',
+        ]
+    },
+    
+    // MEDIUM COMMISSION CATEGORIES (12.5%) - Mid-range items
+    'medium': {
+        rate: 0.125,
+        categories: [
+            // Fashion (non-luxury)
+            'Fashion > Kids\' Fashion',
+            'Fashion > Luggages & Travel Gear',
+            'Fashion > Hair & Wigs',
+            'Fashion > Footwear',
+            'Fashion > Bags & Purses',
+            'Fashion > Belts & Accessories',
+            'Fashion > Traditional Attire',
+            'Fashion > Underwear & Lingerie',
+            'Fashion > Sportswear',
+            
+            // Electronics (mid-range)
+            'Electronics > Audios',
+            'Electronics > Home Theater Systems',
+            'Electronics > Headphones & Earbuds',
+            'Electronics > Car Electronics',
+            'Electronics > Batteries & Power',
+            'Computing > Data Storage',
+            'Computing > Printers & Computer Accessories',
+            'Computing > Keyboards & Mice',
+            
+            // Home & Office (mid-range)
+            'Home & Office > Home & Kitchen',
+            'Home & Office > Home Interior & Exterior',
+            'Home & Office > Office Products',
+            'Home & Office > Cleaning Supplies',
+            'Home & Office > Storage & Organization',
+            'Home & Office > Garden & Outdoor',
+            'Home & Office > Bedding & Bath',
+            
+            // Health & Beauty (mid-range)
+            'Health & Beauty > Hair Care',
+            'Health & Beauty > Oral Care',
+            'Health & Beauty > Personal Care',
+            'Health & Beauty > Shaving & Hair Removal',
+            'Health & Beauty > Vitamins & Supplements',
+            
+            // Baby Products
+            'Baby Products > Apparels & Accessories',
+            'Baby Products > Diapering',
+            'Baby Products > Feeding',
+            'Baby Products > Baby Toddlers Toys',
+            'Baby Products > Gears',
+            'Baby Products > Bathing & Skin Care',
+            'Baby Products > Potty Training',
+            'Baby Products > Safety',
+            'Baby Products > Nursery Furniture',
+            'Baby Products > Strollers & Prams',
+            'Baby Products > Car Seats',
+            'Baby Products > Educational Toys',
+            
+            // Books & Stationery
+            'Books & Stationery > Fiction Books',
+            'Books & Stationery > Comics',
+            'Books & Stationery > Technology',
+            'Books & Stationery > Business',
+            'Books & Stationery > Story',
+            'Books & Stationery > Religious',
+            'Books & Stationery > Non-Fiction',
+            'Books & Stationery > Academic Textbooks',
+            'Books & Stationery > Children Books',
+            'Books & Stationery > Magazines',
+            'Books & Stationery > Writing Instruments',
+            'Books & Stationery > Office Supplies',
+            'Books & Stationery > Art Supplies',
+            'Books & Stationery > Calendars & Planners',
+        ]
+    },
+    
+    // LOW COMMISSION CATEGORIES (10%) - Low-margin/essential items
+    'low': {
+        rate: 0.10,
+        categories: [
+            // Groceries & Essentials
+            'Groceries > Beer, Wine & Spirits',
+            'Groceries > Food Cupboard',
+            'Groceries > House Hold Cleaning',
+            'Groceries > Fresh Produce',
+            'Groceries > Dairy & Eggs',
+            'Groceries > Seafood',
+            
+            // Health & Medicine
+            'Health & Beauty > Medicine',
+            'Health & Beauty > Condoms',
+            'Health & Beauty > Sex Toys',
+            'Health & Beauty > First Aid',
+            'Health & Beauty > Medical Equipment',
+            'Health & Beauty > Feminine Care',
+            
+            // Automotive Essentials
+            'Automobiles > Car Care',
+            'Automobiles > Car Exterior and Interior Accessories',
+            'Automobiles > Tools & Equipment',
+            'Automobiles > Oils & Fluids',
+            'Automobiles > Car Safety',
+            
+            // Animal Products
+            'Animal Products > Chicken Feeds',
+            'Animal Products > Dog Feeds',
+            'Animal Products > Cat Feeds',
+            'Animal Products > Fish Feeds',
+            'Animal Products > Pig Feeds',
+            'Animal Products > Pet Accessories',
+            'Animal Products > Pet Health & Care',
+            'Animal Products > Pet Toys',
+            'Animal Products > Pet Clothing',
+            'Animal Products > Pet Grooming',
+            'Animal Products > Aquarium Supplies',
+            'Animal Products > Bird Supplies',
+            
+            // Building & Construction
+            'Building & Construction > Building Materials',
+            'Building & Construction > Electrical',
+            'Building & Construction > Plumbing',
+            'Building & Construction > Tools & Machinery',
+            'Building & Construction > Safety Equipment',
+            'Building & Construction > Paints & Coatings',
+            'Building & Construction > Hardware',
+            
+            // Industrial & Scientific
+            'Industrial & Scientific > Lab Equipment',
+            'Industrial & Scientific > Packaging & Shipping',
+            'Industrial & Scientific > Janitorial & Sanitation',
+            
+            // Agriculture
+            'Agriculture > Fertilizers',
+            'Agriculture > Pesticides',
+            
+            // Toys & Games (non-electronic)
+            'Toys & Games > Dolls',
+            'Toys & Games > Educational Toys',
+            'Toys & Games > Outdoor Toys',
+            'Toys & Games > Remote Control Toys',
+            'Toys & Games > Stuffed Animals',
+            'Toys & Games > Toy Vehicles',
+            
+            // Arts & Crafts
+            'Arts & Crafts > Painting',
+            'Arts & Crafts > Beading & Jewelry Making',
+            'Arts & Crafts > Clay & Pottery',
+            
+            // Food & Beverage Equipment
+            'Food & Beverage > Restaurant Equipment',
+            'Food & Beverage > Catering Supplies',
+            'Food & Beverage > Baking Supplies',
+            'Food & Beverage > Food Processing',
+            'Food & Beverage > Beverage Equipment',
+            'Food & Beverage > Kitchen Utensils',
+            'Food & Beverage > Food Packaging',
+            
+            // Travel & Tourism
+            'Travel & Tourism > Travel Accessories',
+            'Travel & Tourism > Luggage',
+            'Travel & Tourism > Hotel Supplies',
+            
+            // Wedding & Events
+            'Wedding & Events > Wedding Attire',
+        ]
+    }
+};
+
+// Helper function to get commission rate based on category
+function getCommissionRateForCategory(category) {
+    // Check each commission tier
+    for (const [tier, data] of Object.entries(CATEGORY_COMMISSION_RATES)) {
+        if (data.categories.includes(category)) {
+            return data.rate;
+        }
+    }
+    
+    // Default rate if category not found
+    return 0.125; // 12.5% default
+}
+
 // 👇 START OF ADDITIONS 1: Distance Calculation Utility (KEEPING THIS)
 /**
  * Calculates the distance between two geographical coordinates using the Haversine formula.
@@ -76,9 +312,12 @@ router.get('/', protect, async (req, res) => {
 // @desc    Calculate total price, split by vendor, and return summary
 // @route   POST /api/orders/calculate_summary
 // @access  Private
+
+// @desc    Calculate total price, split by vendor, and return summary
+// @route   POST /api/orders/calculate_summary
+// @access  Private
 router.post('/summary', protect, async (req, res) => {
     const { cartItems, shippingAddress, userLocation } = req.body;
-    const PLATFORM_COMMISSION_RATE = 0.15; // 15% rate
 
     if (!cartItems || cartItems.length === 0) {
         return res.status(400).json({ message: 'No items in cart for summary calculation' });
@@ -90,19 +329,20 @@ router.post('/summary', protect, async (req, res) => {
     try {
         const vendorCartMap = new Map();
         let totalSubtotal = 0;
+        let totalPlatformFees = 0;
 
         // 1. Group items by vendor and calculate subtotal for each vendor
         for (const item of cartItems) {
-            // Fetch product and vendor data in parallel for efficiency
+            // Fetch product, vendor, and category data
             const [product, vendorUser] = await Promise.all([
-                Product.findById(item.product, 'price imageUrls vendor'),
+                Product.findById(item.product, 'price imageUrls vendor category'),
                 User.findById(item.vendor, 'businessName businessLocation')
             ]);
             
             if (!product) {
                 return res.status(404).json({ message: `Product not found: ${item.name}` });
             }
-            // Use the vendor ID from the Product schema for consistency
+            
             const vendorId = product.vendor.toString(); 
 
             if (!vendorUser || !vendorUser.businessLocation) {
@@ -112,6 +352,12 @@ router.post('/summary', protect, async (req, res) => {
             const itemPrice = product.price * item.quantity;
             totalSubtotal += itemPrice;
 
+            // Get category-based commission rate
+            const productCategory = product.category || 'Uncategorized';
+            const commissionRate = getCommissionRateForCategory(productCategory);
+            const itemCommission = itemPrice * commissionRate;
+            totalPlatformFees += itemCommission;
+
             if (!vendorCartMap.has(vendorId)) {
                 vendorCartMap.set(vendorId, {
                     vendorId: vendorId,
@@ -119,33 +365,33 @@ router.post('/summary', protect, async (req, res) => {
                     vendorLocation: vendorUser.businessLocation,
                     items: [],
                     subtotal: 0,
+                    platformFee: 0,
+                    commissionRate: 0,
                 });
             }
             
-            // vendorCartMap.get(vendorId).items.push({
-            //     product: item.product,
-            //     name: item.name, // Use name from cart for frontend display
-            //     image: product.imageUrls[0], // Use product data for image
-            //     quantity: item.quantity,
-            //     price: product.price, // Use product data for price verification
-            // });
-
-            vendorCartMap.get(vendorId).items.push({
+            const vendorData = vendorCartMap.get(vendorId);
+            vendorData.items.push({
                 product: item.product,
-                name: item.name, // Use name from cart for frontend display
-                image: product.imageUrls[0], // Use product data for image
+                name: item.name,
+                image: product.imageUrls[0],
                 quantity: item.quantity,
-                price: product.price, // Use product data for price verification
-                selectedSize: item.selectedSize || null, // NEW: Include selected size
+                price: product.price,
+                selectedSize: item.selectedSize || null,
+                category: productCategory, // Store category for reference
+                commissionRate: commissionRate, // Store individual commission rate
+                itemCommission: itemCommission, // Store calculated commission
             });
             
-            vendorCartMap.get(vendorId).subtotal += itemPrice;
+            vendorData.subtotal += itemPrice;
+            vendorData.platformFee += itemCommission;
+            // Store the average commission rate for this vendor's shipment
+            vendorData.commissionRate = vendorData.platformFee / vendorData.subtotal;
         }
 
         // 2. Calculate fees for each shipment
         const shipmentSummaries = [];
         let totalShippingPrice = 0;
-        let totalPlatformFees = 0;
 
         for (const data of vendorCartMap.values()) {
             const vendorLocation = data.vendorLocation;
@@ -161,11 +407,7 @@ router.post('/summary', protect, async (req, res) => {
             // Calculate Shipping Price
             const shippingPrice = calculateShippingCost(distanceKm, shippingAddress.city);
             
-            // Calculate Platform Commission
-            const platformFee = data.subtotal * PLATFORM_COMMISSION_RATE;
-
             totalShippingPrice += shippingPrice;
-            totalPlatformFees += platformFee;
 
             shipmentSummaries.push({
                 vendorId: data.vendorId,
@@ -173,25 +415,43 @@ router.post('/summary', protect, async (req, res) => {
                 vendorLocation: vendorLocation, 
                 subtotal: parseFloat(data.subtotal.toFixed(2)),
                 shippingPrice: shippingPrice,
-                platformFee: parseFloat(platformFee.toFixed(2)),
+                platformFee: parseFloat(data.platformFee.toFixed(2)),
+                commissionRate: parseFloat(data.commissionRate.toFixed(3)),
                 // Total cost for the items and delivery from this specific vendor
                 totalShipmentCost: parseFloat((data.subtotal + shippingPrice).toFixed(2)), 
                 items: data.items,
+                commissionBreakdown: {
+                    rate: data.commissionRate,
+                    amount: data.platformFee,
+                    description: `Commission applied based on product categories`
+                }
             });
         }
         
         const totalPrice = totalSubtotal + totalShippingPrice + (req.body.taxPrice || 0.0);
 
-        // 3. Respond to Flutter
+        // 3. Prepare commission breakdown for response
+        const commissionBreakdown = {};
+        cartItems.forEach(item => {
+            // Calculate commission per item for transparency
+            // (You might want to fetch the product again or store commission in vendorCartMap)
+        });
+
+        // 4. Respond to Flutter
         res.json({
             totalSubtotal: parseFloat(totalSubtotal.toFixed(2)),
             totalShippingPrice: parseFloat(totalShippingPrice.toFixed(2)),
             totalPlatformFees: parseFloat(totalPlatformFees.toFixed(2)),
-            totalPrice: parseFloat(totalPrice.toFixed(2)), // User-facing total
+            totalPrice: parseFloat(totalPrice.toFixed(2)),
             taxPrice: req.body.taxPrice || 0.0,
-            shipmentSummaries, // Detailed breakdown
+            shipmentSummaries,
             userLocation, 
             shippingAddress,
+            commissionSummary: {
+                totalCommission: parseFloat(totalPlatformFees.toFixed(2)),
+                averageRate: parseFloat((totalPlatformFees / totalSubtotal).toFixed(3)),
+                note: 'Commission rates vary by product category (10-15%)'
+            }
         });
 
     } catch (error) {
@@ -199,6 +459,129 @@ router.post('/summary', protect, async (req, res) => {
         res.status(500).json({ message: 'Error calculating order summary.', error: error.message });
     }
 });
+// router.post('/summary', protect, async (req, res) => {
+//     const { cartItems, shippingAddress, userLocation } = req.body;
+//     const PLATFORM_COMMISSION_RATE = 0.15; // 15% rate
+
+//     if (!cartItems || cartItems.length === 0) {
+//         return res.status(400).json({ message: 'No items in cart for summary calculation' });
+//     }
+//     if (!shippingAddress || !userLocation) {
+//         return res.status(400).json({ message: 'Shipping address and location are required' });
+//     }
+    
+//     try {
+//         const vendorCartMap = new Map();
+//         let totalSubtotal = 0;
+
+//         // 1. Group items by vendor and calculate subtotal for each vendor
+//         for (const item of cartItems) {
+//             // Fetch product and vendor data in parallel for efficiency
+//             const [product, vendorUser] = await Promise.all([
+//                 Product.findById(item.product, 'price imageUrls vendor'),
+//                 User.findById(item.vendor, 'businessName businessLocation')
+//             ]);
+            
+//             if (!product) {
+//                 return res.status(404).json({ message: `Product not found: ${item.name}` });
+//             }
+//             // Use the vendor ID from the Product schema for consistency
+//             const vendorId = product.vendor.toString(); 
+
+//             if (!vendorUser || !vendorUser.businessLocation) {
+//                  return res.status(404).json({ message: `Vendor or location not found for product: ${item.name}` });
+//             }
+
+//             const itemPrice = product.price * item.quantity;
+//             totalSubtotal += itemPrice;
+
+//             if (!vendorCartMap.has(vendorId)) {
+//                 vendorCartMap.set(vendorId, {
+//                     vendorId: vendorId,
+//                     vendorName: vendorUser.businessName,
+//                     vendorLocation: vendorUser.businessLocation,
+//                     items: [],
+//                     subtotal: 0,
+//                 });
+//             }
+            
+//             // vendorCartMap.get(vendorId).items.push({
+//             //     product: item.product,
+//             //     name: item.name, // Use name from cart for frontend display
+//             //     image: product.imageUrls[0], // Use product data for image
+//             //     quantity: item.quantity,
+//             //     price: product.price, // Use product data for price verification
+//             // });
+
+//             vendorCartMap.get(vendorId).items.push({
+//                 product: item.product,
+//                 name: item.name, // Use name from cart for frontend display
+//                 image: product.imageUrls[0], // Use product data for image
+//                 quantity: item.quantity,
+//                 price: product.price, // Use product data for price verification
+//                 selectedSize: item.selectedSize || null, // NEW: Include selected size
+//             });
+            
+//             vendorCartMap.get(vendorId).subtotal += itemPrice;
+//         }
+
+//         // 2. Calculate fees for each shipment
+//         const shipmentSummaries = [];
+//         let totalShippingPrice = 0;
+//         let totalPlatformFees = 0;
+
+//         for (const data of vendorCartMap.values()) {
+//             const vendorLocation = data.vendorLocation;
+            
+//             // Calculate Distance (Haversine)
+//             const distanceKm = calculateDistance(
+//                 vendorLocation.latitude,
+//                 vendorLocation.longitude,
+//                 userLocation.latitude,
+//                 userLocation.longitude
+//             );
+            
+//             // Calculate Shipping Price
+//             const shippingPrice = calculateShippingCost(distanceKm, shippingAddress.city);
+            
+//             // Calculate Platform Commission
+//             const platformFee = data.subtotal * PLATFORM_COMMISSION_RATE;
+
+//             totalShippingPrice += shippingPrice;
+//             totalPlatformFees += platformFee;
+
+//             shipmentSummaries.push({
+//                 vendorId: data.vendorId,
+//                 vendorName: data.vendorName,
+//                 vendorLocation: vendorLocation, 
+//                 subtotal: parseFloat(data.subtotal.toFixed(2)),
+//                 shippingPrice: shippingPrice,
+//                 platformFee: parseFloat(platformFee.toFixed(2)),
+//                 // Total cost for the items and delivery from this specific vendor
+//                 totalShipmentCost: parseFloat((data.subtotal + shippingPrice).toFixed(2)), 
+//                 items: data.items,
+//             });
+//         }
+        
+//         const totalPrice = totalSubtotal + totalShippingPrice + (req.body.taxPrice || 0.0);
+
+//         // 3. Respond to Flutter
+//         res.json({
+//             totalSubtotal: parseFloat(totalSubtotal.toFixed(2)),
+//             totalShippingPrice: parseFloat(totalShippingPrice.toFixed(2)),
+//             totalPlatformFees: parseFloat(totalPlatformFees.toFixed(2)),
+//             totalPrice: parseFloat(totalPrice.toFixed(2)), // User-facing total
+//             taxPrice: req.body.taxPrice || 0.0,
+//             shipmentSummaries, // Detailed breakdown
+//             userLocation, 
+//             shippingAddress,
+//         });
+
+//     } catch (error) {
+//         console.error('Error calculating order summary:', error);
+//         res.status(500).json({ message: 'Error calculating order summary.', error: error.message });
+//     }
+// });
 
 
 // ## Order Creation Route
@@ -269,38 +652,64 @@ router.post('/', protect, async (req, res) => {
         
         // --- Step 3: Create Shipment documents for each vendor ---
         for (const summary of shipmentSummaries) {
-            console.log("Incoming Shipment Summary for debugging:", summary);
             const newShipment = new Shipment({
-                mainOrder: createdMainOrder._id, // Link back to MainOrder
+                mainOrder: createdMainOrder._id,
                 vendor: summary.vendor,
-                vendorLocation: summary.vendorLocation, 
-                // items: summary.items.map(item => ({ // Ensure item structure is correct for Shipment model
-                //     product: item.product,
-                //     name: item.name,
-                //     image: item.image,
-                //     quantity: item.quantity,
-                //     price: item.price,
-                // })),
-
+                vendorLocation: summary.vendorLocation,
                 items: summary.items.map(item => ({
-                product: item.product,
-                name: item.name,
-                image: item.image,
-                quantity: item.quantity,
-                price: item.price,
-                selectedSize: item.selectedSize || null, // NEW: Pass through selected size
-            })),
+                    product: item.product,
+                    name: item.name,
+                    image: item.image,
+                    quantity: item.quantity,
+                    price: item.price,
+                    selectedSize: item.selectedSize || null,
+                    category: item.category, // Store category
+                    commissionRate: item.commissionRate, // Store individual item commission rate
+                })),
                 subtotal: summary.subtotal,
                 platformFee: summary.platformFee,
                 shippingPrice: summary.shippingPrice,
-                
-                shipmentStatus: 'processing', // Use this status until payment is confirmed
+                commissionRate: summary.commissionRate, // Store average commission rate for this shipment
+                shipmentStatus: 'processing',
                 isDelivered: false,
             });
 
             const createdShipment = await newShipment.save({ session });
             shipmentIds.push(createdShipment._id);
         }
+        // for (const summary of shipmentSummaries) {
+        //     console.log("Incoming Shipment Summary for debugging:", summary);
+        //     const newShipment = new Shipment({
+        //         mainOrder: createdMainOrder._id, // Link back to MainOrder
+        //         vendor: summary.vendor,
+        //         vendorLocation: summary.vendorLocation, 
+        //         // items: summary.items.map(item => ({ // Ensure item structure is correct for Shipment model
+        //         //     product: item.product,
+        //         //     name: item.name,
+        //         //     image: item.image,
+        //         //     quantity: item.quantity,
+        //         //     price: item.price,
+        //         // })),
+
+        //         items: summary.items.map(item => ({
+        //         product: item.product,
+        //         name: item.name,
+        //         image: item.image,
+        //         quantity: item.quantity,
+        //         price: item.price,
+        //         selectedSize: item.selectedSize || null, // NEW: Pass through selected size
+        //     })),
+        //         subtotal: summary.subtotal,
+        //         platformFee: summary.platformFee,
+        //         shippingPrice: summary.shippingPrice,
+                
+        //         shipmentStatus: 'processing', // Use this status until payment is confirmed
+        //         isDelivered: false,
+        //     });
+
+        //     const createdShipment = await newShipment.save({ session });
+        //     shipmentIds.push(createdShipment._id);
+        // }
         
         // --- Step 4: Link Shipments back to the MainOrder ---
         createdMainOrder.shipments = shipmentIds;
@@ -596,6 +1005,54 @@ router.get('/vendor', protect, authorizeRoles('vendor', 'admin'), async (req, re
 });
 
 
+    // @desc    Get commission rates for different categories
+    // @route   GET /api/orders/commission-rates
+    // @access  Public
+    router.get('/commission-rates', async (req, res) => {
+        try {
+            const commissionStructure = {};
+            
+            // Transform the CATEGORY_COMMISSION_RATES for easier consumption
+            for (const [tier, data] of Object.entries(CATEGORY_COMMISSION_RATES)) {
+                commissionStructure[tier] = {
+                    rate: data.rate * 100, // Convert to percentage
+                    rateDecimal: data.rate,
+                    description: getTierDescription(tier),
+                    exampleCategories: data.categories.slice(0, 5) // Show first 5 examples
+                };
+            }
+            
+            res.json({
+                success: true,
+                commissionStructure,
+                note: 'Commission rates are applied per product based on category',
+                defaultRate: 0.125 // Default if category not found
+            });
+        } catch (error) {
+            console.error('Error fetching commission rates:', error);
+            res.status(500).json({ 
+                success: false, 
+                message: 'Error fetching commission rates', 
+                error: error.message 
+            });
+        }
+    });
+
+    // Helper function for tier descriptions
+    function getTierDescription(tier) {
+        switch(tier) {
+            case 'high':
+                return 'Luxury & High-margin items (Electronics, Luxury Fashion, etc.)';
+            case 'medium':
+                return 'Mid-range items (Regular Fashion, Home Goods, etc.)';
+            case 'low':
+                return 'Essentials & Low-margin items (Groceries, Medicine, Animal Feed, etc.)';
+            default:
+                return 'Standard items';
+        }
+    }
+
+
 // ## Wallet Payment Route (Escrow)
 
 // @desc     Update MainOrder/Shipments to paid + Debit User Wallet (NO IMMEDIATE VENDOR CREDIT)
@@ -853,75 +1310,50 @@ router.put('/:id/pay', protect, async (req, res) => {
 // @desc     Mark a specific Shipment as delivered, update metrics, and credit vendor wallet
 // @route    PUT /api/orders/shipments/:id/deliver
 // @access   Private/Admin/Vendor (Vendor can only mark their own shipments as delivered)
+
+// @desc     Mark a specific Shipment as delivered, update metrics, and credit vendor wallet
+// @route    PUT /api/orders/shipments/:id/deliver
+// @access   Private/Admin/Vendor (Vendor can only mark their own shipments as delivered)
 router.put('/shipments/:id/deliver', protect, authorizeRoles('vendor', 'admin'), async (req, res) => {
-    const SHIPMENT_ID = req.params.id;
+    const SHIPMENT_ID = req.params.id;
 
-    const session = await mongoose.startSession();
-    session.startTransaction();
+    const session = await mongoose.startSession();
+    session.startTransaction();
 
-    try {
-        // 1. Find the Shipment and ensure it's not already delivered
-        const shipment = await Shipment.findById(SHIPMENT_ID).session(session);
+    try {
+        // 1. Find the Shipment and ensure it's not already delivered
+        const shipment = await Shipment.findById(SHIPMENT_ID).session(session);
 
-        if (!shipment) {
-            await session.abortTransaction();
-            session.endSession();
-            return res.status(404).json({ message: 'Shipment not found' });
-        }
+        if (!shipment) {
+            await session.abortTransaction();
+            session.endSession();
+            return res.status(404).json({ message: 'Shipment not found' });
+        }
 
-        if (shipment.isDelivered) {
-            await session.abortTransaction();
-            session.endSession();
-            return res.status(400).json({ message: 'Shipment is already marked as delivered' });
-        }
+        if (shipment.isDelivered) {
+            await session.abortTransaction();
+            session.endSession();
+            return res.status(400).json({ message: 'Shipment is already marked as delivered' });
+        }
         
         // 2. Authorization: Vendor can only update their own shipments unless they are an admin
         if (req.user.role === 'vendor' && shipment.vendor.toString() !== req.user.id.toString()) {
             await session.abortTransaction();
-            session.endSession();
+            session.endSession();
             return res.status(401).json({ message: 'Not authorized to update this shipment' });
         }
         
-        // 3. Calculation of vendor earnings (The Subtotal minus Platform Fee)
-        const revenue = shipment.subtotal; // Subtotal for the items in this shipment
-        const commission = shipment.platformFee; // Commission already stored on the shipment
-        const vendorEarning = revenue - commission; // Vendor gets 85%
-
-        // 4. Credit the Vendor's Wallet and update metrics
-        const updatedVendor = await User.findByIdAndUpdate(
-            shipment.vendor,
-            {
-                $inc: { 
-                    vendorWalletBalance: vendorEarning,
-                    // NOTE: If you track total platform commission in User, you might want to credit it here or elsewhere.
-                    // Assuming for now, the platform already has the funds and this is just a transfer to the vendor.
-                },
-                $push: {
-                    notifications: {
-                        $each: [
-                            {
-                                type: 'delivery_payout',
-                                message: `Payout of ₦${vendorEarning.toFixed(2)} received for delivered shipment ${SHIPMENT_ID}. Platform Fee: ₦${commission.toFixed(2)}.`,
-                                isRead: false,
-                                relatedModel: 'Shipment',
-                                relatedId: shipment._id,
-                            },
-                        ],
-                        $position: 0,
-                    },
-                },
-            },
-            { new: true, session }
-        );
-
-        // 5. Update the Shipment status
-        shipment.isDelivered = true;
-        shipment.deliveredAt = Date.now();
-        shipment.shipmentStatus = 'delivered';
-
-        const updatedShipment = await shipment.save({ session });
+        // 3. REMOVED VENDOR CREDITING HERE - Only mark as delivered
+        // Vendor will be credited when MainOrder is marked as 'completed' by admin
         
-        // 6. Check if all Shipments in the MainOrder are now delivered
+        // 4. Update the Shipment status
+        shipment.isDelivered = true;
+        shipment.deliveredAt = Date.now();
+        shipment.shipmentStatus = 'delivered';
+
+        const updatedShipment = await shipment.save({ session });
+        
+        // 5. Check if all Shipments in the MainOrder are now delivered
         const mainOrder = await MainOrder.findById(shipment.mainOrder).session(session);
         const pendingShipments = await Shipment.countDocuments({ 
             mainOrder: mainOrder._id, 
@@ -930,27 +1362,143 @@ router.put('/shipments/:id/deliver', protect, authorizeRoles('vendor', 'admin'),
 
         if (pendingShipments === 0) {
             // All shipments for this MainOrder are delivered
+            // Update status to 'delivered' but DON'T credit yet
             mainOrder.isDelivered = true;
             mainOrder.deliveredAt = Date.now();
-            mainOrder.mainOrderStatus = 'completed';
+            mainOrder.mainOrderStatus = 'delivered'; // Changed from 'completed' to 'delivered'
             await mainOrder.save({ session });
+            
+            // Send notification to admin that order is ready for completion/verification
+            await User.findOneAndUpdate(
+                { role: 'admin' },
+                {
+                    $push: {
+                        notifications: {
+                            type: 'order_ready_for_completion',
+                            message: `Order ${mainOrder._id} has all shipments delivered and is ready for final verification and completion.`,
+                            isRead: false,
+                            relatedModel: 'MainOrder',
+                            relatedId: mainOrder._id,
+                        }
+                    }
+                },
+                { new: true, session }
+            );
         }
 
-        await session.commitTransaction();
-        session.endSession();
+        await session.commitTransaction();
+        session.endSession();
 
-        res.json({
-            message: `Shipment ${SHIPMENT_ID} marked as delivered. Vendor credited ₦${vendorEarning.toFixed(2)}`,
-            shipment: updatedShipment,
-        });
+        res.json({
+            message: `Shipment ${SHIPMENT_ID} marked as delivered. Order will be completed after admin verification.`,
+            shipment: updatedShipment,
+        });
 
-    } catch (error) {
-        await session.abortTransaction();
-        session.endSession();
-        console.error('Error processing shipment delivery:', error.message);
-        res.status(500).json({ message: 'Server Error', error: error.message });
-    }
+    } catch (error) {
+        await session.abortTransaction();
+        session.endSession();
+        console.error('Error processing shipment delivery:', error.message);
+        res.status(500).json({ message: 'Server Error', error: error.message });
+    }
 });
+// router.put('/shipments/:id/deliver', protect, authorizeRoles('vendor', 'admin'), async (req, res) => {
+//     const SHIPMENT_ID = req.params.id;
+
+//     const session = await mongoose.startSession();
+//     session.startTransaction();
+
+//     try {
+//         // 1. Find the Shipment and ensure it's not already delivered
+//         const shipment = await Shipment.findById(SHIPMENT_ID).session(session);
+
+//         if (!shipment) {
+//             await session.abortTransaction();
+//             session.endSession();
+//             return res.status(404).json({ message: 'Shipment not found' });
+//         }
+
+//         if (shipment.isDelivered) {
+//             await session.abortTransaction();
+//             session.endSession();
+//             return res.status(400).json({ message: 'Shipment is already marked as delivered' });
+//         }
+        
+//         // 2. Authorization: Vendor can only update their own shipments unless they are an admin
+//         if (req.user.role === 'vendor' && shipment.vendor.toString() !== req.user.id.toString()) {
+//             await session.abortTransaction();
+//             session.endSession();
+//             return res.status(401).json({ message: 'Not authorized to update this shipment' });
+//         }
+        
+//         // 3. Calculation of vendor earnings (The Subtotal minus Platform Fee)
+//         const revenue = shipment.subtotal; // Subtotal for the items in this shipment
+//         const commission = shipment.platformFee; // Commission already stored on the shipment
+//         const vendorEarning = revenue - commission; // Vendor gets 85%
+
+//         // 4. Credit the Vendor's Wallet and update metrics
+//         const updatedVendor = await User.findByIdAndUpdate(
+//             shipment.vendor,
+//             {
+//                 $inc: { 
+//                     vendorWalletBalance: vendorEarning,
+//                     // NOTE: If you track total platform commission in User, you might want to credit it here or elsewhere.
+//                     // Assuming for now, the platform already has the funds and this is just a transfer to the vendor.
+//                 },
+//                 $push: {
+//                     notifications: {
+//                         $each: [
+//                             {
+//                                 type: 'delivery_payout',
+//                                 message: `Payout of ₦${vendorEarning.toFixed(2)} received for delivered shipment ${SHIPMENT_ID}. Platform Fee: ₦${commission.toFixed(2)}.`,
+//                                 isRead: false,
+//                                 relatedModel: 'Shipment',
+//                                 relatedId: shipment._id,
+//                             },
+//                         ],
+//                         $position: 0,
+//                     },
+//                 },
+//             },
+//             { new: true, session }
+//         );
+
+//         // 5. Update the Shipment status
+//         shipment.isDelivered = true;
+//         shipment.deliveredAt = Date.now();
+//         shipment.shipmentStatus = 'delivered';
+
+//         const updatedShipment = await shipment.save({ session });
+        
+//         // 6. Check if all Shipments in the MainOrder are now delivered
+//         const mainOrder = await MainOrder.findById(shipment.mainOrder).session(session);
+//         const pendingShipments = await Shipment.countDocuments({ 
+//             mainOrder: mainOrder._id, 
+//             isDelivered: false 
+//         }).session(session);
+
+//         if (pendingShipments === 0) {
+//             // All shipments for this MainOrder are delivered
+//             mainOrder.isDelivered = true;
+//             mainOrder.deliveredAt = Date.now();
+//             mainOrder.mainOrderStatus = 'completed';
+//             await mainOrder.save({ session });
+//         }
+
+//         await session.commitTransaction();
+//         session.endSession();
+
+//         res.json({
+//             message: `Shipment ${SHIPMENT_ID} marked as delivered. Vendor credited ₦${vendorEarning.toFixed(2)}`,
+//             shipment: updatedShipment,
+//         });
+
+//     } catch (error) {
+//         await session.abortTransaction();
+//         session.endSession();
+//         console.error('Error processing shipment delivery:', error.message);
+//         res.status(500).json({ message: 'Server Error', error: error.message });
+//     }
+// });
 
 
 router.put('/shipments/:id/status-update', protect, authorizeRoles('admin'), async (req, res) => {
@@ -1034,6 +1582,10 @@ router.put('/:id/dispatch-status', protect, authorizeRoles('dispatch', 'admin'),
 // @desc    Update MainOrder status (Admin only)
 // @route   PUT /api/orders/:id/status
 // @access  Private/Admin
+
+// @desc    Update MainOrder status (Admin only)
+// @route   PUT /api/orders/:id/status
+// @access  Private/Admin
 router.put('/:id/status', protect, authorizeRoles('admin'), async (req, res) => {
     const { status } = req.body;
     const MAIN_ORDER_ID = req.params.id;
@@ -1068,21 +1620,22 @@ router.put('/:id/status', protect, authorizeRoles('admin'), async (req, res) => 
         }
 
         // NEW: Prevent double-crediting / double-delivery
-        if (status === 'delivered' && mainOrder.mainOrderStatus === 'delivered') {
+        if (status === 'completed' && mainOrder.mainOrderStatus === 'completed') {
             await session.abortTransaction();
             session.endSession();
             return res.status(400).json({ 
-                message: 'Order already marked as delivered and credited. No further action allowed.' 
+                message: 'Order already marked as completed and credited. No further action allowed.' 
             });
         }
 
         // 2. Update the status
         mainOrder.mainOrderStatus = status;
 
-        if (status === 'delivered') {
+        // CREDIT LOGIC ONLY WHEN STATUS IS 'completed'
+        if (status === 'completed') {
             mainOrder.isDelivered = true;
             mainOrder.deliveredAt = Date.now();
-            mainOrder.shipmentStatus = 'delivered'; // Update shipmentStatus on MainOrder
+            mainOrder.shipmentStatus = 'delivered';
 
             // Credit logic only if order is paid
             if (mainOrder.isPaid) {
@@ -1090,12 +1643,14 @@ router.put('/:id/status', protect, authorizeRoles('admin'), async (req, res) => 
                 const shipments = await Shipment.find({ mainOrder: MAIN_ORDER_ID }).session(session);
 
                 let totalRiderEarning = 0;
+                let totalVendorPayout = 0;
 
                 for (const shipment of shipments) {
-                    // Vendor crediting per shipment
+                    // Vendor crediting per shipment - ONLY HAPPENS AT 'completed'
                     const revenue = shipment.subtotal;
                     const commission = shipment.platformFee;
                     const vendorEarning = revenue - commission;
+                    totalVendorPayout += vendorEarning;
 
                     await User.findByIdAndUpdate(
                         shipment.vendor,
@@ -1105,10 +1660,10 @@ router.put('/:id/status', protect, authorizeRoles('admin'), async (req, res) => 
                                 notifications: {
                                     $each: [{
                                         type: 'delivery_payout',
-                                        message: `Payout of ₦${vendorEarning.toFixed(2)} received for delivered shipment ${shipment._id}. Platform Fee: ₦${commission.toFixed(2)}.`,
+                                        message: `Payout of ₦${vendorEarning.toFixed(2)} received for completed order ${mainOrder._id}. Platform Fee: ₦${commission.toFixed(2)}.`,
                                         isRead: false,
-                                        relatedModel: 'Shipment',
-                                        relatedId: shipment._id,
+                                        relatedModel: 'MainOrder',
+                                        relatedId: mainOrder._id,
                                     }],
                                     $position: 0,
                                 },
@@ -1129,23 +1684,45 @@ router.put('/:id/status', protect, authorizeRoles('admin'), async (req, res) => 
                     const riderEarningPerShipment = distanceKm * 150;
                     totalRiderEarning += riderEarningPerShipment;
 
-                    // Auto-update each shipment to delivered
-                    shipment.shipmentStatus = 'delivered';
-                    shipment.isDelivered = true;
-                    shipment.deliveredAt = Date.now();
-                    await shipment.save({ session });
+                    // Auto-update each shipment to delivered if not already
+                    if (!shipment.isDelivered) {
+                        shipment.shipmentStatus = 'delivered';
+                        shipment.isDelivered = true;
+                        shipment.deliveredAt = Date.now();
+                        await shipment.save({ session });
+                    }
                 }
 
-                // Credit rider's wallet with total earning
+                // Credit rider's wallet with total earning - ONLY AT 'completed'
                 if (mainOrder.rider) {
                     await Rider.findByIdAndUpdate(
                         mainOrder.rider,
-                        { $inc: { walletBalance: totalRiderEarning, totalEarnings: totalRiderEarning } },
+                        { 
+                            $inc: { 
+                                walletBalance: totalRiderEarning, 
+                                totalEarnings: totalRiderEarning,
+                                completedDeliveries: 1 
+                            },
+                            $push: {
+                                notifications: {
+                                    type: 'delivery_payout',
+                                    message: `₦${totalRiderEarning.toFixed(2)} credited for completing order ${mainOrder._id}.`,
+                                    isRead: false,
+                                    relatedModel: 'MainOrder',
+                                    relatedId: mainOrder._id,
+                                }
+                            }
+                        },
                         { session }
                     );
                 } else {
-                    console.warn(`No rider assigned for delivered order ${MAIN_ORDER_ID} - skipping rider credit`);
+                    console.warn(`No rider assigned for completed order ${MAIN_ORDER_ID} - skipping rider credit`);
                 }
+
+                // Log the payout for admin
+                console.log(`Order ${MAIN_ORDER_ID} completed. Total payouts: Vendors: ₦${totalVendorPayout.toFixed(2)}, Rider: ₦${totalRiderEarning.toFixed(2)}`);
+            } else {
+                console.warn(`Order ${MAIN_ORDER_ID} marked as completed but not paid - skipping payouts`);
             }
         }
 
@@ -1154,7 +1731,7 @@ router.put('/:id/status', protect, authorizeRoles('admin'), async (req, res) => 
         session.endSession();
 
         res.json({ 
-            message: `Main Order ${MAIN_ORDER_ID} status updated to ${status}.`, 
+            message: `Main Order ${MAIN_ORDER_ID} status updated to ${status}.${status === 'completed' ? ' Vendors and rider credited.' : ''}`, 
             order: updatedMainOrder 
         });
 
@@ -1165,6 +1742,138 @@ router.put('/:id/status', protect, authorizeRoles('admin'), async (req, res) => 
         res.status(500).json({ message: 'Server Error during main order status update.', error: error.message });
     }
 });
+
+// router.put('/:id/status', protect, authorizeRoles('admin'), async (req, res) => {
+//     const { status } = req.body;
+//     const MAIN_ORDER_ID = req.params.id;
+
+//     // 1. Basic validation: MUST match the Mongoose model's enum
+//     const validStatuses = [
+//         'pending_payment', 
+//         'processing', 
+//         'partially_shipped', 
+//         'shipped', 
+//         'delivered', 
+//         'completed',
+//         'cancelled'
+//     ];
+
+//     if (!validStatuses.includes(status)) {
+//         return res.status(400).json({ 
+//             message: `Invalid main order status: ${status}. Must be one of: ${validStatuses.join(', ')}` 
+//         });
+//     }
+
+//     const session = await mongoose.startSession();
+//     session.startTransaction();
+
+//     try {
+//         const mainOrder = await MainOrder.findById(MAIN_ORDER_ID).session(session);
+
+//         if (!mainOrder) {
+//             await session.abortTransaction();
+//             session.endSession();
+//             return res.status(404).json({ message: 'Main Order not found.' });
+//         }
+
+//         // NEW: Prevent double-crediting / double-delivery
+//         if (status === 'delivered' && mainOrder.mainOrderStatus === 'delivered') {
+//             await session.abortTransaction();
+//             session.endSession();
+//             return res.status(400).json({ 
+//                 message: 'Order already marked as delivered and credited. No further action allowed.' 
+//             });
+//         }
+
+//         // 2. Update the status
+//         mainOrder.mainOrderStatus = status;
+
+//         if (status === 'delivered') {
+//             mainOrder.isDelivered = true;
+//             mainOrder.deliveredAt = Date.now();
+//             mainOrder.shipmentStatus = 'delivered'; // Update shipmentStatus on MainOrder
+
+//             // Credit logic only if order is paid
+//             if (mainOrder.isPaid) {
+//                 // Fetch all shipments for this order
+//                 const shipments = await Shipment.find({ mainOrder: MAIN_ORDER_ID }).session(session);
+
+//                 let totalRiderEarning = 0;
+
+//                 for (const shipment of shipments) {
+//                     // Vendor crediting per shipment
+//                     const revenue = shipment.subtotal;
+//                     const commission = shipment.platformFee;
+//                     const vendorEarning = revenue - commission;
+
+//                     await User.findByIdAndUpdate(
+//                         shipment.vendor,
+//                         {
+//                             $inc: { vendorWalletBalance: vendorEarning },
+//                             $push: {
+//                                 notifications: {
+//                                     $each: [{
+//                                         type: 'delivery_payout',
+//                                         message: `Payout of ₦${vendorEarning.toFixed(2)} received for delivered shipment ${shipment._id}. Platform Fee: ₦${commission.toFixed(2)}.`,
+//                                         isRead: false,
+//                                         relatedModel: 'Shipment',
+//                                         relatedId: shipment._id,
+//                                     }],
+//                                     $position: 0,
+//                                 },
+//                             },
+//                         },
+//                         { new: true, session }
+//                     );
+
+//                     // Recalculate distance for rider earning
+//                     const distanceKm = calculateDistance(
+//                         shipment.vendorLocation.latitude,
+//                         shipment.vendorLocation.longitude,
+//                         mainOrder.userLocation.latitude,
+//                         mainOrder.userLocation.longitude
+//                     );
+
+//                     // Rider gets 150/km
+//                     const riderEarningPerShipment = distanceKm * 150;
+//                     totalRiderEarning += riderEarningPerShipment;
+
+//                     // Auto-update each shipment to delivered
+//                     shipment.shipmentStatus = 'delivered';
+//                     shipment.isDelivered = true;
+//                     shipment.deliveredAt = Date.now();
+//                     await shipment.save({ session });
+//                 }
+
+//                 // Credit rider's wallet with total earning
+//                 if (mainOrder.rider) {
+//                     await Rider.findByIdAndUpdate(
+//                         mainOrder.rider,
+//                         { $inc: { walletBalance: totalRiderEarning, totalEarnings: totalRiderEarning } },
+//                         { session }
+//                     );
+//                 } else {
+//                     console.warn(`No rider assigned for delivered order ${MAIN_ORDER_ID} - skipping rider credit`);
+//                 }
+//             }
+//         }
+
+//         const updatedMainOrder = await mainOrder.save({ session });
+//         await session.commitTransaction();
+//         session.endSession();
+
+//         res.json({ 
+//             message: `Main Order ${MAIN_ORDER_ID} status updated to ${status}.`, 
+//             order: updatedMainOrder 
+//         });
+
+//     } catch (error) {
+//         await session.abortTransaction();
+//         session.endSession();
+//         console.error('Error updating main order status:', error);
+//         res.status(500).json({ message: 'Server Error during main order status update.', error: error.message });
+//     }
+// });
 
 
 // @desc    Get single order by ID
