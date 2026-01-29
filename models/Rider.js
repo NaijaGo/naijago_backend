@@ -226,7 +226,52 @@ const riderSchema = new mongoose.Schema({
     },
     failureReason: String
   }],
-  
+  notifications: [
+  {
+    type: {
+      type: String,
+      enum: [
+        'product_sold',
+        'payment_received',
+        'wallet_deposit',
+        'wallet_withdrawal',
+        'vendor_status_update',
+        'general',
+        'order_update',
+        'delivery_payout'           // ← include it here too
+      ],
+      default: 'general',
+    },
+    message: {
+      type: String,
+      required: true,
+    },
+    read: {
+      type: Boolean,
+      default: false,
+    },
+    createdAt: {
+      type: Date,
+      default: Date.now,
+    },
+    relatedId: {
+      type: mongoose.Schema.Types.ObjectId,
+      refPath: 'notifications.relatedModel',
+      sparse: true,
+    },
+    relatedModel: {
+      type: String,
+      enum: [
+        'Product',
+        'Order',
+        'Transaction',
+        'User',
+        'MainOrder'                 // ← include it here too
+      ],
+      sparse: true,
+    },
+  }
+],
   // Location Management
   currentLocation: {
     lat: {

@@ -149,38 +149,84 @@ const UserSchema = new mongoose.Schema({
   // --- COMMON FIELDS ---
   otp: String,
   otpExpires: Date,
+notifications: [
+  {
+    type: {
+      type: String,
+      enum: [
+        'product_sold',
+        'payment_received',
+        'wallet_deposit',
+        'wallet_withdrawal',
+        'vendor_status_update',
+        'general',
+        'order_update',
+        'delivery_payout'           // ← ADD THIS LINE
+      ],
+      default: 'general',
+    },
+    message: {
+      type: String,
+      required: true,
+    },
+    read: {
+      type: Boolean,
+      default: false,
+    },
+    createdAt: {
+      type: Date,
+      default: Date.now,
+    },
+    relatedId: {
+      type: mongoose.Schema.Types.ObjectId,
+      refPath: 'notifications.relatedModel',
+      sparse: true,
+    },
+    relatedModel: {
+      type: String,
+      enum: [
+        'Product',
+        'Order',
+        'Transaction',
+        'User',
+        'MainOrder'                 // ← ADD THIS LINE
+      ],
+      sparse: true,
+    },
+  }
+],
 
-  notifications: [
-    {
-      type: {
-        type: String,
-        enum: ['product_sold', 'payment_received', 'wallet_deposit', 'wallet_withdrawal', 'vendor_status_update', 'general', 'order_update'],
-        default: 'general',
-      },
-      message: {
-        type: String,
-        required: true,
-      },
-      read: {
-        type: Boolean,
-        default: false,
-      },
-      createdAt: {
-        type: Date,
-        default: Date.now,
-      },
-      relatedId: {
-        type: mongoose.Schema.Types.ObjectId,
-        refPath: 'notifications.relatedModel',
-        sparse: true,
-      },
-      relatedModel: {
-        type: String,
-        enum: ['Product', 'Order', 'Transaction', 'User'],
-        sparse: true,
-      },
-    }
-  ],
+//   notifications: [
+//     {
+//       type: {
+//         type: String,
+//         enum: ['product_sold', 'payment_received', 'wallet_deposit', 'wallet_withdrawal', 'vendor_status_update', 'general', 'order_update'],
+//         default: 'general',
+//       },
+//       message: {
+//         type: String,
+//         required: true,
+//       },
+//       read: {
+//         type: Boolean,
+//         default: false,
+//       },
+//       createdAt: {
+//         type: Date,
+//         default: Date.now,
+//       },
+//       relatedId: {
+//         type: mongoose.Schema.Types.ObjectId,
+//         refPath: 'notifications.relatedModel',
+//         sparse: true,
+//       },
+//       relatedModel: {
+//         type: String,
+//         enum: ['Product', 'Order', 'Transaction', 'User'],
+//         sparse: true,
+//       },
+//     }
+//   ],
   isAdmin: {
     type: Boolean,
     default: false,
