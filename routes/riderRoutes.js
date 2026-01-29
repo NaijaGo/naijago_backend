@@ -37,6 +37,7 @@ const {
 } = require('../controllers/riderController');
 
 const { protect, authorizeRoles } = require('../middleware/authMiddleware');
+const { riderProtect } = require('../middleware/riderAuthMiddleware'); // NEW
 
 // ============================================
 // PUBLIC ROUTES (No authentication required)
@@ -67,8 +68,8 @@ router.get('/verify-email/:token', verifyRiderEmail);
 // PROTECTED ROUTES (Rider authentication required)
 // ============================================
 
-// Apply protect middleware to all routes below
-router.use(protect);
+// Apply riderProtect middleware to all routes below (instead of protect)
+router.use(riderProtect); // CHANGED: Use riderProtect instead of protect
 
 /**
  * @route   GET /api/riders/profile

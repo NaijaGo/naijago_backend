@@ -259,7 +259,7 @@ exports.loginRider = async (req, res) => {
  */
 exports.getRiderProfile = async (req, res) => {
   try {
-    const rider = await Rider.findById(req.user._id)
+    const rider = await Rider.findById(req.rider._id)
       .select('-password -emailVerificationToken -passwordResetToken')
       .populate('withdrawalHistory', 'amount status createdAt completedAt')
       .lean();
@@ -320,7 +320,7 @@ exports.updateRiderProfile = async (req, res) => {
     }
 
     const rider = await Rider.findByIdAndUpdate(
-      req.user._id,
+      req.rider._id,
       updateData,
       { new: true, runValidators: true }
     ).select('-password');
@@ -354,7 +354,7 @@ exports.updateRiderLocation = async (req, res) => {
       });
     }
 
-    const rider = await Rider.findById(req.user._id);
+    const rider = await Rider.findById(req.rider._id);
     if (!rider) {
       return res.status(404).json({ 
         success: false,
@@ -433,7 +433,7 @@ exports.updateRiderStatus = async (req, res) => {
 
     // If rider is marking themselves as active, ensure they're approved
     if (isActive === true) {
-      const rider = await Rider.findById(req.user._id);
+      const rider = await Rider.findById(req.rider._id);
       if (rider.status !== 'approved') {
         return res.status(400).json({ 
           success: false,
@@ -443,7 +443,7 @@ exports.updateRiderStatus = async (req, res) => {
     }
 
     const updatedRider = await Rider.findByIdAndUpdate(
-      req.user._id,
+      req.rider._id,
       updateData,
       { new: true }
     ).select('-password');
@@ -470,7 +470,7 @@ exports.updateRiderStatus = async (req, res) => {
 exports.getAvailableOrders = async (req, res) => {
   try {
     // Get rider's current location for distance calculation
-    const rider = await Rider.findById(req.user._id);
+    const rider = await Rider.findById(req.rider._id);
     
     if (!rider.isAvailable || !rider.isActive) {
       return res.status(400).json({ 
@@ -565,7 +565,7 @@ exports.claimOrder = async (req, res) => {
 
   try {
     const orderId = req.params.id;
-    const riderId = req.user._id;
+    const riderId = req.rider._id;
 
     // Validate order ID
     if (!mongoose.Types.ObjectId.isValid(orderId)) {
@@ -768,7 +768,7 @@ exports.verifyPickupOTP = async (req, res) => {
     }
 
     // Check if rider is assigned to this order
-    if (mainOrder.rider.toString() !== req.user._id.toString()) {
+    if (mainOrder.rider.toString() !== req.rider._id.toString()) {
       return res.status(403).json({ 
         success: false,
         message: 'Not authorized for this order' 
@@ -793,7 +793,7 @@ exports.verifyPickupOTP = async (req, res) => {
 
     // Update shipment statuses to 'out_for_delivery'
     await Shipment.updateMany(
-      { mainOrder: orderId, rider: req.user._id },
+      { mainOrder: orderId, rider: req.rider._id },
       { 
         shipmentStatus: 'out_for_delivery',
         pickedUpAt: Date.now()
@@ -812,7 +812,7 @@ exports.verifyPickupOTP = async (req, res) => {
         type: 'order_picked_up',
         message: `Your order has been picked up and is on the way`,
         orderId: mainOrder._id,
-        riderName: req.user.fullName
+        riderName: req.rider.fullName
       });
     }
 
@@ -872,7 +872,7 @@ exports.verifyDeliveryOTP = async (req, res) => {
     }
 
     // Check if rider is assigned to this order
-    if (mainOrder.rider.toString() !== req.user._id.toString()) {
+    if (mainOrder.rider.toString() !== req.rider._id.toString()) {
       await session.abortTransaction();
       session.endSession();
       return res.status(403).json({ 
@@ -920,7 +920,7 @@ exports.verifyDeliveryOTP = async (req, res) => {
 
     // Update rider stats
     await Rider.findByIdAndUpdate(
-      req.user._id,
+      req.rider._id,
       { 
         $inc: { 
           activeDeliveries: -1,
@@ -934,7 +934,7 @@ exports.verifyDeliveryOTP = async (req, res) => {
     // Calculate rider earnings (70% of total shipping price)
     const riderEarnings = mainOrder.totalShippingPrice * 0.7;
     await Rider.findByIdAndUpdate(
-      req.user._id,
+      req.rider._id,
       { 
         $inc: { 
           walletBalance: riderEarnings,
@@ -953,10 +953,10 @@ exports.verifyDeliveryOTP = async (req, res) => {
     if (io) {
       io.emit('admin_notification', {
         type: 'order_delivered',
-        message: `Order ${mainOrder._id} has been delivered by rider ${req.user.fullName}`,
+        message: `Order ${mainOrder._id} has been delivered by rider ${req.rider.fullName}`,
         orderId: mainOrder._id,
-        riderId: req.user._id,
-        riderName: req.user.fullName,
+        riderId: req.rider._id,
+        riderName: req.rider.fullName,
         timestamp: Date.now()
       });
 
@@ -965,7 +965,7 @@ exports.verifyDeliveryOTP = async (req, res) => {
         type: 'order_delivered',
         message: `Your order has been delivered successfully!`,
         orderId: mainOrder._id,
-        riderName: req.user.fullName
+        riderName: req.rider.fullName
       });
 
       // Notify vendor(s)
@@ -1003,7 +1003,7 @@ exports.verifyDeliveryOTP = async (req, res) => {
 exports.getActiveDeliveries = async (req, res) => {
   try {
     const activeOrders = await MainOrder.find({
-      rider: req.user._id,
+      rider: req.rider._id,
       mainOrderStatus: { $nin: ['delivered', 'completed', 'cancelled'] }
     })
     .populate('user', 'firstName lastName phoneNumber')
@@ -1040,7 +1040,7 @@ exports.getActiveDeliveries = async (req, res) => {
 exports.getCompletedDeliveries = async (req, res) => {
   try {
     const completedOrders = await MainOrder.find({
-      rider: req.user._id,
+      rider: req.rider._id,
       mainOrderStatus: { $in: ['delivered', 'completed'] }
     })
     .populate('user', 'firstName lastName')
@@ -1076,7 +1076,7 @@ exports.getCompletedDeliveries = async (req, res) => {
  */
 exports.getEarnings = async (req, res) => {
   try {
-    const rider = await Rider.findById(req.user._id)
+    const rider = await Rider.findById(req.rider._id)
       .select('walletBalance totalEarnings pendingEarnings totalWithdrawn withdrawalHistory')
       .populate('withdrawalHistory', 'amount status createdAt completedAt paymentMethod reference');
 
@@ -1093,13 +1093,13 @@ exports.getEarnings = async (req, res) => {
 
     // Get recent completed shipments for detailed breakdown
     const weeklyShipments = await Shipment.find({
-      rider: req.user._id,
+      rider: req.rider._id,
       isDelivered: true,
       deliveredAt: { $gte: oneWeekAgo }
     }).select('shippingPrice deliveredAt');
 
     const monthlyShipments = await Shipment.find({
-      rider: req.user._id,
+      rider: req.rider._id,
       isDelivered: true,
       deliveredAt: { $gte: oneMonthAgo }
     }).select('shippingPrice deliveredAt');
@@ -1156,7 +1156,7 @@ exports.requestWithdrawal = async (req, res) => {
       });
     }
 
-    const rider = await Rider.findById(req.user._id).session(session);
+    const rider = await Rider.findById(req.rider._id).session(session);
     if (!rider) {
       await session.abortTransaction();
       session.endSession();
@@ -1263,7 +1263,7 @@ exports.updateBankAccount = async (req, res) => {
       });
     }
 
-    const rider = await Rider.findById(req.user._id);
+    const rider = await Rider.findById(req.rider._id);
     if (!rider) {
       return res.status(404).json({ 
         success: false,
@@ -1382,7 +1382,7 @@ exports.cancelDelivery = async (req, res) => {
     }
 
     // Check if rider is assigned to this order
-    if (mainOrder.rider.toString() !== req.user._id.toString()) {
+    if (mainOrder.rider.toString() !== req.rider._id.toString()) {
       await session.abortTransaction();
       session.endSession();
       return res.status(403).json({ 
@@ -1436,7 +1436,7 @@ exports.cancelDelivery = async (req, res) => {
     );
 
     // Update rider stats (increase cancellation rate)
-    const rider = await Rider.findById(req.user._id).session(session);
+    const rider = await Rider.findById(req.rider._id).session(session);
     const totalDeliveries = (rider.completedDeliveries || 0) + (rider.activeDeliveries || 0);
     rider.activeDeliveries = Math.max(0, (rider.activeDeliveries || 0) - 1);
     
@@ -1524,7 +1524,7 @@ exports.getVendorLocation = async (req, res) => {
     }
 
     // Check if rider is assigned to this shipment
-    if (shipment.rider?.toString() !== req.user._id.toString()) {
+    if (shipment.rider?.toString() !== req.rider._id.toString()) {
       return res.status(403).json({ 
         success: false,
         message: 'Not authorized for this shipment' 
@@ -1578,7 +1578,7 @@ exports.getDeliveryLocation = async (req, res) => {
     }
 
     // Check if rider is assigned to this order
-    if (mainOrder.rider?.toString() !== req.user._id.toString()) {
+    if (mainOrder.rider?.toString() !== req.rider._id.toString()) {
       return res.status(403).json({ 
         success: false,
         message: 'Not authorized for this order' 
@@ -1610,7 +1610,7 @@ exports.getDeliveryLocation = async (req, res) => {
  */
 exports.getDashboardStats = async (req, res) => {
   try {
-    const rider = await Rider.findById(req.user._id)
+    const rider = await Rider.findById(req.rider._id)
       .select('walletBalance totalEarnings completedDeliveries activeDeliveries rating totalRatings');
     
     if (!rider) {
@@ -1628,19 +1628,19 @@ exports.getDashboardStats = async (req, res) => {
     
     // Get completed shipments in last 7 days
     const weeklyShipments = await Shipment.find({
-      rider: req.user._id,
+      rider: req.rider._id,
       isDelivered: true,
       deliveredAt: { $gte: oneWeekAgo }
     }).select('shippingPrice deliveredAt');
 
     const monthlyShipments = await Shipment.find({
-      rider: req.user._id,
+      rider: req.rider._id,
       isDelivered: true,
       deliveredAt: { $gte: oneMonthAgo }
     }).select('shippingPrice deliveredAt');
 
     const todayShipments = await Shipment.find({
-      rider: req.user._id,
+      rider: req.rider._id,
       isDelivered: true,
       deliveredAt: { $gte: today }
     }).select('shippingPrice deliveredAt');
@@ -1651,7 +1651,7 @@ exports.getDashboardStats = async (req, res) => {
 
     // Calculate on-time delivery rate (example: deliveries within 2 hours of estimated time)
     const recentDeliveries = await Shipment.find({
-      rider: req.user._id,
+      rider: req.rider._id,
       isDelivered: true,
       deliveredAt: { $gte: oneMonthAgo }
     }).select('estimatedDeliveryTime deliveredAt');
