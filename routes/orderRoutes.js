@@ -819,28 +819,75 @@ router.put('/:id/pay/wallet', protect, async (req, res) => {
             shipment.shipmentStatus = 'processing';
             await shipment.save({ session });
 
-            const message = `New paid order! Shipment ${shipment._id} is ready for processing. Platform Fee deducted: ₦${shipment.platformFee.toFixed(2)} will be retained.`;
+            // const message = `New paid order! Shipment ${shipment._id} is ready for processing. Platform Fee deducted: ₦${shipment.platformFee.toFixed(2)} will be retained.`;
 
-            await User.findByIdAndUpdate(
-                shipment.vendor,
-                {
-                    $push: {
-                        notifications: {
-                            $each: [
-                                {
+            // await User.findByIdAndUpdate(
+            //     shipment.vendor,
+            //     {
+            //         $push: {
+            //             notifications: {
+            //                 $each: [
+            //                     {
+            //                         type: 'new_order',
+            //                         message: message,
+            //                         isRead: false,
+            //                         relatedModel: 'Shipment',
+            //                         relatedId: shipment._id,
+            //                     },
+            //                 ],
+            //                 $position: 0, 
+            //             },
+            //         },
+            //     },
+            //     { new: true, session }
+            // );
+
+            // ✅ Enhanced notification with shipment details (NO BUYER INFO)
+                const itemSummary = shipment.items.map(item => 
+                `${item.quantity}x ${item.name} (₦${item.price.toFixed(2)} each)`
+                ).join(', ');
+
+                const message = `📦 New Order Received! 
+                Shipment #${shipment._id.toString().slice(-6)}
+                Items: ${itemSummary}
+                Subtotal: ₦${shipment.subtotal.toFixed(2)}
+                Shipping: ₦${shipment.shippingPrice.toFixed(2)}
+                Platform Fee: ₦${shipment.platformFee.toFixed(2)}
+                Status: Ready for processing`;
+
+                await User.findByIdAndUpdate(
+                    shipment.vendor,
+                    {
+                        $push: {
+                            notifications: {
+                                $each: [{
                                     type: 'new_order',
                                     message: message,
                                     isRead: false,
                                     relatedModel: 'Shipment',
                                     relatedId: shipment._id,
-                                },
-                            ],
-                            $position: 0, 
+                                    // Add shipment details (NO BUYER INFO)
+                                    shipmentDetails: {
+                                        orderId: mainOrder._id,
+                                        items: shipment.items.map(item => ({
+                                            productName: item.name,
+                                            quantity: item.quantity,
+                                            price: item.price,
+                                            total: item.quantity * item.price
+                                        })),
+                                        subtotal: shipment.subtotal,
+                                        platformFee: shipment.platformFee,
+                                        shippingPrice: shipment.shippingPrice,
+                                        totalShipment: shipment.subtotal + shipment.shippingPrice,
+                                        status: 'processing'
+                                    }
+                                }],
+                                $position: 0,
+                            },
                         },
                     },
-                },
-                { new: true, session }
-            );
+                    { new: true, session }
+                );
             // END: NEW VENDOR NOTIFICATION FOR PAID ORDER
             
             // Queue product updates

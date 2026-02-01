@@ -87,70 +87,116 @@ router.get('/status', protect, async (req, res) => { // Changed path from /user/
     }
 });
 
-// The corrected GET /api/vendor/stats route with the proper logic
+// // The corrected GET /api/vendor/stats route with the proper logic
+// router.get('/stats', protect, authorizeRoles('vendor'), async (req, res) => {
+//   try {
+//     const vendorId = req.user._id;
+
+//     // Use an aggregation pipeline to get both total stock and total sales
+//     const statsResult = await Product.aggregate([
+//       // Stage 1: Filter products by the current vendor
+//       {
+//         $match: {
+//           vendor: vendorId,
+//           isActive: true // Consider only active products
+//         }
+//       },
+//       // Stage 2: Group the products and calculate the totals
+//       {
+//         $group: {
+//           _id: null,
+//           totalProducts: { $sum: 1 }, // Count the number of products (documents)
+//           totalStockQuantity: { $sum: '$stockQuantity' } // Sum up the stock of all products
+//         }
+//       }
+//     ]);
+
+//     // Handle case where vendor has no products
+//     const totalProducts = statsResult.length > 0 ? statsResult[0].totalProducts : 0;
+//     const totalStockQuantity = statsResult.length > 0 ? statsResult[0].totalStockQuantity : 0;
+
+//     // 2. Calculate the number of sold products by aggregating order items
+//     const soldProductsResult = await Order.aggregate([
+//       // Match orders where at least one item belongs to this vendor
+//       { 
+//         $match: {
+//           'orderItems.vendor': vendorId,
+//           orderStatus: { $in: ['shipped', 'delivered'] } 
+//         }
+//       },
+//       // Deconstruct the array to process each item
+//       { $unwind: '$orderItems' },
+//       // Filter for only the items belonging to this specific vendor
+//       { 
+//         $match: {
+//           'orderItems.vendor': vendorId
+//         }
+//       },
+//       // Group the items and sum their quantities
+//       {
+//         $group: {
+//           _id: null,
+//           productsSold: { $sum: '$orderItems.quantity' }
+//         }
+//       }
+//     ]);
+
+//     const productsSold = soldProductsResult.length > 0 ? soldProductsResult[0].productsSold : 0;
+    
+//     // 3. Calculate the number of unsold products (correct logic)
+//     const productsUnsold = totalStockQuantity; // The total unsold quantity is just the current total stock
+
+//     // Send a successful response with the calculated stats
+//     res.status(200).json({
+//       totalProducts,
+//       productsSold,
+//       productsUnsold,
+//     });
+
+//   } catch (error) {
+//     console.error('Error fetching vendor stats:', error);
+//     res.status(500).json({ message: 'Server error fetching vendor statistics.' });
+//   }
+// });
+
+
+// @desc    Get vendor statistics (CORRECTED - Single Source of Truth)
+// @route   GET /api/vendor/stats
+// @access  Private/Vendor
 router.get('/stats', protect, authorizeRoles('vendor'), async (req, res) => {
   try {
     const vendorId = req.user._id;
 
-    // Use an aggregation pipeline to get both total stock and total sales
+    // Single efficient aggregation from Product model
     const statsResult = await Product.aggregate([
-      // Stage 1: Filter products by the current vendor
       {
         $match: {
           vendor: vendorId,
-          isActive: true // Consider only active products
+          isActive: true
         }
       },
-      // Stage 2: Group the products and calculate the totals
       {
         $group: {
           _id: null,
-          totalProducts: { $sum: 1 }, // Count the number of products (documents)
-          totalStockQuantity: { $sum: '$stockQuantity' } // Sum up the stock of all products
+          totalProducts: { $sum: 1 },
+          totalStockQuantity: { $sum: '$stockQuantity' },
+          // ✅ CORRECT: Sum the salesCount that's already updated during payment
+          productsSold: { $sum: '$salesCount' }
         }
       }
     ]);
 
-    // Handle case where vendor has no products
-    const totalProducts = statsResult.length > 0 ? statsResult[0].totalProducts : 0;
-    const totalStockQuantity = statsResult.length > 0 ? statsResult[0].totalStockQuantity : 0;
+    // Handle vendor with no products
+    const result = statsResult.length > 0 ? statsResult[0] : {
+      totalProducts: 0,
+      totalStockQuantity: 0,
+      productsSold: 0
+    };
 
-    // 2. Calculate the number of sold products by aggregating order items
-    const soldProductsResult = await Order.aggregate([
-      // Match orders where at least one item belongs to this vendor
-      { 
-        $match: {
-          'orderItems.vendor': vendorId,
-          orderStatus: { $in: ['shipped', 'delivered'] } 
-        }
-      },
-      // Deconstruct the array to process each item
-      { $unwind: '$orderItems' },
-      // Filter for only the items belonging to this specific vendor
-      { 
-        $match: {
-          'orderItems.vendor': vendorId
-        }
-      },
-      // Group the items and sum their quantities
-      {
-        $group: {
-          _id: null,
-          productsSold: { $sum: '$orderItems.quantity' }
-        }
-      }
-    ]);
-
-    const productsSold = soldProductsResult.length > 0 ? soldProductsResult[0].productsSold : 0;
-    
-    // 3. Calculate the number of unsold products (correct logic)
-    const productsUnsold = totalStockQuantity; // The total unsold quantity is just the current total stock
-
-    // Send a successful response with the calculated stats
     res.status(200).json({
-      totalProducts,
-      productsSold,
-      productsUnsold,
+      totalProducts: result.totalProducts,
+      productsSold: result.productsSold,
+      productsUnsold: result.totalStockQuantity,
     });
 
   } catch (error) {
