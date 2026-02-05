@@ -1228,6 +1228,214 @@ router.put('/:id/dispatch-status', protect, authorizeRoles('dispatch', 'admin'),
 // @desc    Update MainOrder status (Admin only) - UPDATED FOR SIMULTANEOUS PAYOUT
 // @route   PUT /api/orders/:id/status
 // @access  Private/Admin
+// router.put('/:id/status', protect, authorizeRoles('admin'), async (req, res) => {
+//     const { status } = req.body;
+//     const MAIN_ORDER_ID = req.params.id;
+
+//     // 1. Basic validation: MUST match the Mongoose model's enum
+//     const validStatuses = [
+//         'pending_payment', 
+//         'processing', 
+//         'partially_shipped', 
+//         'shipped', 
+//         'out_for_delivery',
+//         'delivered', 
+//         'completed',
+//         'cancelled'
+//     ];
+
+//     if (!validStatuses.includes(status)) {
+//         return res.status(400).json({ 
+//             message: `Invalid main order status: ${status}. Must be one of: ${validStatuses.join(', ')}` 
+//         });
+//     }
+
+//     const session = await mongoose.startSession();
+//     session.startTransaction();
+
+//     try {
+//         const mainOrder = await MainOrder.findById(MAIN_ORDER_ID).session(session);
+
+//         if (!mainOrder) {
+//             await session.abortTransaction();
+//             session.endSession();
+//             return res.status(404).json({ message: 'Main Order not found.' });
+//         }
+
+//         // NEW: Prevent double-crediting / double-delivery
+//         if (status === 'completed' && mainOrder.mainOrderStatus === 'completed') {
+//             await session.abortTransaction();
+//             session.endSession();
+//             return res.status(400).json({ 
+//                 message: 'Order already marked as completed and credited. No further action allowed.' 
+//             });
+//         }
+
+//         // 2. Update the status
+//         mainOrder.mainOrderStatus = status;
+
+//         // SIMULTANEOUS PAYOUT LOGIC ONLY WHEN STATUS IS 'completed'
+//         if (status === 'completed') {
+//             mainOrder.isDelivered = true;
+//             mainOrder.deliveredAt = Date.now();
+//             mainOrder.shipmentStatus = 'delivered';
+//             mainOrder.vendorPaidAt = Date.now();
+
+//             // Credit logic only if order is paid
+//             if (mainOrder.isPaid) {
+//                 // Fetch all shipments for this order
+//                 const shipments = await Shipment.find({ mainOrder: MAIN_ORDER_ID }).session(session);
+
+//                 let totalRiderPayout = 0;
+//                 let totalVendorPayout = 0;
+//                 let payoutDetails = [];
+
+//                 for (const shipment of shipments) {
+//                     // Calculate vendor payout for this shipment (subtotal - platform fee)
+//                     const vendorEarning = shipment.subtotal - shipment.platformFee;
+//                     totalVendorPayout += vendorEarning;
+
+//                     // Calculate distance for rider payout (150 per km)
+//                     let riderPayoutPerShipment = 0;
+//                     if (shipment.vendorLocation && mainOrder.userLocation) {
+//                         const distance = calculateDistance(
+//                             shipment.vendorLocation.latitude,
+//                             shipment.vendorLocation.longitude,
+//                             mainOrder.userLocation.latitude,
+//                             mainOrder.userLocation.longitude
+//                         );
+//                         riderPayoutPerShipment = distance * 150;
+//                         totalRiderPayout += riderPayoutPerShipment;
+//                     }
+
+//                     // 1. PAY VENDOR (85% of subtotal)
+//                     const updatedVendor = await User.findByIdAndUpdate(
+//                         shipment.vendor,
+//                         {
+//                             $inc: { vendorWalletBalance: vendorEarning },
+//                             $push: {
+//                                 notifications: {
+//                                     $each: [{
+//                                         type: 'delivery_payout',
+//                                         message: `Payout of ₦${vendorEarning.toFixed(2)} received for completed order ${mainOrder._id}. Platform Fee: ₦${shipment.platformFee.toFixed(2)}.`,
+//                                         isRead: false,
+//                                         relatedModel: 'MainOrder',
+//                                         relatedId: mainOrder._id,
+//                                     }],
+//                                     $position: 0,
+//                                 },
+//                             },
+//                         },
+//                         { new: true, session }
+//                     );
+
+//                     // 2. Store payout details
+//                     payoutDetails.push({
+//                         vendorId: shipment.vendor,
+//                         vendorName: updatedVendor?.businessName || 'Unknown Vendor',
+//                         vendorPayout: vendorEarning,
+//                         shipmentId: shipment._id,
+//                         distance: calculateDistance(
+//                             shipment.vendorLocation.latitude,
+//                             shipment.vendorLocation.longitude,
+//                             mainOrder.userLocation.latitude,
+//                             mainOrder.userLocation.longitude
+//                         ),
+//                         riderPayout: riderPayoutPerShipment
+//                     });
+
+//                     // Auto-update each shipment to delivered if not already
+//                     if (!shipment.isDelivered) {
+//                         shipment.shipmentStatus = 'delivered';
+//                         shipment.isDelivered = true;
+//                         shipment.deliveredAt = Date.now();
+//                         await shipment.save({ session });
+//                     }
+//                 }
+
+//                 // 3. PAY RIDER (150 per km across all shipments) - SIMULTANEOUS WITH VENDORS
+//                 if (mainOrder.rider && totalRiderPayout > 0) {
+//                     await Rider.findByIdAndUpdate(
+//                         mainOrder.rider,
+//                         { 
+//                             $inc: { 
+//                                 walletBalance: totalRiderPayout, 
+//                                 totalEarnings: totalRiderPayout,
+//                                 completedDeliveries: 1 
+//                             },
+//                             $push: {
+//                                 notifications: {
+//                                     type: 'delivery_payout',
+//                                     message: `₦${totalRiderPayout.toFixed(2)} credited for completing order ${mainOrder._id}.`,
+//                                     isRead: false,
+//                                     relatedModel: 'MainOrder',
+//                                     relatedId: mainOrder._id,
+//                                 }
+//                             }
+//                         },
+//                         { session }
+//                     );
+//                 } else {
+//                     console.warn(`No rider assigned for completed order ${MAIN_ORDER_ID} - skipping rider credit`);
+//                 }
+
+//                 // 4. Update order with payout details
+//                 mainOrder.payoutDetails = {
+//                     totalVendorPayout,
+//                     totalRiderPayout,
+//                     payoutDate: Date.now(),
+//                     details: payoutDetails
+//                 };
+
+//                 // Log the payout for admin
+//                 console.log(`✅ Order ${MAIN_ORDER_ID} completed. Total payouts: 
+//                   - Vendors: ₦${totalVendorPayout.toFixed(2)} 
+//                   - Rider: ₦${totalRiderPayout.toFixed(2)}`);
+
+//                 // Emit socket notification about completed payout
+//                 const io = req.app.get('io');
+//                 if (io) {
+//                     io.emit('order_payout_completed', {
+//                         orderId: MAIN_ORDER_ID,
+//                         totalVendorPayout,
+//                         totalRiderPayout,
+//                         payoutDetails,
+//                         timestamp: Date.now()
+//                     });
+//                 }
+
+//             } else {
+//                 console.warn(`Order ${MAIN_ORDER_ID} marked as completed but not paid - skipping payouts`);
+//             }
+//         }
+
+//         const updatedMainOrder = await mainOrder.save({ session });
+//         await session.commitTransaction();
+//         session.endSession();
+
+//         res.json({ 
+//             message: `Main Order ${MAIN_ORDER_ID} status updated to ${status}.${status === 'completed' ? ' Vendors and rider paid simultaneously.' : ''}`, 
+//             order: updatedMainOrder,
+//             ...(status === 'completed' && mainOrder.isPaid ? {
+//                 payoutSummary: {
+//                     totalVendorPayout: mainOrder.payoutDetails?.totalVendorPayout || 0,
+//                     totalRiderPayout: mainOrder.payoutDetails?.totalRiderPayout || 0,
+//                     payoutDate: mainOrder.payoutDetails?.payoutDate
+//                 }
+//             } : {})
+//         });
+
+//     } catch (error) {
+//         await session.abortTransaction();
+//         session.endSession();
+//         console.error('Error updating main order status:', error);
+//         res.status(500).json({ message: 'Server Error during main order status update.', error: error.message });
+//     }
+// });
+
+// @desc    Update MainOrder status (Admin only) - UPDATED FOR SIMULTANEOUS PAYOUT
+// @route   PUT /api/orders/:id/status
+// @access  Private/Admin
 router.put('/:id/status', protect, authorizeRoles('admin'), async (req, res) => {
     const { status } = req.body;
     const MAIN_ORDER_ID = req.params.id;
@@ -1288,6 +1496,7 @@ router.put('/:id/status', protect, authorizeRoles('admin'), async (req, res) => 
 
                 let totalRiderPayout = 0;
                 let totalVendorPayout = 0;
+                let totalCompanySettlement = 0; // ⬅️ ADD THIS
                 let payoutDetails = [];
 
                 for (const shipment of shipments) {
@@ -1297,6 +1506,7 @@ router.put('/:id/status', protect, authorizeRoles('admin'), async (req, res) => 
 
                     // Calculate distance for rider payout (150 per km)
                     let riderPayoutPerShipment = 0;
+                    let companySettlementPerShipment = 0; // ⬅️ ADD THIS
                     if (shipment.vendorLocation && mainOrder.userLocation) {
                         const distance = calculateDistance(
                             shipment.vendorLocation.latitude,
@@ -1304,6 +1514,12 @@ router.put('/:id/status', protect, authorizeRoles('admin'), async (req, res) => 
                             mainOrder.userLocation.latitude,
                             mainOrder.userLocation.longitude
                         );
+                        
+                        // ⬇️ ADD THIS: Calculate company settlement (₦150/km per shipment)
+                        companySettlementPerShipment = distance * 150;
+                        totalCompanySettlement += companySettlementPerShipment;
+                        
+                        // Rider gets the full distance payout
                         riderPayoutPerShipment = distance * 150;
                         totalRiderPayout += riderPayoutPerShipment;
                     }
@@ -1329,6 +1545,44 @@ router.put('/:id/status', protect, authorizeRoles('admin'), async (req, res) => 
                         { new: true, session }
                     );
 
+                    // ⬇️ ADD THIS: Update company settlement if order has a company
+                    if (mainOrder.company) {
+                        await Company.findByIdAndUpdate(
+                            mainOrder.company,
+                            {
+                                $inc: { 
+                                    'stats.pendingSettlement': companySettlementPerShipment,
+                                    'stats.totalEarnings': companySettlementPerShipment,
+                                    'stats.completedDeliveries': 1
+                                }
+                            },
+                            { session }
+                        );
+                        
+                        // Also update shipment with company reference
+                        shipment.company = mainOrder.company;
+                        await shipment.save({ session });
+                        
+                        // Create CompanyDelivery record
+                        const CompanyDelivery = mongoose.model('CompanyDelivery');
+                        const companyDelivery = new CompanyDelivery({
+                            company: mainOrder.company,
+                            mainOrder: mainOrder._id,
+                            shipment: shipment._id,
+                            rider: mainOrder.rider,
+                            customer: {
+                                name: `${mainOrder.user.firstName} ${mainOrder.user.lastName}`,
+                                phoneNumber: mainOrder.user.phoneNumber,
+                                address: mainOrder.shippingAddress.address
+                            },
+                            amount: companySettlementPerShipment,
+                            companyEarnings: companySettlementPerShipment,
+                            status: 'delivered',
+                            settlementStatus: 'unpaid'
+                        });
+                        await companyDelivery.save({ session });
+                    }
+
                     // 2. Store payout details
                     payoutDetails.push({
                         vendorId: shipment.vendor,
@@ -1341,7 +1595,8 @@ router.put('/:id/status', protect, authorizeRoles('admin'), async (req, res) => 
                             mainOrder.userLocation.latitude,
                             mainOrder.userLocation.longitude
                         ),
-                        riderPayout: riderPayoutPerShipment
+                        riderPayout: riderPayoutPerShipment,
+                        companySettlement: companySettlementPerShipment // ⬅️ ADD THIS
                     });
 
                     // Auto-update each shipment to delivered if not already
@@ -1353,7 +1608,11 @@ router.put('/:id/status', protect, authorizeRoles('admin'), async (req, res) => 
                     }
                 }
 
-                // 3. PAY RIDER (150 per km across all shipments) - SIMULTANEOUS WITH VENDORS
+                // 3. Update MainOrder with company settlement data
+                mainOrder.companySettlementEarnings = totalCompanySettlement; // ⬅️ ADD THIS
+                mainOrder.companySettlementStatus = 'unpaid'; // ⬅️ ADD THIS
+
+                // 4. PAY RIDER (150 per km across all shipments) - SIMULTANEOUS WITH VENDORS
                 if (mainOrder.rider && totalRiderPayout > 0) {
                     await Rider.findByIdAndUpdate(
                         mainOrder.rider,
@@ -1379,10 +1638,11 @@ router.put('/:id/status', protect, authorizeRoles('admin'), async (req, res) => 
                     console.warn(`No rider assigned for completed order ${MAIN_ORDER_ID} - skipping rider credit`);
                 }
 
-                // 4. Update order with payout details
+                // 5. Update order with payout details
                 mainOrder.payoutDetails = {
                     totalVendorPayout,
                     totalRiderPayout,
+                    totalCompanySettlement, // ⬅️ ADD THIS
                     payoutDate: Date.now(),
                     details: payoutDetails
                 };
@@ -1390,7 +1650,8 @@ router.put('/:id/status', protect, authorizeRoles('admin'), async (req, res) => 
                 // Log the payout for admin
                 console.log(`✅ Order ${MAIN_ORDER_ID} completed. Total payouts: 
                   - Vendors: ₦${totalVendorPayout.toFixed(2)} 
-                  - Rider: ₦${totalRiderPayout.toFixed(2)}`);
+                  - Rider: ₦${totalRiderPayout.toFixed(2)}
+                  - Company Settlement: ₦${totalCompanySettlement.toFixed(2)}`);
 
                 // Emit socket notification about completed payout
                 const io = req.app.get('io');
@@ -1399,6 +1660,7 @@ router.put('/:id/status', protect, authorizeRoles('admin'), async (req, res) => 
                         orderId: MAIN_ORDER_ID,
                         totalVendorPayout,
                         totalRiderPayout,
+                        totalCompanySettlement, // ⬅️ ADD THIS
                         payoutDetails,
                         timestamp: Date.now()
                     });
@@ -1420,6 +1682,7 @@ router.put('/:id/status', protect, authorizeRoles('admin'), async (req, res) => 
                 payoutSummary: {
                     totalVendorPayout: mainOrder.payoutDetails?.totalVendorPayout || 0,
                     totalRiderPayout: mainOrder.payoutDetails?.totalRiderPayout || 0,
+                    totalCompanySettlement: mainOrder.payoutDetails?.totalCompanySettlement || 0, // ⬅️ ADD THIS
                     payoutDate: mainOrder.payoutDetails?.payoutDate
                 }
             } : {})
