@@ -200,6 +200,24 @@ const UserSchema = new mongoose.Schema({
       },
     }
   ],
+
+     // OneSignal integration
+    oneSignalUserId: {
+        type: String,
+        sparse: true
+    },
+    
+     oneSignalPlayerId: {
+    type: String,
+    sparse: true // Allows null/undefined values
+  },
+    
+    // Notification preferences
+    notificationPreferences: {
+        orderUpdates: { type: Boolean, default: true },
+        promotions: { type: Boolean, default: true },
+        priceAlerts: { type: Boolean, default: true }
+    },
   
   isAdmin: {
     type: Boolean,

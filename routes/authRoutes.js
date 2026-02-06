@@ -12,7 +12,7 @@ const Review = require('../models/Review');
 const DisputeRequest = require('../models/DisputeRequest');
 const ReturnRequest = require('../models/ReturnRequest');
 const rateLimit = require('express-rate-limit');
-
+const notificationService = require('../services/notificationService');
 
 const router = express.Router();
 const resend = new Resend(process.env.RESEND_API_KEY);
@@ -201,6 +201,20 @@ router.post('/register', async (req, res) => {
             });
         }
 
+            // Send welcome notification via OneSignal
+            try {
+                // We'll need to link OneSignal user ID later when they login
+                // For now, send via email notification
+                await notificationService.sendToSegment("Subscribed Users", {
+                    title: 'Welcome to Naijago!',
+                    message: `Welcome ${firstName}! Verify your email to start shopping.`,
+                    data: { type: 'welcome', userId: user._id }
+                });
+            } catch (notifError) {
+                console.error('Failed to send welcome notification:', notifError);
+                // Don't fail registration if notification fails
+            }
+
         res.status(201).json({
             message: 'User registered successfully. Please check your email for verification.',
             userId: user._id, email: user.email,
@@ -234,8 +248,133 @@ router.get('/email/verify/:token', async (req, res) => {
     }
 });
 
+// router.post('/login', async (req, res) => {
+//   const { email, password, deviceFingerprint } = req.body;
+
+//   if (!email || !password) {
+//     return res.status(400).json({ message: 'Please enter all fields' });
+//   }
+
+//   try {
+//     const user = await User.findOne({ email });
+
+//     if (!user) {
+//       return res.status(400).json({ message: 'Invalid credentials' });
+//     }
+
+//     if (!user.isEmailVerified) {
+//       return res.status(403).json({ message: 'Please verify your email before logging in.' });
+//     }
+
+//     // ✅ Always check password first
+//     const isMatch = await bcrypt.compare(password, user.password);
+//     if (!isMatch) {
+//       return res.status(400).json({ message: 'Invalid credentials' });
+//     }
+
+//     // ✅ Admin bypass for convenience
+//     if (user.isAdmin) {
+//       if (deviceFingerprint && user.deviceFingerprint !== deviceFingerprint) {
+//         user.deviceFingerprint = deviceFingerprint;
+//         user.isDeviceVerified = true;
+//         await user.save();
+//       }
+//       return res.status(200).json({
+//         token: generateToken(user._id),
+//         user: {
+//           id: user._id,
+//           firstName: user.firstName,
+//           lastName: user.lastName,
+//           email: user.email,
+//           phoneNumber: user.phoneNumber,
+//           isEmailVerified: user.isEmailVerified,
+//           isAdmin: user.isAdmin,
+//           isVendor: user.isVendor,
+//           vendorStatus: user.vendorStatus,
+//         },
+//         message: 'Admin login successful. Device verification bypassed for convenience.',
+//       });
+//     }
+
+//     // ✅ Auto-trust new device after password reset
+//     if (!user.passwordResetToken && !user.passwordResetExpires) {
+//       if (deviceFingerprint && user.deviceFingerprint !== deviceFingerprint) {
+//         user.deviceFingerprint = deviceFingerprint;
+//         user.isDeviceVerified = true;
+//         await user.save();
+//         return res.status(200).json({
+//           token: generateToken(user._id),
+//           user: {
+//             id: user._id,
+//             firstName: user.firstName,
+//             lastName: user.lastName,
+//             email: user.email,
+//             phoneNumber: user.phoneNumber,
+//             isEmailVerified: user.isEmailVerified,
+//             isVendor: user.isVendor,
+//             vendorStatus: user.vendorStatus,
+//           },
+//           message: 'Login successful after password reset. New device trusted automatically.',
+//         });
+//       }
+//     }
+
+//     // ✅ Standard device verification for regular users
+//     if (!user.deviceFingerprint) {
+//       user.deviceFingerprint = deviceFingerprint;
+//       user.isDeviceVerified = true;
+//       await user.save();
+//       return res.status(200).json({
+//         token: generateToken(user._id),
+//         user: {
+//           id: user._id,
+//           firstName: user.firstName,
+//           lastName: user.lastName,
+//           email: user.email,
+//           phoneNumber: user.phoneNumber,
+//           isEmailVerified: user.isEmailVerified,
+//           isVendor: user.isVendor,
+//           vendorStatus: user.vendorStatus,
+//         },
+//         message: 'Login successful. Device captured as original.',
+//       });
+//     } else {
+//       if (user.deviceFingerprint !== deviceFingerprint) {
+//         const deviceVerificationToken = crypto.randomBytes(32).toString('hex');
+//         user.deviceVerificationToken = deviceVerificationToken;
+//         user.deviceVerificationExpires = Date.now() + 24 * 60 * 60 * 1000;
+//         await user.save();
+//         await sendVerificationEmail(user.email, deviceVerificationToken, 'device');
+
+//         return res.status(403).json({
+//           message: 'New device detected. Please check your email to verify this device.',
+//         });
+//       } else {
+//         return res.status(200).json({
+//           token: generateToken(user._id),
+//           user: {
+//             id: user._id,
+//             firstName: user.firstName,
+//             lastName: user.lastName,
+//             email: user.email,
+//             phoneNumber: user.phoneNumber,
+//             isEmailVerified: user.isEmailVerified,
+//             isVendor: user.isVendor,
+//             vendorStatus: user.vendorStatus,
+//           },
+//           message: 'Login successful from original device.',
+//         });
+//       }
+//     }
+//   } catch (error) {
+//     console.error('Login error:', error);
+//     res.status(500).json({ message: 'Server error during login' });
+//   }
+// });
+
+
 router.post('/login', async (req, res) => {
-  const { email, password, deviceFingerprint } = req.body;
+  const { email, password, deviceFingerprint, oneSignalPlayerId } = req.body; // ADDED oneSignalPlayerId
 
   if (!email || !password) {
     return res.status(400).json({ message: 'Please enter all fields' });
@@ -256,6 +395,11 @@ router.post('/login', async (req, res) => {
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) {
       return res.status(400).json({ message: 'Invalid credentials' });
+    }
+
+    // ✅ STORE OneSignal Player ID if provided
+    if (oneSignalPlayerId && oneSignalPlayerId.trim() !== '') {
+      user.oneSignalPlayerId = oneSignalPlayerId;
     }
 
     // ✅ Admin bypass for convenience
@@ -357,7 +501,6 @@ router.post('/login', async (req, res) => {
     res.status(500).json({ message: 'Server error during login' });
   }
 });
-
 
 router.get('/me', protect, async (req, res) => {
     console.log('Backend: /api/auth/me route hit. User ID:', req.user?._id); // DEBUG LOG

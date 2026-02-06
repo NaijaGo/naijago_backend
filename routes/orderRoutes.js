@@ -9,7 +9,7 @@ const User = require('../models/User');
 const Rider = require('../models/Rider');
 const { protect, authorizeRoles } = require('../middleware/authMiddleware');
 const axios = require("axios");
-
+const notificationService = require('../services/notificationService');
 
 // Category-based commission rates
 const CATEGORY_COMMISSION_RATES = {
@@ -809,6 +809,21 @@ router.put('/:id/pay/wallet', protect, async (req, res) => {
             email_address: buyer.email,
         };
 
+           // After successful payment, send notification to user
+            try {
+            await notificationService.sendToUser(req.user.id.toString(), {
+                title: 'Payment Successful!',
+                message: `Your payment of ₦${orderTotal.toFixed(2)} was successful. Order #${mainOrder._id}`,
+                data: {
+                    type: 'payment_success',
+                    orderId: mainOrder._id,
+                    amount: orderTotal
+                }
+            });
+        } catch (notifError) {
+            console.error('Payment notification failed:', notifError);
+        }
+
         // 6. Process product stock updates and update Shipment status
         const shipments = await Shipment.find({ mainOrder: mainOrder._id }).session(session);
         const productUpdates = [];
@@ -1545,6 +1560,22 @@ router.put('/:id/status', protect, authorizeRoles('admin'), async (req, res) => 
                         { new: true, session }
                     );
 
+                    // After payment, notify all vendors in the order
+
+                    try {
+                        await notificationService.sendToUser(shipment.vendor.toString(), {
+                            title: '📦 New Order!',
+                            message: `You have a new order from ${buyer.firstName}. Check your vendor dashboard.`,
+                            data: {
+                                type: 'new_order_vendor',
+                                orderId: mainOrder._id,
+                                shipmentId: shipment._id
+                            }
+                        });
+                    } catch (vendorNotifError) {
+                        console.error(`Failed to notify vendor ${shipment.vendor}:`, vendorNotifError);
+                    }
+
                     // ⬇️ ADD THIS: Update company settlement if order has a company
                     if (mainOrder.company) {
                         await Company.findByIdAndUpdate(
@@ -1693,6 +1724,45 @@ router.put('/:id/status', protect, authorizeRoles('admin'), async (req, res) => 
         session.endSession();
         console.error('Error updating main order status:', error);
         res.status(500).json({ message: 'Server Error during main order status update.', error: error.message });
+    }
+
+
+    // Send notification based on status
+    try {
+        let title, message;
+        
+        switch(status) {
+            case 'processing':
+                title = 'Order Processing';
+                message = `Order #${MAIN_ORDER_ID} is now being processed by our vendors.`;
+                break;
+            case 'shipped':
+                title = 'Order Shipped!';
+                message = `Your order #${MAIN_ORDER_ID} has been shipped. Track your delivery in the app.`;
+                break;
+            case 'delivered':
+                title = 'Order Delivered!';
+                message = `Your order #${MAIN_ORDER_ID} has been delivered. Please confirm receipt.`;
+                break;
+            case 'completed':
+                title = 'Order Completed';
+                message = `Order #${MAIN_ORDER_ID} is complete. Thank you for shopping with Naijago!`;
+                break;
+        }
+
+        if (title && message) {
+            await notificationService.sendToUser(mainOrder.user.toString(), {
+                title,
+                message,
+                data: {
+                    type: 'order_update',
+                    orderId: MAIN_ORDER_ID,
+                    status: status
+                }
+            });
+        }
+    } catch (notifError) {
+        console.error('Status update notification failed:', notifError);
     }
 });
 
