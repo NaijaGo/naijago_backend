@@ -373,8 +373,138 @@ router.get('/email/verify/:token', async (req, res) => {
 // });
 
 
+// router.post('/login', async (req, res) => {
+//   const { email, password, deviceFingerprint, oneSignalPlayerId } = req.body; // ADDED oneSignalPlayerId
+
+//   if (!email || !password) {
+//     return res.status(400).json({ message: 'Please enter all fields' });
+//   }
+
+//   try {
+//     const user = await User.findOne({ email });
+
+//     if (!user) {
+//       return res.status(400).json({ message: 'Invalid credentials' });
+//     }
+
+//     if (!user.isEmailVerified) {
+//       return res.status(403).json({ message: 'Please verify your email before logging in.' });
+//     }
+
+//     // ✅ Always check password first
+//     const isMatch = await bcrypt.compare(password, user.password);
+//     if (!isMatch) {
+//       return res.status(400).json({ message: 'Invalid credentials' });
+//     }
+
+//     // ✅ STORE OneSignal Player ID if provided
+//     if (oneSignalPlayerId && oneSignalPlayerId.trim() !== '') {
+//       user.oneSignalPlayerId = oneSignalPlayerId;
+//     }
+
+//     // ✅ Admin bypass for convenience
+//     if (user.isAdmin) {
+//       if (deviceFingerprint && user.deviceFingerprint !== deviceFingerprint) {
+//         user.deviceFingerprint = deviceFingerprint;
+//         user.isDeviceVerified = true;
+//         await user.save();
+//       }
+//       return res.status(200).json({
+//         token: generateToken(user._id),
+//         user: {
+//           id: user._id,
+//           firstName: user.firstName,
+//           lastName: user.lastName,
+//           email: user.email,
+//           phoneNumber: user.phoneNumber,
+//           isEmailVerified: user.isEmailVerified,
+//           isAdmin: user.isAdmin,
+//           isVendor: user.isVendor,
+//           vendorStatus: user.vendorStatus,
+//         },
+//         message: 'Admin login successful. Device verification bypassed for convenience.',
+//       });
+//     }
+
+//     // ✅ Auto-trust new device after password reset
+//     if (!user.passwordResetToken && !user.passwordResetExpires) {
+//       if (deviceFingerprint && user.deviceFingerprint !== deviceFingerprint) {
+//         user.deviceFingerprint = deviceFingerprint;
+//         user.isDeviceVerified = true;
+//         await user.save();
+//         return res.status(200).json({
+//           token: generateToken(user._id),
+//           user: {
+//             id: user._id,
+//             firstName: user.firstName,
+//             lastName: user.lastName,
+//             email: user.email,
+//             phoneNumber: user.phoneNumber,
+//             isEmailVerified: user.isEmailVerified,
+//             isVendor: user.isVendor,
+//             vendorStatus: user.vendorStatus,
+//           },
+//           message: 'Login successful after password reset. New device trusted automatically.',
+//         });
+//       }
+//     }
+
+//     // ✅ Standard device verification for regular users
+//     if (!user.deviceFingerprint) {
+//       user.deviceFingerprint = deviceFingerprint;
+//       user.isDeviceVerified = true;
+//       await user.save();
+//       return res.status(200).json({
+//         token: generateToken(user._id),
+//         user: {
+//           id: user._id,
+//           firstName: user.firstName,
+//           lastName: user.lastName,
+//           email: user.email,
+//           phoneNumber: user.phoneNumber,
+//           isEmailVerified: user.isEmailVerified,
+//           isVendor: user.isVendor,
+//           vendorStatus: user.vendorStatus,
+//         },
+//         message: 'Login successful. Device captured as original.',
+//       });
+//     } else {
+//       if (user.deviceFingerprint !== deviceFingerprint) {
+//         const deviceVerificationToken = crypto.randomBytes(32).toString('hex');
+//         user.deviceVerificationToken = deviceVerificationToken;
+//         user.deviceVerificationExpires = Date.now() + 24 * 60 * 60 * 1000;
+//         await user.save();
+//         await sendVerificationEmail(user.email, deviceVerificationToken, 'device');
+
+//         return res.status(403).json({
+//           message: 'New device detected. Please check your email to verify this device.',
+//         });
+//       } else {
+//         return res.status(200).json({
+//           token: generateToken(user._id),
+//           user: {
+//             id: user._id,
+//             firstName: user.firstName,
+//             lastName: user.lastName,
+//             email: user.email,
+//             phoneNumber: user.phoneNumber,
+//             isEmailVerified: user.isEmailVerified,
+//             isVendor: user.isVendor,
+//             vendorStatus: user.vendorStatus,
+//           },
+//           message: 'Login successful from original device.',
+//         });
+//       }
+//     }
+//   } catch (error) {
+//     console.error('Login error:', error);
+//     res.status(500).json({ message: 'Server error during login' });
+//   }
+// });
+
+
 router.post('/login', async (req, res) => {
-  const { email, password, deviceFingerprint, oneSignalPlayerId } = req.body; // ADDED oneSignalPlayerId
+  const { email, password, deviceFingerprint, oneSignalPlayerId } = req.body;
 
   if (!email || !password) {
     return res.status(400).json({ message: 'Please enter all fields' });
@@ -402,13 +532,38 @@ router.post('/login', async (req, res) => {
       user.oneSignalPlayerId = oneSignalPlayerId;
     }
 
+    // 🔔 helper: send welcome push ONCE (safe, non-blocking)
+    const sendWelcomePushIfNeeded = async () => {
+      if (
+        user.oneSignalPlayerId &&
+        !user.hasReceivedWelcomePush
+      ) {
+        try {
+          await notificationService.sendToUser(
+            user._id.toString(),
+            {
+              title: 'Welcome to Naijago 🎉',
+              message: `Welcome back, ${user.firstName}!`,
+              data: { type: 'welcome' },
+            }
+          );
+          user.hasReceivedWelcomePush = true;
+        } catch (e) {
+          console.error('Welcome push failed:', e);
+        }
+      }
+    };
+
     // ✅ Admin bypass for convenience
     if (user.isAdmin) {
       if (deviceFingerprint && user.deviceFingerprint !== deviceFingerprint) {
         user.deviceFingerprint = deviceFingerprint;
         user.isDeviceVerified = true;
-        await user.save();
       }
+
+      await sendWelcomePushIfNeeded();
+      await user.save();
+
       return res.status(200).json({
         token: generateToken(user._id),
         user: {
@@ -431,7 +586,10 @@ router.post('/login', async (req, res) => {
       if (deviceFingerprint && user.deviceFingerprint !== deviceFingerprint) {
         user.deviceFingerprint = deviceFingerprint;
         user.isDeviceVerified = true;
+
+        await sendWelcomePushIfNeeded();
         await user.save();
+
         return res.status(200).json({
           token: generateToken(user._id),
           user: {
@@ -453,7 +611,10 @@ router.post('/login', async (req, res) => {
     if (!user.deviceFingerprint) {
       user.deviceFingerprint = deviceFingerprint;
       user.isDeviceVerified = true;
+
+      await sendWelcomePushIfNeeded();
       await user.save();
+
       return res.status(200).json({
         token: generateToken(user._id),
         user: {
@@ -480,6 +641,9 @@ router.post('/login', async (req, res) => {
           message: 'New device detected. Please check your email to verify this device.',
         });
       } else {
+        await sendWelcomePushIfNeeded();
+        await user.save();
+
         return res.status(200).json({
           token: generateToken(user._id),
           user: {
