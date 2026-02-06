@@ -82,7 +82,7 @@ class NotificationService {
 
     getPlatformOptions() {
         return {
-            android_channel_id: 'naijago_shopping_channel',
+            android_channel_id: 'ea2ee9a7-0988-429d-9e86-412d1668055e',
             ios_sound: 'notification.wav',
             android_sound: 'notification',
             small_icon: 'ic_notification',
