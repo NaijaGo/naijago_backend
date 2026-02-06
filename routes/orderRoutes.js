@@ -742,35 +742,230 @@ router.get('/vendor', protect, authorizeRoles('vendor', 'admin'), async (req, re
 
 // ## Wallet Payment Route (Escrow)
 
-// @desc     Update MainOrder/Shipments to paid + Debit User Wallet (NO IMMEDIATE VENDOR CREDIT)
-// @route    PUT /api/orders/:id/pay/wallet
-// @access   Private
+// // @desc     Update MainOrder/Shipments to paid + Debit User Wallet (NO IMMEDIATE VENDOR CREDIT)
+// // @route    PUT /api/orders/:id/pay/wallet
+// // @access   Private
+// router.put('/:id/pay/wallet', protect, async (req, res) => {
+//     const session = await mongoose.startSession();
+//     session.startTransaction();
+
+//     try {
+//         const mainOrder = await MainOrder.findById(req.params.id).session(session);
+
+//         if (!mainOrder) {
+//             await session.abortTransaction();
+//             session.endSession();
+//             return res.status(404).json({ message: 'Main Order not found' });
+//         }
+
+//         if (mainOrder.isPaid) {
+//             await session.abortTransaction();
+//             session.endSession();
+//             return res.status(400).json({ message: 'Order is already paid' });
+//         }
+
+//         // 1. Authorization check
+//         if (mainOrder.user.toString() !== req.user.id.toString()) {
+//             await session.abortTransaction();
+//             session.endSession();
+//             return res.status(401).json({ message: 'Not authorized to modify this order' });
+//         }
+        
+//         // 2. Fetch the user (buyer) document within the transaction
+//         const buyer = await User.findById(req.user.id).session(session);
+//         if (!buyer) {
+//             await session.abortTransaction();
+//             session.endSession();
+//             return res.status(404).json({ message: 'Buyer user account not found.' });
+//         }
+
+//         // 3. Balance check
+//         const orderTotal = mainOrder.totalPrice; // Total price user must pay
+//         if (buyer.userWalletBalance < orderTotal) {
+//             await session.abortTransaction();
+//             session.endSession();
+//             return res.status(400).json({ 
+//                 message: `Insufficient wallet balance. Required: ₦${orderTotal.toFixed(2)}, Available: ₦${buyer.userWalletBalance.toFixed(2)}`
+//             });
+//         }
+        
+//         // 4. Debit the buyer's wallet
+//         const updatedBuyer = await User.findByIdAndUpdate(
+//             req.user.id,
+//             { $inc: { userWalletBalance: -orderTotal } },
+//             { new: true, session }
+//         );
+        
+//         // 5. Update MainOrder payment status (Funds are now HELD by the platform/Escrow)
+//         mainOrder.isPaid = true;
+//         mainOrder.paidAt = Date.now();
+//         mainOrder.mainOrderStatus = 'processing'; // Transition to processing
+//         mainOrder.paymentResult = {
+//             id: 'WALLET-' + Date.now().toString(), 
+//             status: 'successful',
+//             payment_type: 'Wallet Balance',
+//             amount: orderTotal,
+//             currency: 'NGN',
+//             email_address: buyer.email,
+//         };
+
+//            // After successful payment, send notification to user
+//             try {
+//             await notificationService.sendToUser(req.user.id.toString(), {
+//                 title: 'Payment Successful!',
+//                 message: `Your payment of ₦${orderTotal.toFixed(2)} was successful. Order #${mainOrder._id}`,
+//                 data: {
+//                     type: 'payment_success',
+//                     orderId: mainOrder._id,
+//                     amount: orderTotal
+//                 }
+//             });
+//         } catch (notifError) {
+//             console.error('Payment notification failed:', notifError);
+//         }
+
+//         // 6. Process product stock updates and update Shipment status
+//         const shipments = await Shipment.find({ mainOrder: mainOrder._id }).session(session);
+//         const productUpdates = [];
+
+
+//         for (const shipment of shipments) {
+//             // Update Shipment status to processing
+//             shipment.shipmentStatus = 'processing';
+//             await shipment.save({ session });
+
+//             // const message = `New paid order! Shipment ${shipment._id} is ready for processing. Platform Fee deducted: ₦${shipment.platformFee.toFixed(2)} will be retained.`;
+
+//             // await User.findByIdAndUpdate(
+//             //     shipment.vendor,
+//             //     {
+//             //         $push: {
+//             //             notifications: {
+//             //                 $each: [
+//             //                     {
+//             //                         type: 'new_order',
+//             //                         message: message,
+//             //                         isRead: false,
+//             //                         relatedModel: 'Shipment',
+//             //                         relatedId: shipment._id,
+//             //                     },
+//             //                 ],
+//             //                 $position: 0, 
+//             //             },
+//             //         },
+//             //     },
+//             //     { new: true, session }
+//             // );
+
+//             // ✅ Enhanced notification with shipment details (NO BUYER INFO)
+//                 const itemSummary = shipment.items.map(item => 
+//                 `${item.quantity}x ${item.name} (₦${item.price.toFixed(2)} each)`
+//                 ).join(', ');
+
+//                 const message = `📦 New Order Received! 
+//                 Shipment #${shipment._id.toString().slice(-6)}
+//                 Items: ${itemSummary}
+//                 Subtotal: ₦${shipment.subtotal.toFixed(2)}
+//                 Shipping: ₦${shipment.shippingPrice.toFixed(2)}
+//                 Platform Fee: ₦${shipment.platformFee.toFixed(2)}
+//                 Status: Ready for processing`;
+
+//                 await User.findByIdAndUpdate(
+//                     shipment.vendor,
+//                     {
+//                         $push: {
+//                             notifications: {
+//                                 $each: [{
+//                                     type: 'new_order',
+//                                     message: message,
+//                                     isRead: false,
+//                                     relatedModel: 'Shipment',
+//                                     relatedId: shipment._id,
+//                                     // Add shipment details (NO BUYER INFO)
+//                                     shipmentDetails: {
+//                                         orderId: mainOrder._id,
+//                                         items: shipment.items.map(item => ({
+//                                             productName: item.name,
+//                                             quantity: item.quantity,
+//                                             price: item.price,
+//                                             total: item.quantity * item.price
+//                                         })),
+//                                         subtotal: shipment.subtotal,
+//                                         platformFee: shipment.platformFee,
+//                                         shippingPrice: shipment.shippingPrice,
+//                                         totalShipment: shipment.subtotal + shipment.shippingPrice,
+//                                         status: 'processing'
+//                                     }
+//                                 }],
+//                                 $position: 0,
+//                             },
+//                         },
+//                     },
+//                     { new: true, session }
+//                 );
+//             // END: NEW VENDOR NOTIFICATION FOR PAID ORDER
+            
+//             // Queue product updates
+//             for (const item of shipment.items) {
+//                 const soldCount = item.quantity;
+//                 productUpdates.push(
+//                     Product.findByIdAndUpdate(
+//                         item.product,
+//                         { $inc: { salesCount: soldCount, stockQuantity: -soldCount } },
+//                         { new: true, session }
+//                     )
+//                 );
+//             }
+//         }
+
+//         await Promise.all(productUpdates);
+        
+//         // 7. VENDOR CREDITS (85%) ARE HELD UNTIL ORDER COMPLETION.
+
+//         const updatedOrder = await mainOrder.save({ session });
+//         await session.commitTransaction();
+//         session.endSession();
+
+//         // 8. Success response
+//         res.json({
+//             ...updatedOrder.toObject(),
+//             newBuyerWalletBalance: updatedBuyer.userWalletBalance, 
+//         });
+
+//     } catch (error) {
+//         await session.abortTransaction();
+//         session.endSession();
+//         console.error('Error processing wallet payment for order:', error.message);
+//         res.status(500).json({ message: 'Server Error', error: error.message });
+//     }
+// });
+
+// ## Wallet Payment Route (Escrow)
+// @desc Update MainOrder/Shipments to paid + Debit User Wallet (NO IMMEDIATE VENDOR CREDIT)
+// @route PUT /api/orders/:id/pay/wallet
+// @access Private
 router.put('/:id/pay/wallet', protect, async (req, res) => {
     const session = await mongoose.startSession();
     session.startTransaction();
-
     try {
         const mainOrder = await MainOrder.findById(req.params.id).session(session);
-
         if (!mainOrder) {
             await session.abortTransaction();
             session.endSession();
             return res.status(404).json({ message: 'Main Order not found' });
         }
-
         if (mainOrder.isPaid) {
             await session.abortTransaction();
             session.endSession();
             return res.status(400).json({ message: 'Order is already paid' });
         }
-
         // 1. Authorization check
         if (mainOrder.user.toString() !== req.user.id.toString()) {
             await session.abortTransaction();
             session.endSession();
             return res.status(401).json({ message: 'Not authorized to modify this order' });
         }
-        
+       
         // 2. Fetch the user (buyer) document within the transaction
         const buyer = await User.findById(req.user.id).session(session);
         if (!buyer) {
@@ -778,30 +973,29 @@ router.put('/:id/pay/wallet', protect, async (req, res) => {
             session.endSession();
             return res.status(404).json({ message: 'Buyer user account not found.' });
         }
-
         // 3. Balance check
-        const orderTotal = mainOrder.totalPrice; // Total price user must pay
+        const orderTotal = mainOrder.totalPrice;
         if (buyer.userWalletBalance < orderTotal) {
             await session.abortTransaction();
             session.endSession();
-            return res.status(400).json({ 
+            return res.status(400).json({
                 message: `Insufficient wallet balance. Required: ₦${orderTotal.toFixed(2)}, Available: ₦${buyer.userWalletBalance.toFixed(2)}`
             });
         }
-        
+       
         // 4. Debit the buyer's wallet
         const updatedBuyer = await User.findByIdAndUpdate(
             req.user.id,
             { $inc: { userWalletBalance: -orderTotal } },
             { new: true, session }
         );
-        
-        // 5. Update MainOrder payment status (Funds are now HELD by the platform/Escrow)
+       
+        // 5. Update MainOrder payment status
         mainOrder.isPaid = true;
         mainOrder.paidAt = Date.now();
-        mainOrder.mainOrderStatus = 'processing'; // Transition to processing
+        mainOrder.mainOrderStatus = 'processing';
         mainOrder.paymentResult = {
-            id: 'WALLET-' + Date.now().toString(), 
+            id: 'WALLET-' + Date.now().toString(),
             status: 'successful',
             payment_type: 'Wallet Balance',
             amount: orderTotal,
@@ -809,8 +1003,8 @@ router.put('/:id/pay/wallet', protect, async (req, res) => {
             email_address: buyer.email,
         };
 
-           // After successful payment, send notification to user
-            try {
+        // Buyer notification (already existing)
+        try {
             await notificationService.sendToUser(req.user.id.toString(), {
                 title: 'Payment Successful!',
                 message: `Your payment of ₦${orderTotal.toFixed(2)} was successful. Order #${mainOrder._id}`,
@@ -824,88 +1018,88 @@ router.put('/:id/pay/wallet', protect, async (req, res) => {
             console.error('Payment notification failed:', notifError);
         }
 
-        // 6. Process product stock updates and update Shipment status
+        // 6. Process shipments
         const shipments = await Shipment.find({ mainOrder: mainOrder._id }).session(session);
         const productUpdates = [];
-
-
         for (const shipment of shipments) {
-            // Update Shipment status to processing
             shipment.shipmentStatus = 'processing';
             await shipment.save({ session });
 
-            // const message = `New paid order! Shipment ${shipment._id} is ready for processing. Platform Fee deducted: ₦${shipment.platformFee.toFixed(2)} will be retained.`;
-
-            // await User.findByIdAndUpdate(
-            //     shipment.vendor,
-            //     {
-            //         $push: {
-            //             notifications: {
-            //                 $each: [
-            //                     {
-            //                         type: 'new_order',
-            //                         message: message,
-            //                         isRead: false,
-            //                         relatedModel: 'Shipment',
-            //                         relatedId: shipment._id,
-            //                     },
-            //                 ],
-            //                 $position: 0, 
-            //             },
-            //         },
-            //     },
-            //     { new: true, session }
-            // );
-
-            // ✅ Enhanced notification with shipment details (NO BUYER INFO)
-                const itemSummary = shipment.items.map(item => 
+            // Existing in-app notification to vendor
+            const itemSummary = shipment.items.map(item =>
                 `${item.quantity}x ${item.name} (₦${item.price.toFixed(2)} each)`
-                ).join(', ');
+            ).join(', ');
+            const message = `📦 New Order Received!
+Shipment #${shipment._id.toString().slice(-6)}
+Items: ${itemSummary}
+Subtotal: ₦${shipment.subtotal.toFixed(2)}
+Shipping: ₦${shipment.shippingPrice.toFixed(2)}
+Platform Fee: ₦${shipment.platformFee.toFixed(2)}
+Status: Ready for processing`;
 
-                const message = `📦 New Order Received! 
-                Shipment #${shipment._id.toString().slice(-6)}
-                Items: ${itemSummary}
-                Subtotal: ₦${shipment.subtotal.toFixed(2)}
-                Shipping: ₦${shipment.shippingPrice.toFixed(2)}
-                Platform Fee: ₦${shipment.platformFee.toFixed(2)}
-                Status: Ready for processing`;
-
-                await User.findByIdAndUpdate(
-                    shipment.vendor,
-                    {
-                        $push: {
-                            notifications: {
-                                $each: [{
-                                    type: 'new_order',
-                                    message: message,
-                                    isRead: false,
-                                    relatedModel: 'Shipment',
-                                    relatedId: shipment._id,
-                                    // Add shipment details (NO BUYER INFO)
-                                    shipmentDetails: {
-                                        orderId: mainOrder._id,
-                                        items: shipment.items.map(item => ({
-                                            productName: item.name,
-                                            quantity: item.quantity,
-                                            price: item.price,
-                                            total: item.quantity * item.price
-                                        })),
-                                        subtotal: shipment.subtotal,
-                                        platformFee: shipment.platformFee,
-                                        shippingPrice: shipment.shippingPrice,
-                                        totalShipment: shipment.subtotal + shipment.shippingPrice,
-                                        status: 'processing'
-                                    }
-                                }],
-                                $position: 0,
-                            },
+            await User.findByIdAndUpdate(
+                shipment.vendor,
+                {
+                    $push: {
+                        notifications: {
+                            $each: [{
+                                type: 'new_order',
+                                message: message,
+                                isRead: false,
+                                relatedModel: 'Shipment',
+                                relatedId: shipment._id,
+                                shipmentDetails: {
+                                    orderId: mainOrder._id,
+                                    items: shipment.items.map(item => ({
+                                        productName: item.name,
+                                        quantity: item.quantity,
+                                        price: item.price,
+                                        total: item.quantity * item.price
+                                    })),
+                                    subtotal: shipment.subtotal,
+                                    platformFee: shipment.platformFee,
+                                    shippingPrice: shipment.shippingPrice,
+                                    totalShipment: shipment.subtotal + shipment.shippingPrice,
+                                    status: 'processing'
+                                }
+                            }],
+                            $position: 0,
                         },
                     },
-                    { new: true, session }
+                },
+                { new: true, session }
+            );
+
+            // ───────────────────────────────────────────────────────────────
+            //   NEW: OneSignal push notification to this vendor
+            // ───────────────────────────────────────────────────────────────
+            try {
+                const shortId = mainOrder._id.toString().slice(-8);
+                const itemCount = shipment.items.reduce((sum, i) => sum + i.quantity, 0);
+
+                await notificationService.sendToUser(
+                    shipment.vendor.toString(),
+                    {
+                        title: "🛒 New Paid Order Received!",
+                        message: `New paid order (#${shortId}) — ${itemCount} item(s) • ₦${shipment.subtotal.toFixed(0)}. Start preparing!`,
+                        data: {
+                            type: "new_paid_order_vendor",
+                            orderId: mainOrder._id.toString(),
+                            shipmentId: shipment._id.toString(),
+                            subtotal: shipment.subtotal,
+                            itemCount,
+                            paymentMethod: "Wallet",
+                            timestamp: Date.now()
+                        }
+                    }
                 );
-            // END: NEW VENDOR NOTIFICATION FOR PAID ORDER
-            
-            // Queue product updates
+            } catch (pushErr) {
+                console.error(`Failed to send paid order push to vendor ${shipment.vendor}:`, pushErr);
+                // non-blocking
+            }
+            // ───────────────────────────────────────────────────────────────
+
+            // Stock updates
             for (const item of shipment.items) {
                 const soldCount = item.quantity;
                 productUpdates.push(
@@ -917,21 +1111,16 @@ router.put('/:id/pay/wallet', protect, async (req, res) => {
                 );
             }
         }
-
         await Promise.all(productUpdates);
-        
-        // 7. VENDOR CREDITS (85%) ARE HELD UNTIL ORDER COMPLETION.
-
+       
         const updatedOrder = await mainOrder.save({ session });
         await session.commitTransaction();
         session.endSession();
 
-        // 8. Success response
         res.json({
             ...updatedOrder.toObject(),
-            newBuyerWalletBalance: updatedBuyer.userWalletBalance, 
+            newBuyerWalletBalance: updatedBuyer.userWalletBalance,
         });
-
     } catch (error) {
         await session.abortTransaction();
         session.endSession();
@@ -940,117 +1129,244 @@ router.put('/:id/pay/wallet', protect, async (req, res) => {
     }
 });
 
+
 // ## Flutterwave Payment Route (Escrow)
 
-// @desc     Update MainOrder/Shipments to paid + verify Flutterwave (NO IMMEDIATE VENDOR CREDIT)
-// @route    PUT /api/orders/:id/pay
-// @access   Private
+// // @desc     Update MainOrder/Shipments to paid + verify Flutterwave (NO IMMEDIATE VENDOR CREDIT)
+// // @route    PUT /api/orders/:id/pay
+// // @access   Private
+// router.put('/:id/pay', protect, async (req, res) => {
+//   const session = await mongoose.startSession();
+//   session.startTransaction();
+
+//   try {
+//     const mainOrder = await MainOrder.findById(req.params.id).session(session);
+
+//     if (!mainOrder) {
+//       await session.abortTransaction();
+//       session.endSession();
+//       return res.status(404).json({ message: 'Main Order not found' });
+//     }
+
+//     if (mainOrder.isPaid) {
+//       await session.abortTransaction();
+//       session.endSession();
+//       return res.status(400).json({ message: 'Order is already paid' });
+//     }
+
+//     if (mainOrder.user.toString() !== req.user.id.toString()) {
+//       await session.abortTransaction();
+//       session.endSession();
+//       return res.status(401).json({ message: 'Not authorized to modify this order' });
+//     }
+
+//     const { transaction_id } = req.body;
+//     if (!transaction_id) {
+//       await session.abortTransaction();
+//       session.endSession();
+//       return res.status(400).json({ message: 'Transaction ID is required' });
+//     }
+
+//     // ✅ Verify payment with Flutterwave
+//     const flwResponse = await axios.get(
+//       `https://api.flutterwave.com/v3/transactions/${transaction_id}/verify`,
+//       {
+//         headers: { Authorization: `Bearer ${process.env.FLUTTERWAVE_SECRET_KEY}` }
+//       }
+//     );
+
+//     const flwData = flwResponse.data;
+
+//     // ❌ If verification fails, remove order
+//     if (flwData.status !== "success" || flwData.data.status !== "successful") {
+//       await MainOrder.deleteOne({ _id: mainOrder._id }, { session });
+//       // Also delete associated shipments to prevent orphaned documents
+//       await Shipment.deleteMany({ mainOrder: mainOrder._id }, { session }); 
+//       await session.commitTransaction();
+//       session.endSession();
+//       return res.status(400).json({
+//         message: 'Payment verification failed and order has been removed.',
+//         flutterwave: flwData
+//       });
+//     }
+
+//     // ✅ Verified — update MainOrder payment and status
+//     mainOrder.isPaid = true;
+//     mainOrder.paidAt = Date.now();
+//     mainOrder.mainOrderStatus = 'processing'; // Transition to processing
+//     mainOrder.paymentResult = {
+//       id: flwData.data.id,
+//       status: flwData.data.status,
+//       tx_ref: flwData.data.tx_ref,
+//       flw_ref: flwData.data.flw_ref,
+//       amount: flwData.data.amount,
+//       currency: flwData.data.currency,
+//       email_address: flwData.data.customer.email,
+//     };
+
+//     // Update Product Stock and Shipment status
+//     const shipments = await Shipment.find({ mainOrder: mainOrder._id }).session(session);
+//     const productUpdates = [];
+
+//     for (const shipment of shipments) {
+//         // Update Shipment status to processing
+//         shipment.shipmentStatus = 'processing';
+//         await shipment.save({ session });
+
+//         for (const item of shipment.items) {
+//             const soldCount = item.quantity;
+//             productUpdates.push(
+//                 Product.findByIdAndUpdate(
+//                     item.product,
+//                     { $inc: { salesCount: soldCount, stockQuantity: -soldCount } },
+//                     { new: true, session }
+//                 )
+//             );
+//         }
+//     }
+
+//     await Promise.all(productUpdates);
+
+//     // ❌ VENDOR CREDITS (85%) ARE HELD UNTIL ORDER COMPLETION.
+
+//     const updatedOrder = await mainOrder.save({ session });
+//     await session.commitTransaction();
+//     session.endSession();
+
+//     res.json(updatedOrder);
+
+//   } catch (error) {
+//     await session.abortTransaction();
+//     session.endSession();
+//     console.error('Error verifying payment and updating order:', error.response?.data || error.message);
+//     res.status(500).json({ message: 'Server Error', error: error.response?.data || error.message });
+//   }
+// });
+
+// ## Flutterwave Payment Route (Escrow)
+// @desc Update MainOrder/Shipments to paid + verify Flutterwave (NO IMMEDIATE VENDOR CREDIT)
+// @route PUT /api/orders/:id/pay
+// @access Private
 router.put('/:id/pay', protect, async (req, res) => {
-  const session = await mongoose.startSession();
-  session.startTransaction();
-
-  try {
-    const mainOrder = await MainOrder.findById(req.params.id).session(session);
-
-    if (!mainOrder) {
-      await session.abortTransaction();
-      session.endSession();
-      return res.status(404).json({ message: 'Main Order not found' });
-    }
-
-    if (mainOrder.isPaid) {
-      await session.abortTransaction();
-      session.endSession();
-      return res.status(400).json({ message: 'Order is already paid' });
-    }
-
-    if (mainOrder.user.toString() !== req.user.id.toString()) {
-      await session.abortTransaction();
-      session.endSession();
-      return res.status(401).json({ message: 'Not authorized to modify this order' });
-    }
-
-    const { transaction_id } = req.body;
-    if (!transaction_id) {
-      await session.abortTransaction();
-      session.endSession();
-      return res.status(400).json({ message: 'Transaction ID is required' });
-    }
-
-    // ✅ Verify payment with Flutterwave
-    const flwResponse = await axios.get(
-      `https://api.flutterwave.com/v3/transactions/${transaction_id}/verify`,
-      {
-        headers: { Authorization: `Bearer ${process.env.FLUTTERWAVE_SECRET_KEY}` }
-      }
-    );
-
-    const flwData = flwResponse.data;
-
-    // ❌ If verification fails, remove order
-    if (flwData.status !== "success" || flwData.data.status !== "successful") {
-      await MainOrder.deleteOne({ _id: mainOrder._id }, { session });
-      // Also delete associated shipments to prevent orphaned documents
-      await Shipment.deleteMany({ mainOrder: mainOrder._id }, { session }); 
-      await session.commitTransaction();
-      session.endSession();
-      return res.status(400).json({
-        message: 'Payment verification failed and order has been removed.',
-        flutterwave: flwData
-      });
-    }
-
-    // ✅ Verified — update MainOrder payment and status
-    mainOrder.isPaid = true;
-    mainOrder.paidAt = Date.now();
-    mainOrder.mainOrderStatus = 'processing'; // Transition to processing
-    mainOrder.paymentResult = {
-      id: flwData.data.id,
-      status: flwData.data.status,
-      tx_ref: flwData.data.tx_ref,
-      flw_ref: flwData.data.flw_ref,
-      amount: flwData.data.amount,
-      currency: flwData.data.currency,
-      email_address: flwData.data.customer.email,
-    };
-
-    // Update Product Stock and Shipment status
-    const shipments = await Shipment.find({ mainOrder: mainOrder._id }).session(session);
-    const productUpdates = [];
-
-    for (const shipment of shipments) {
-        // Update Shipment status to processing
-        shipment.shipmentStatus = 'processing';
-        await shipment.save({ session });
-
-        for (const item of shipment.items) {
-            const soldCount = item.quantity;
-            productUpdates.push(
-                Product.findByIdAndUpdate(
-                    item.product,
-                    { $inc: { salesCount: soldCount, stockQuantity: -soldCount } },
-                    { new: true, session }
-                )
-            );
+    const session = await mongoose.startSession();
+    session.startTransaction();
+    try {
+        const mainOrder = await MainOrder.findById(req.params.id).session(session);
+        if (!mainOrder) {
+            await session.abortTransaction();
+            session.endSession();
+            return res.status(404).json({ message: 'Main Order not found' });
         }
+        if (mainOrder.isPaid) {
+            await session.abortTransaction();
+            session.endSession();
+            return res.status(400).json({ message: 'Order is already paid' });
+        }
+        if (mainOrder.user.toString() !== req.user.id.toString()) {
+            await session.abortTransaction();
+            session.endSession();
+            return res.status(401).json({ message: 'Not authorized to modify this order' });
+        }
+        const { transaction_id } = req.body;
+        if (!transaction_id) {
+            await session.abortTransaction();
+            session.endSession();
+            return res.status(400).json({ message: 'Transaction ID is required' });
+        }
+
+        // Verify payment with Flutterwave
+        const flwResponse = await axios.get(
+            `https://api.flutterwave.com/v3/transactions/${transaction_id}/verify`,
+            {
+                headers: { Authorization: `Bearer ${process.env.FLUTTERWAVE_SECRET_KEY}` }
+            }
+        );
+        const flwData = flwResponse.data;
+
+        if (flwData.status !== "success" || flwData.data.status !== "successful") {
+            await MainOrder.deleteOne({ _id: mainOrder._id }, { session });
+            await Shipment.deleteMany({ mainOrder: mainOrder._id }, { session });
+            await session.commitTransaction();
+            session.endSession();
+            return res.status(400).json({
+                message: 'Payment verification failed and order has been removed.',
+                flutterwave: flwData
+            });
+        }
+
+        // Verified — update MainOrder
+        mainOrder.isPaid = true;
+        mainOrder.paidAt = Date.now();
+        mainOrder.mainOrderStatus = 'processing';
+        mainOrder.paymentResult = {
+            id: flwData.data.id,
+            status: flwData.data.status,
+            tx_ref: flwData.data.tx_ref,
+            flw_ref: flwData.data.flw_ref,
+            amount: flwData.data.amount,
+            currency: flwData.data.currency,
+            email_address: flwData.data.customer.email,
+        };
+
+        // Update shipments & stock
+        const shipments = await Shipment.find({ mainOrder: mainOrder._id }).session(session);
+        const productUpdates = [];
+        for (const shipment of shipments) {
+            shipment.shipmentStatus = 'processing';
+            await shipment.save({ session });
+
+            // ───────────────────────────────────────────────────────────────
+            //   NEW: OneSignal push to vendor on successful Flutterwave payment
+            // ───────────────────────────────────────────────────────────────
+            try {
+                const shortId = mainOrder._id.toString().slice(-8);
+                const itemCount = shipment.items.reduce((sum, i) => sum + i.quantity, 0);
+
+                await notificationService.sendToUser(
+                    shipment.vendor.toString(),
+                    {
+                        title: "🛒 New Paid Order!",
+                        message: `New paid order received (#${shortId}) — ${itemCount} item(s) • ₦${shipment.subtotal.toFixed(0)}. Start preparing!`,
+                        data: {
+                            type: "new_paid_order_vendor",
+                            orderId: mainOrder._id.toString(),
+                            shipmentId: shipment._id.toString(),
+                            subtotal: shipment.subtotal,
+                            itemCount,
+                            paymentMethod: "Flutterwave",
+                            timestamp: Date.now()
+                        }
+                    }
+                );
+            } catch (pushErr) {
+                console.error(`Failed to send Flutterwave paid-order push to vendor ${shipment.vendor}:`, pushErr);
+            }
+            // ───────────────────────────────────────────────────────────────
+
+            for (const item of shipment.items) {
+                const soldCount = item.quantity;
+                productUpdates.push(
+                    Product.findByIdAndUpdate(
+                        item.product,
+                        { $inc: { salesCount: soldCount, stockQuantity: -soldCount } },
+                        { new: true, session }
+                    )
+                );
+            }
+        }
+        await Promise.all(productUpdates);
+
+        const updatedOrder = await mainOrder.save({ session });
+        await session.commitTransaction();
+        session.endSession();
+
+        res.json(updatedOrder);
+    } catch (error) {
+        await session.abortTransaction();
+        session.endSession();
+        console.error('Error verifying payment and updating order:', error.response?.data || error.message);
+        res.status(500).json({ message: 'Server Error', error: error.response?.data || error.message });
     }
-
-    await Promise.all(productUpdates);
-
-    // ❌ VENDOR CREDITS (85%) ARE HELD UNTIL ORDER COMPLETION.
-
-    const updatedOrder = await mainOrder.save({ session });
-    await session.commitTransaction();
-    session.endSession();
-
-    res.json(updatedOrder);
-
-  } catch (error) {
-    await session.abortTransaction();
-    session.endSession();
-    console.error('Error verifying payment and updating order:', error.response?.data || error.message);
-    res.status(500).json({ message: 'Server Error', error: error.response?.data || error.message });
-  }
 });
 
 
@@ -1451,25 +1767,343 @@ router.put('/:id/dispatch-status', protect, authorizeRoles('dispatch', 'admin'),
 // @desc    Update MainOrder status (Admin only) - UPDATED FOR SIMULTANEOUS PAYOUT
 // @route   PUT /api/orders/:id/status
 // @access  Private/Admin
+// router.put('/:id/status', protect, authorizeRoles('admin'), async (req, res) => {
+//     const { status } = req.body;
+//     const MAIN_ORDER_ID = req.params.id;
+
+//     // 1. Basic validation: MUST match the Mongoose model's enum
+//     const validStatuses = [
+//         'pending_payment', 
+//         'processing', 
+//         'partially_shipped', 
+//         'shipped', 
+//         'out_for_delivery',
+//         'delivered', 
+//         'completed',
+//         'cancelled'
+//     ];
+
+//     if (!validStatuses.includes(status)) {
+//         return res.status(400).json({ 
+//             message: `Invalid main order status: ${status}. Must be one of: ${validStatuses.join(', ')}` 
+//         });
+//     }
+
+//     const session = await mongoose.startSession();
+//     session.startTransaction();
+
+//     try {
+//         const mainOrder = await MainOrder.findById(MAIN_ORDER_ID).session(session);
+
+//         if (!mainOrder) {
+//             await session.abortTransaction();
+//             session.endSession();
+//             return res.status(404).json({ message: 'Main Order not found.' });
+//         }
+
+//         // NEW: Prevent double-crediting / double-delivery
+//         if (status === 'completed' && mainOrder.mainOrderStatus === 'completed') {
+//             await session.abortTransaction();
+//             session.endSession();
+//             return res.status(400).json({ 
+//                 message: 'Order already marked as completed and credited. No further action allowed.' 
+//             });
+//         }
+
+//         // 2. Update the status
+//         mainOrder.mainOrderStatus = status;
+
+//         // SIMULTANEOUS PAYOUT LOGIC ONLY WHEN STATUS IS 'completed'
+//         if (status === 'completed') {
+//             mainOrder.isDelivered = true;
+//             mainOrder.deliveredAt = Date.now();
+//             mainOrder.shipmentStatus = 'delivered';
+//             mainOrder.vendorPaidAt = Date.now();
+
+//             // Credit logic only if order is paid
+//             if (mainOrder.isPaid) {
+//                 // Fetch all shipments for this order
+//                 const shipments = await Shipment.find({ mainOrder: MAIN_ORDER_ID }).session(session);
+
+//                 let totalRiderPayout = 0;
+//                 let totalVendorPayout = 0;
+//                 let totalCompanySettlement = 0; // ⬅️ ADD THIS
+//                 let payoutDetails = [];
+
+//                 for (const shipment of shipments) {
+//                     // Calculate vendor payout for this shipment (subtotal - platform fee)
+//                     const vendorEarning = shipment.subtotal - shipment.platformFee;
+//                     totalVendorPayout += vendorEarning;
+
+//                     // Calculate distance for rider payout (150 per km)
+//                     let riderPayoutPerShipment = 0;
+//                     let companySettlementPerShipment = 0; // ⬅️ ADD THIS
+//                     if (shipment.vendorLocation && mainOrder.userLocation) {
+//                         const distance = calculateDistance(
+//                             shipment.vendorLocation.latitude,
+//                             shipment.vendorLocation.longitude,
+//                             mainOrder.userLocation.latitude,
+//                             mainOrder.userLocation.longitude
+//                         );
+                        
+//                         // ⬇️ ADD THIS: Calculate company settlement (₦150/km per shipment)
+//                         companySettlementPerShipment = distance * 150;
+//                         totalCompanySettlement += companySettlementPerShipment;
+                        
+//                         // Rider gets the full distance payout
+//                         riderPayoutPerShipment = distance * 150;
+//                         totalRiderPayout += riderPayoutPerShipment;
+//                     }
+
+//                     // 1. PAY VENDOR (85% of subtotal)
+//                     const updatedVendor = await User.findByIdAndUpdate(
+//                         shipment.vendor,
+//                         {
+//                             $inc: { vendorWalletBalance: vendorEarning },
+//                             $push: {
+//                                 notifications: {
+//                                     $each: [{
+//                                         type: 'delivery_payout',
+//                                         message: `Payout of ₦${vendorEarning.toFixed(2)} received for completed order ${mainOrder._id}. Platform Fee: ₦${shipment.platformFee.toFixed(2)}.`,
+//                                         isRead: false,
+//                                         relatedModel: 'MainOrder',
+//                                         relatedId: mainOrder._id,
+//                                     }],
+//                                     $position: 0,
+//                                 },
+//                             },
+//                         },
+//                         { new: true, session }
+//                     );
+
+//                     // After payment, notify all vendors in the order
+
+//                     try {
+//                         await notificationService.sendToUser(shipment.vendor.toString(), {
+//                             title: '📦 New Order!',
+//                             message: `You have a new order from ${buyer.firstName}. Check your vendor dashboard.`,
+//                             data: {
+//                                 type: 'new_order_vendor',
+//                                 orderId: mainOrder._id,
+//                                 shipmentId: shipment._id
+//                             }
+//                         });
+//                     } catch (vendorNotifError) {
+//                         console.error(`Failed to notify vendor ${shipment.vendor}:`, vendorNotifError);
+//                     }
+
+//                     // ⬇️ ADD THIS: Update company settlement if order has a company
+//                     if (mainOrder.company) {
+//                         await Company.findByIdAndUpdate(
+//                             mainOrder.company,
+//                             {
+//                                 $inc: { 
+//                                     'stats.pendingSettlement': companySettlementPerShipment,
+//                                     'stats.totalEarnings': companySettlementPerShipment,
+//                                     'stats.completedDeliveries': 1
+//                                 }
+//                             },
+//                             { session }
+//                         );
+                        
+//                         // Also update shipment with company reference
+//                         shipment.company = mainOrder.company;
+//                         await shipment.save({ session });
+                        
+//                         // Create CompanyDelivery record
+//                         const CompanyDelivery = mongoose.model('CompanyDelivery');
+//                         const companyDelivery = new CompanyDelivery({
+//                             company: mainOrder.company,
+//                             mainOrder: mainOrder._id,
+//                             shipment: shipment._id,
+//                             rider: mainOrder.rider,
+//                             customer: {
+//                                 name: `${mainOrder.user.firstName} ${mainOrder.user.lastName}`,
+//                                 phoneNumber: mainOrder.user.phoneNumber,
+//                                 address: mainOrder.shippingAddress.address
+//                             },
+//                             amount: companySettlementPerShipment,
+//                             companyEarnings: companySettlementPerShipment,
+//                             status: 'delivered',
+//                             settlementStatus: 'unpaid'
+//                         });
+//                         await companyDelivery.save({ session });
+//                     }
+
+//                     // 2. Store payout details
+//                     payoutDetails.push({
+//                         vendorId: shipment.vendor,
+//                         vendorName: updatedVendor?.businessName || 'Unknown Vendor',
+//                         vendorPayout: vendorEarning,
+//                         shipmentId: shipment._id,
+//                         distance: calculateDistance(
+//                             shipment.vendorLocation.latitude,
+//                             shipment.vendorLocation.longitude,
+//                             mainOrder.userLocation.latitude,
+//                             mainOrder.userLocation.longitude
+//                         ),
+//                         riderPayout: riderPayoutPerShipment,
+//                         companySettlement: companySettlementPerShipment // ⬅️ ADD THIS
+//                     });
+
+//                     // Auto-update each shipment to delivered if not already
+//                     if (!shipment.isDelivered) {
+//                         shipment.shipmentStatus = 'delivered';
+//                         shipment.isDelivered = true;
+//                         shipment.deliveredAt = Date.now();
+//                         await shipment.save({ session });
+//                     }
+//                 }
+
+//                 // 3. Update MainOrder with company settlement data
+//                 mainOrder.companySettlementEarnings = totalCompanySettlement; // ⬅️ ADD THIS
+//                 mainOrder.companySettlementStatus = 'unpaid'; // ⬅️ ADD THIS
+
+//                 // 4. PAY RIDER (150 per km across all shipments) - SIMULTANEOUS WITH VENDORS
+//                 if (mainOrder.rider && totalRiderPayout > 0) {
+//                     await Rider.findByIdAndUpdate(
+//                         mainOrder.rider,
+//                         { 
+//                             $inc: { 
+//                                 walletBalance: totalRiderPayout, 
+//                                 totalEarnings: totalRiderPayout,
+//                                 completedDeliveries: 1 
+//                             },
+//                             $push: {
+//                                 notifications: {
+//                                     type: 'delivery_payout',
+//                                     message: `₦${totalRiderPayout.toFixed(2)} credited for completing order ${mainOrder._id}.`,
+//                                     isRead: false,
+//                                     relatedModel: 'MainOrder',
+//                                     relatedId: mainOrder._id,
+//                                 }
+//                             }
+//                         },
+//                         { session }
+//                     );
+//                 } else {
+//                     console.warn(`No rider assigned for completed order ${MAIN_ORDER_ID} - skipping rider credit`);
+//                 }
+
+//                 // 5. Update order with payout details
+//                 mainOrder.payoutDetails = {
+//                     totalVendorPayout,
+//                     totalRiderPayout,
+//                     totalCompanySettlement, // ⬅️ ADD THIS
+//                     payoutDate: Date.now(),
+//                     details: payoutDetails
+//                 };
+
+//                 // Log the payout for admin
+//                 console.log(`✅ Order ${MAIN_ORDER_ID} completed. Total payouts: 
+//                   - Vendors: ₦${totalVendorPayout.toFixed(2)} 
+//                   - Rider: ₦${totalRiderPayout.toFixed(2)}
+//                   - Company Settlement: ₦${totalCompanySettlement.toFixed(2)}`);
+
+//                 // Emit socket notification about completed payout
+//                 const io = req.app.get('io');
+//                 if (io) {
+//                     io.emit('order_payout_completed', {
+//                         orderId: MAIN_ORDER_ID,
+//                         totalVendorPayout,
+//                         totalRiderPayout,
+//                         totalCompanySettlement, // ⬅️ ADD THIS
+//                         payoutDetails,
+//                         timestamp: Date.now()
+//                     });
+//                 }
+
+//             } else {
+//                 console.warn(`Order ${MAIN_ORDER_ID} marked as completed but not paid - skipping payouts`);
+//             }
+//         }
+
+//         const updatedMainOrder = await mainOrder.save({ session });
+//         await session.commitTransaction();
+//         session.endSession();
+
+//         res.json({ 
+//             message: `Main Order ${MAIN_ORDER_ID} status updated to ${status}.${status === 'completed' ? ' Vendors and rider paid simultaneously.' : ''}`, 
+//             order: updatedMainOrder,
+//             ...(status === 'completed' && mainOrder.isPaid ? {
+//                 payoutSummary: {
+//                     totalVendorPayout: mainOrder.payoutDetails?.totalVendorPayout || 0,
+//                     totalRiderPayout: mainOrder.payoutDetails?.totalRiderPayout || 0,
+//                     totalCompanySettlement: mainOrder.payoutDetails?.totalCompanySettlement || 0, // ⬅️ ADD THIS
+//                     payoutDate: mainOrder.payoutDetails?.payoutDate
+//                 }
+//             } : {})
+//         });
+
+//     } catch (error) {
+//         await session.abortTransaction();
+//         session.endSession();
+//         console.error('Error updating main order status:', error);
+//         res.status(500).json({ message: 'Server Error during main order status update.', error: error.message });
+//     }
+
+
+//     // Send notification based on status
+//     try {
+//         let title, message;
+        
+//         switch(status) {
+//             case 'processing':
+//                 title = 'Order Processing';
+//                 message = `Order #${MAIN_ORDER_ID} is now being processed by our vendors.`;
+//                 break;
+//             case 'shipped':
+//                 title = 'Order Shipped!';
+//                 message = `Your order #${MAIN_ORDER_ID} has been shipped. Track your delivery in the app.`;
+//                 break;
+//             case 'delivered':
+//                 title = 'Order Delivered!';
+//                 message = `Your order #${MAIN_ORDER_ID} has been delivered. Please confirm receipt.`;
+//                 break;
+//             case 'completed':
+//                 title = 'Order Completed';
+//                 message = `Order #${MAIN_ORDER_ID} is complete. Thank you for shopping with Naijago!`;
+//                 break;
+//         }
+
+//         if (title && message) {
+//             await notificationService.sendToUser(mainOrder.user.toString(), {
+//                 title,
+//                 message,
+//                 data: {
+//                     type: 'order_update',
+//                     orderId: MAIN_ORDER_ID,
+//                     status: status
+//                 }
+//             });
+//         }
+//     } catch (notifError) {
+//         console.error('Status update notification failed:', notifError);
+//     }
+// });
+
+
+// @desc Update MainOrder status (Admin only)
+// @route PUT /api/orders/:id/status
+// @access Private/Admin
 router.put('/:id/status', protect, authorizeRoles('admin'), async (req, res) => {
     const { status } = req.body;
     const MAIN_ORDER_ID = req.params.id;
 
-    // 1. Basic validation: MUST match the Mongoose model's enum
     const validStatuses = [
-        'pending_payment', 
-        'processing', 
-        'partially_shipped', 
-        'shipped', 
+        'pending_payment',
+        'processing',
+        'partially_shipped',
+        'shipped',
         'out_for_delivery',
-        'delivered', 
+        'delivered',
         'completed',
         'cancelled'
     ];
 
     if (!validStatuses.includes(status)) {
-        return res.status(400).json({ 
-            message: `Invalid main order status: ${status}. Must be one of: ${validStatuses.join(', ')}` 
+        return res.status(400).json({
+            message: `Invalid main order status: ${status}. Must be one of: ${validStatuses.join(', ')}`
         });
     }
 
@@ -1478,50 +2112,46 @@ router.put('/:id/status', protect, authorizeRoles('admin'), async (req, res) => 
 
     try {
         const mainOrder = await MainOrder.findById(MAIN_ORDER_ID).session(session);
-
         if (!mainOrder) {
             await session.abortTransaction();
             session.endSession();
             return res.status(404).json({ message: 'Main Order not found.' });
         }
 
-        // NEW: Prevent double-crediting / double-delivery
+        // Prevent double-crediting / double-completion
         if (status === 'completed' && mainOrder.mainOrderStatus === 'completed') {
             await session.abortTransaction();
             session.endSession();
-            return res.status(400).json({ 
-                message: 'Order already marked as completed and credited. No further action allowed.' 
+            return res.status(400).json({
+                message: 'Order already marked as completed and credited. No further action allowed.'
             });
         }
 
-        // 2. Update the status
+        // Update the status
         mainOrder.mainOrderStatus = status;
 
-        // SIMULTANEOUS PAYOUT LOGIC ONLY WHEN STATUS IS 'completed'
+        // SIMULTANEOUS PAYOUT + NOTIFICATION LOGIC WHEN STATUS IS 'completed'
         if (status === 'completed') {
             mainOrder.isDelivered = true;
             mainOrder.deliveredAt = Date.now();
             mainOrder.shipmentStatus = 'delivered';
             mainOrder.vendorPaidAt = Date.now();
 
-            // Credit logic only if order is paid
             if (mainOrder.isPaid) {
-                // Fetch all shipments for this order
                 const shipments = await Shipment.find({ mainOrder: MAIN_ORDER_ID }).session(session);
 
                 let totalRiderPayout = 0;
                 let totalVendorPayout = 0;
-                let totalCompanySettlement = 0; // ⬅️ ADD THIS
+                let totalCompanySettlement = 0;
                 let payoutDetails = [];
 
                 for (const shipment of shipments) {
-                    // Calculate vendor payout for this shipment (subtotal - platform fee)
                     const vendorEarning = shipment.subtotal - shipment.platformFee;
                     totalVendorPayout += vendorEarning;
 
-                    // Calculate distance for rider payout (150 per km)
                     let riderPayoutPerShipment = 0;
-                    let companySettlementPerShipment = 0; // ⬅️ ADD THIS
+                    let companySettlementPerShipment = 0;
+
                     if (shipment.vendorLocation && mainOrder.userLocation) {
                         const distance = calculateDistance(
                             shipment.vendorLocation.latitude,
@@ -1529,17 +2159,15 @@ router.put('/:id/status', protect, authorizeRoles('admin'), async (req, res) => 
                             mainOrder.userLocation.latitude,
                             mainOrder.userLocation.longitude
                         );
-                        
-                        // ⬇️ ADD THIS: Calculate company settlement (₦150/km per shipment)
+
                         companySettlementPerShipment = distance * 150;
                         totalCompanySettlement += companySettlementPerShipment;
-                        
-                        // Rider gets the full distance payout
+
                         riderPayoutPerShipment = distance * 150;
                         totalRiderPayout += riderPayoutPerShipment;
                     }
 
-                    // 1. PAY VENDOR (85% of subtotal)
+                    // Credit vendor
                     const updatedVendor = await User.findByIdAndUpdate(
                         shipment.vendor,
                         {
@@ -1560,61 +2188,29 @@ router.put('/:id/status', protect, authorizeRoles('admin'), async (req, res) => 
                         { new: true, session }
                     );
 
-                    // After payment, notify all vendors in the order
-
+                    // ───────────────────────────────────────────────────────────────
+                    //                SEND ONESIGNAL NOTIFICATION TO VENDOR
+                    // ───────────────────────────────────────────────────────────────
                     try {
-                        await notificationService.sendToUser(shipment.vendor.toString(), {
-                            title: '📦 New Order!',
-                            message: `You have a new order from ${buyer.firstName}. Check your vendor dashboard.`,
-                            data: {
-                                type: 'new_order_vendor',
-                                orderId: mainOrder._id,
-                                shipmentId: shipment._id
-                            }
-                        });
-                    } catch (vendorNotifError) {
-                        console.error(`Failed to notify vendor ${shipment.vendor}:`, vendorNotifError);
-                    }
-
-                    // ⬇️ ADD THIS: Update company settlement if order has a company
-                    if (mainOrder.company) {
-                        await Company.findByIdAndUpdate(
-                            mainOrder.company,
+                        await notificationService.sendToUser(
+                            shipment.vendor.toString(),
                             {
-                                $inc: { 
-                                    'stats.pendingSettlement': companySettlementPerShipment,
-                                    'stats.totalEarnings': companySettlementPerShipment,
-                                    'stats.completedDeliveries': 1
+                                title: "🎉 Order Completed",
+                                message: `Order #${mainOrder._id.toString().slice(-8)} has been marked as completed. Thank you for your service!`,
+                                data: {
+                                    type: "order_completed_vendor",
+                                    orderId: mainOrder._id.toString(),
+                                    status: "completed",
+                                    completedAt: new Date().toISOString(),
                                 }
-                            },
-                            { session }
+                            }
                         );
-                        
-                        // Also update shipment with company reference
-                        shipment.company = mainOrder.company;
-                        await shipment.save({ session });
-                        
-                        // Create CompanyDelivery record
-                        const CompanyDelivery = mongoose.model('CompanyDelivery');
-                        const companyDelivery = new CompanyDelivery({
-                            company: mainOrder.company,
-                            mainOrder: mainOrder._id,
-                            shipment: shipment._id,
-                            rider: mainOrder.rider,
-                            customer: {
-                                name: `${mainOrder.user.firstName} ${mainOrder.user.lastName}`,
-                                phoneNumber: mainOrder.user.phoneNumber,
-                                address: mainOrder.shippingAddress.address
-                            },
-                            amount: companySettlementPerShipment,
-                            companyEarnings: companySettlementPerShipment,
-                            status: 'delivered',
-                            settlementStatus: 'unpaid'
-                        });
-                        await companyDelivery.save({ session });
+                    } catch (notifyError) {
+                        console.error(`Failed to send completion notification to vendor ${shipment.vendor}:`, notifyError);
+                        // Do NOT throw - we don't want to rollback the whole payout
                     }
+                    // ───────────────────────────────────────────────────────────────
 
-                    // 2. Store payout details
                     payoutDetails.push({
                         vendorId: shipment.vendor,
                         vendorName: updatedVendor?.businessName || 'Unknown Vendor',
@@ -1627,10 +2223,9 @@ router.put('/:id/status', protect, authorizeRoles('admin'), async (req, res) => 
                             mainOrder.userLocation.longitude
                         ),
                         riderPayout: riderPayoutPerShipment,
-                        companySettlement: companySettlementPerShipment // ⬅️ ADD THIS
+                        companySettlement: companySettlementPerShipment
                     });
 
-                    // Auto-update each shipment to delivered if not already
                     if (!shipment.isDelivered) {
                         shipment.shipmentStatus = 'delivered';
                         shipment.isDelivered = true;
@@ -1639,19 +2234,15 @@ router.put('/:id/status', protect, authorizeRoles('admin'), async (req, res) => 
                     }
                 }
 
-                // 3. Update MainOrder with company settlement data
-                mainOrder.companySettlementEarnings = totalCompanySettlement; // ⬅️ ADD THIS
-                mainOrder.companySettlementStatus = 'unpaid'; // ⬅️ ADD THIS
-
-                // 4. PAY RIDER (150 per km across all shipments) - SIMULTANEOUS WITH VENDORS
+                // Rider payout
                 if (mainOrder.rider && totalRiderPayout > 0) {
                     await Rider.findByIdAndUpdate(
                         mainOrder.rider,
-                        { 
-                            $inc: { 
-                                walletBalance: totalRiderPayout, 
+                        {
+                            $inc: {
+                                walletBalance: totalRiderPayout,
                                 totalEarnings: totalRiderPayout,
-                                completedDeliveries: 1 
+                                completedDeliveries: 1
                             },
                             $push: {
                                 notifications: {
@@ -1665,40 +2256,18 @@ router.put('/:id/status', protect, authorizeRoles('admin'), async (req, res) => 
                         },
                         { session }
                     );
-                } else {
-                    console.warn(`No rider assigned for completed order ${MAIN_ORDER_ID} - skipping rider credit`);
                 }
 
-                // 5. Update order with payout details
+                mainOrder.companySettlementEarnings = totalCompanySettlement;
+                mainOrder.companySettlementStatus = 'unpaid';
+
                 mainOrder.payoutDetails = {
                     totalVendorPayout,
                     totalRiderPayout,
-                    totalCompanySettlement, // ⬅️ ADD THIS
+                    totalCompanySettlement,
                     payoutDate: Date.now(),
                     details: payoutDetails
                 };
-
-                // Log the payout for admin
-                console.log(`✅ Order ${MAIN_ORDER_ID} completed. Total payouts: 
-                  - Vendors: ₦${totalVendorPayout.toFixed(2)} 
-                  - Rider: ₦${totalRiderPayout.toFixed(2)}
-                  - Company Settlement: ₦${totalCompanySettlement.toFixed(2)}`);
-
-                // Emit socket notification about completed payout
-                const io = req.app.get('io');
-                if (io) {
-                    io.emit('order_payout_completed', {
-                        orderId: MAIN_ORDER_ID,
-                        totalVendorPayout,
-                        totalRiderPayout,
-                        totalCompanySettlement, // ⬅️ ADD THIS
-                        payoutDetails,
-                        timestamp: Date.now()
-                    });
-                }
-
-            } else {
-                console.warn(`Order ${MAIN_ORDER_ID} marked as completed but not paid - skipping payouts`);
             }
         }
 
@@ -1706,14 +2275,14 @@ router.put('/:id/status', protect, authorizeRoles('admin'), async (req, res) => 
         await session.commitTransaction();
         session.endSession();
 
-        res.json({ 
-            message: `Main Order ${MAIN_ORDER_ID} status updated to ${status}.${status === 'completed' ? ' Vendors and rider paid simultaneously.' : ''}`, 
+        res.json({
+            message: `Main Order ${MAIN_ORDER_ID} status updated to ${status}.${status === 'completed' ? ' Vendors and rider paid simultaneously.' : ''}`,
             order: updatedMainOrder,
             ...(status === 'completed' && mainOrder.isPaid ? {
                 payoutSummary: {
                     totalVendorPayout: mainOrder.payoutDetails?.totalVendorPayout || 0,
                     totalRiderPayout: mainOrder.payoutDetails?.totalRiderPayout || 0,
-                    totalCompanySettlement: mainOrder.payoutDetails?.totalCompanySettlement || 0, // ⬅️ ADD THIS
+                    totalCompanySettlement: mainOrder.payoutDetails?.totalCompanySettlement || 0,
                     payoutDate: mainOrder.payoutDetails?.payoutDate
                 }
             } : {})
@@ -1726,11 +2295,9 @@ router.put('/:id/status', protect, authorizeRoles('admin'), async (req, res) => 
         res.status(500).json({ message: 'Server Error during main order status update.', error: error.message });
     }
 
-
-    // Send notification based on status
+    // Optional: Send notification to buyer about status change
     try {
         let title, message;
-        
         switch(status) {
             case 'processing':
                 title = 'Order Processing';
@@ -1746,11 +2313,11 @@ router.put('/:id/status', protect, authorizeRoles('admin'), async (req, res) => 
                 break;
             case 'completed':
                 title = 'Order Completed';
-                message = `Order #${MAIN_ORDER_ID} is complete. Thank you for shopping with Naijago!`;
+                message = `Order #${MAIN_ORDER_ID} is now complete. Thank you for shopping with us!`;
                 break;
         }
 
-        if (title && message) {
+        if (title && message && mainOrder.user) {
             await notificationService.sendToUser(mainOrder.user.toString(), {
                 title,
                 message,
@@ -1762,7 +2329,7 @@ router.put('/:id/status', protect, authorizeRoles('admin'), async (req, res) => 
             });
         }
     } catch (notifError) {
-        console.error('Status update notification failed:', notifError);
+        console.error('Buyer status notification failed:', notifError);
     }
 });
 
