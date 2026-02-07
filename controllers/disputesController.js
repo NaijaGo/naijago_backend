@@ -19,18 +19,6 @@ exports.createDispute = async (req, res) => {
   }
 };
 
-// @desc Get disputes for the logged-in user
-// exports.getUserDisputes = async (req, res) => {
-//   try {
-//     const disputes = await DisputeRequest.find({ user: req.user._id })
-//       .populate('order', 'orderItems totalPrice')
-//       .sort({ createdAt: -1 });
-
-//     res.json(disputes);
-//   } catch (error) {
-//     res.status(500).json({ message: error.message });
-//   }
-// };
 
 exports.getUserDisputes = async (req, res) => {
   try {
