@@ -1107,16 +1107,207 @@ Status: Ready for processing`;
 //     }
 // });
 
+
+
+
+// // @desc Update MainOrder/Shipments to paid + verify Flutterwave (NO IMMEDIATE VENDOR CREDIT)
+// // @route PUT /api/orders/:id/pay
+// // @access Private
+// router.put('/:id/pay', protect, async (req, res) => {
+//     const session = await mongoose.startSession();
+//     session.startTransaction();
+
+//     try {
+//         console.log(`[PAY ENDPOINT] Starting payment confirmation for order ID: ${req.params.id} | User: ${req.user.id}`);
+
+//         const mainOrder = await MainOrder.findById(req.params.id).session(session);
+//         if (!mainOrder) {
+//             console.error(`[PAY ENDPOINT] ERROR: Main Order not found - ID: ${req.params.id}`);
+//             await session.abortTransaction();
+//             session.endSession();
+//             return res.status(404).json({ message: 'Main Order not found' });
+//         }
+
+//         console.log(`[PAY ENDPOINT] Found order: ${mainOrder._id} | Current isPaid: ${mainOrder.isPaid} | Status: ${mainOrder.mainOrderStatus}`);
+
+//         if (mainOrder.isPaid) {
+//             console.warn(`[PAY ENDPOINT] WARNING: Order already paid - ID: ${mainOrder._id} | Paid at: ${mainOrder.paidAt}`);
+//             await session.abortTransaction();
+//             session.endSession();
+//             return res.status(400).json({ message: 'Order is already paid' });
+//         }
+
+//         if (mainOrder.user.toString() !== req.user.id.toString()) {
+//             console.error(`[PAY ENDPOINT] Unauthorized attempt - Order user: ${mainOrder.user} | Request user: ${req.user.id}`);
+//             await session.abortTransaction();
+//             session.endSession();
+//             return res.status(401).json({ message: 'Not authorized to modify this order' });
+//         }
+
+//         const { transaction_id } = req.body;
+//         if (!transaction_id) {
+//             console.error(`[PAY ENDPOINT] Missing transaction_id - Order: ${mainOrder._id}`);
+//             await session.abortTransaction();
+//             session.endSession();
+//             return res.status(400).json({ message: 'Transaction ID is required' });
+//         }
+
+//         console.log(`[PAY ENDPOINT] Received tx_ref / transaction_id: ${transaction_id}`);
+
+//         // ────────────────────────────────────────────────────────────────
+//         // Idempotency check: prevent replay of same tx_ref on different orders
+//         // ────────────────────────────────────────────────────────────────
+//         const alreadyUsed = await MainOrder.findOne({
+//             'paymentResult.tx_ref': transaction_id,
+//             _id: { $ne: mainOrder._id }   // allow retry on the same order
+//         }).select('_id paymentResult').session(session);
+
+//         if (alreadyUsed) {
+//             console.warn(`[PAY ENDPOINT] REPLAY DETECTED - tx_ref ${transaction_id} already used on order ${alreadyUsed._id}`);
+//             await session.abortTransaction();
+//             session.endSession();
+//             return res.status(409).json({
+//                 message: 'This transaction reference has already been used on another order'
+//             });
+//         }
+
+//         console.log(`[PAY ENDPOINT] Idempotency check passed - no conflicting order found for tx_ref: ${transaction_id}`);
+
+//         // Verify payment with Flutterwave
+//         console.log(`[PAY ENDPOINT] Verifying transaction with Flutterwave: ${transaction_id}`);
+//         const flwResponse = await axios.get(
+//             `https://api.flutterwave.com/v3/transactions/${transaction_id}/verify`,
+//             {
+//                 headers: { Authorization: `Bearer ${process.env.FLUTTERWAVE_SECRET_KEY}` }
+//             }
+//         );
+
+//         const flwData = flwResponse.data;
+
+//         console.log(`[PAY ENDPOINT] Flutterwave verify response - Status: ${flwData.status} | Data status: ${flwData.data?.status} | Amount: ${flwData.data?.amount} | tx_ref: ${flwData.data?.tx_ref}`);
+
+//         if (flwData.status !== "success" || flwData.data.status !== "successful") {
+//             console.error(`[PAY ENDPOINT] VERIFICATION FAILED - Order: ${mainOrder._id} | tx_ref: ${transaction_id} | Flutterwave response:`, JSON.stringify(flwData, null, 2));
+
+//             await MainOrder.deleteOne({ _id: mainOrder._id }, { session });
+//             await Shipment.deleteMany({ mainOrder: mainOrder._id }, { session });
+
+//             await session.commitTransaction();
+//             session.endSession();
+
+//             return res.status(400).json({
+//                 message: 'Payment verification failed and order has been removed.',
+//                 flutterwave: flwData
+//             });
+//         }
+
+//         console.log(`[PAY ENDPOINT] VERIFICATION SUCCESS - tx_ref: ${transaction_id} | Amount: ${flwData.data.amount} NGN | Customer: ${flwData.data.customer.email}`);
+
+//         // Verified — update MainOrder
+//         mainOrder.isPaid = true;
+//         mainOrder.paidAt = Date.now();
+//         mainOrder.mainOrderStatus = 'processing';
+//         mainOrder.paymentResult = {
+//             id: flwData.data.id,
+//             status: flwData.data.status,
+//             tx_ref: flwData.data.tx_ref,
+//             flw_ref: flwData.data.flw_ref,
+//             amount: flwData.data.amount,
+//             currency: flwData.data.currency,
+//             email_address: flwData.data.customer.email,
+//             verifiedAt: new Date(),
+//             verificationMethod: 'direct_verify'
+//         };
+
+//         console.log(`[PAY ENDPOINT] Updated paymentResult for order ${mainOrder._id}:`, JSON.stringify(mainOrder.paymentResult, null, 2));
+
+//         // Update shipments & stock
+//         const shipments = await Shipment.find({ mainOrder: mainOrder._id }).session(session);
+//         const productUpdates = [];
+
+//         console.log(`[PAY ENDPOINT] Found ${shipments.length} shipments for order ${mainOrder._id}`);
+
+//         for (const shipment of shipments) {
+//             shipment.shipmentStatus = 'processing';
+//             await shipment.save({ session });
+
+//             console.log(`[PAY ENDPOINT] Shipment ${shipment._id} → status set to 'processing'`);
+
+//             // Vendor notification (existing logic - no change)
+//             try {
+//                 const shortId = mainOrder._id.toString().slice(-8);
+//                 const itemCount = shipment.items.reduce((sum, i) => sum + i.quantity, 0);
+//                 await notificationService.sendToUser(
+//                     shipment.vendor.toString(),
+//                     {
+//                         title: "🛒 New Paid Order!",
+//                         message: `New paid order received (#${shortId}) — ${itemCount} item(s) • ₦${shipment.subtotal.toFixed(0)}. Start preparing!`,
+//                         data: {
+//                             type: "new_paid_order_vendor",
+//                             orderId: mainOrder._id.toString(),
+//                             shipmentId: shipment._id.toString(),
+//                             subtotal: shipment.subtotal,
+//                             itemCount,
+//                             paymentMethod: "Flutterwave",
+//                             timestamp: Date.now()
+//                         }
+//                     }
+//                 );
+//                 console.log(`[PAY ENDPOINT] Vendor notification sent for shipment ${shipment._id}`);
+//             } catch (pushErr) {
+//                 console.error(`[PAY ENDPOINT] Failed to send paid-order push to vendor ${shipment.vendor}:`, pushErr.message);
+//             }
+
+//             for (const item of shipment.items) {
+//                 const soldCount = item.quantity;
+//                 productUpdates.push(
+//                     Product.findByIdAndUpdate(
+//                         item.product,
+//                         { $inc: { salesCount: soldCount, stockQuantity: -soldCount } },
+//                         { new: true, session }
+//                     )
+//                 );
+//             }
+//         }
+
+//         await Promise.all(productUpdates);
+//         console.log(`[PAY ENDPOINT] Stock updated for ${productUpdates.length} products`);
+
+//         const updatedOrder = await mainOrder.save({ session });
+//         await session.commitTransaction();
+//         session.endSession();
+
+//         console.log(`[PAY ENDPOINT] SUCCESS - Order ${mainOrder._id} marked as paid | Total: ₦${updatedOrder.totalPrice}`);
+
+//         res.json(updatedOrder);
+
+//     } catch (error) {
+//         await session.abortTransaction();
+//         session.endSession();
+
+//         console.error(`[PAY ENDPOINT] CRITICAL ERROR for order ${req.params.id}:`, {
+//             message: error.message,
+//             stack: error.stack,
+//             flutterwaveError: error.response?.data || null
+//         });
+
+//         res.status(500).json({ 
+//             message: 'Server Error during payment confirmation', 
+//             error: error.message 
+//         });
+//     }
+// });
+
+
+
 // @desc Update MainOrder/Shipments to paid + verify Flutterwave (NO IMMEDIATE VENDOR CREDIT)
 // @route PUT /api/orders/:id/pay
 // @access Private
 router.put('/:id/pay', protect, async (req, res) => {
     const session = await mongoose.startSession();
     session.startTransaction();
-
     try {
         console.log(`[PAY ENDPOINT] Starting payment confirmation for order ID: ${req.params.id} | User: ${req.user.id}`);
-
         const mainOrder = await MainOrder.findById(req.params.id).session(session);
         if (!mainOrder) {
             console.error(`[PAY ENDPOINT] ERROR: Main Order not found - ID: ${req.params.id}`);
@@ -1124,23 +1315,19 @@ router.put('/:id/pay', protect, async (req, res) => {
             session.endSession();
             return res.status(404).json({ message: 'Main Order not found' });
         }
-
         console.log(`[PAY ENDPOINT] Found order: ${mainOrder._id} | Current isPaid: ${mainOrder.isPaid} | Status: ${mainOrder.mainOrderStatus}`);
-
         if (mainOrder.isPaid) {
             console.warn(`[PAY ENDPOINT] WARNING: Order already paid - ID: ${mainOrder._id} | Paid at: ${mainOrder.paidAt}`);
             await session.abortTransaction();
             session.endSession();
             return res.status(400).json({ message: 'Order is already paid' });
         }
-
         if (mainOrder.user.toString() !== req.user.id.toString()) {
             console.error(`[PAY ENDPOINT] Unauthorized attempt - Order user: ${mainOrder.user} | Request user: ${req.user.id}`);
             await session.abortTransaction();
             session.endSession();
             return res.status(401).json({ message: 'Not authorized to modify this order' });
         }
-
         const { transaction_id } = req.body;
         if (!transaction_id) {
             console.error(`[PAY ENDPOINT] Missing transaction_id - Order: ${mainOrder._id}`);
@@ -1148,17 +1335,14 @@ router.put('/:id/pay', protect, async (req, res) => {
             session.endSession();
             return res.status(400).json({ message: 'Transaction ID is required' });
         }
-
         console.log(`[PAY ENDPOINT] Received tx_ref / transaction_id: ${transaction_id}`);
-
         // ────────────────────────────────────────────────────────────────
         // Idempotency check: prevent replay of same tx_ref on different orders
         // ────────────────────────────────────────────────────────────────
         const alreadyUsed = await MainOrder.findOne({
             'paymentResult.tx_ref': transaction_id,
-            _id: { $ne: mainOrder._id }   // allow retry on the same order
+            _id: { $ne: mainOrder._id } // allow retry on the same order
         }).select('_id paymentResult').session(session);
-
         if (alreadyUsed) {
             console.warn(`[PAY ENDPOINT] REPLAY DETECTED - tx_ref ${transaction_id} already used on order ${alreadyUsed._id}`);
             await session.abortTransaction();
@@ -1167,39 +1351,29 @@ router.put('/:id/pay', protect, async (req, res) => {
                 message: 'This transaction reference has already been used on another order'
             });
         }
-
         console.log(`[PAY ENDPOINT] Idempotency check passed - no conflicting order found for tx_ref: ${transaction_id}`);
-
         // Verify payment with Flutterwave
         console.log(`[PAY ENDPOINT] Verifying transaction with Flutterwave: ${transaction_id}`);
         const flwResponse = await axios.get(
-            `https://api.flutterwave.com/v3/transactions/${transaction_id}/verify`,
+            `https://api.flutterwave.com/v3/transactions/verify_by_reference?tx_ref=${transaction_id}`,
             {
                 headers: { Authorization: `Bearer ${process.env.FLUTTERWAVE_SECRET_KEY}` }
             }
         );
-
         const flwData = flwResponse.data;
-
         console.log(`[PAY ENDPOINT] Flutterwave verify response - Status: ${flwData.status} | Data status: ${flwData.data?.status} | Amount: ${flwData.data?.amount} | tx_ref: ${flwData.data?.tx_ref}`);
-
         if (flwData.status !== "success" || flwData.data.status !== "successful") {
             console.error(`[PAY ENDPOINT] VERIFICATION FAILED - Order: ${mainOrder._id} | tx_ref: ${transaction_id} | Flutterwave response:`, JSON.stringify(flwData, null, 2));
-
             await MainOrder.deleteOne({ _id: mainOrder._id }, { session });
             await Shipment.deleteMany({ mainOrder: mainOrder._id }, { session });
-
             await session.commitTransaction();
             session.endSession();
-
             return res.status(400).json({
                 message: 'Payment verification failed and order has been removed.',
                 flutterwave: flwData
             });
         }
-
         console.log(`[PAY ENDPOINT] VERIFICATION SUCCESS - tx_ref: ${transaction_id} | Amount: ${flwData.data.amount} NGN | Customer: ${flwData.data.customer.email}`);
-
         // Verified — update MainOrder
         mainOrder.isPaid = true;
         mainOrder.paidAt = Date.now();
@@ -1215,21 +1389,15 @@ router.put('/:id/pay', protect, async (req, res) => {
             verifiedAt: new Date(),
             verificationMethod: 'direct_verify'
         };
-
         console.log(`[PAY ENDPOINT] Updated paymentResult for order ${mainOrder._id}:`, JSON.stringify(mainOrder.paymentResult, null, 2));
-
         // Update shipments & stock
         const shipments = await Shipment.find({ mainOrder: mainOrder._id }).session(session);
         const productUpdates = [];
-
         console.log(`[PAY ENDPOINT] Found ${shipments.length} shipments for order ${mainOrder._id}`);
-
         for (const shipment of shipments) {
             shipment.shipmentStatus = 'processing';
             await shipment.save({ session });
-
             console.log(`[PAY ENDPOINT] Shipment ${shipment._id} → status set to 'processing'`);
-
             // Vendor notification (existing logic - no change)
             try {
                 const shortId = mainOrder._id.toString().slice(-8);
@@ -1254,7 +1422,6 @@ router.put('/:id/pay', protect, async (req, res) => {
             } catch (pushErr) {
                 console.error(`[PAY ENDPOINT] Failed to send paid-order push to vendor ${shipment.vendor}:`, pushErr.message);
             }
-
             for (const item of shipment.items) {
                 const soldCount = item.quantity;
                 productUpdates.push(
@@ -1266,31 +1433,24 @@ router.put('/:id/pay', protect, async (req, res) => {
                 );
             }
         }
-
         await Promise.all(productUpdates);
         console.log(`[PAY ENDPOINT] Stock updated for ${productUpdates.length} products`);
-
         const updatedOrder = await mainOrder.save({ session });
         await session.commitTransaction();
         session.endSession();
-
         console.log(`[PAY ENDPOINT] SUCCESS - Order ${mainOrder._id} marked as paid | Total: ₦${updatedOrder.totalPrice}`);
-
         res.json(updatedOrder);
-
     } catch (error) {
         await session.abortTransaction();
         session.endSession();
-
         console.error(`[PAY ENDPOINT] CRITICAL ERROR for order ${req.params.id}:`, {
             message: error.message,
             stack: error.stack,
             flutterwaveError: error.response?.data || null
         });
-
-        res.status(500).json({ 
-            message: 'Server Error during payment confirmation', 
-            error: error.message 
+        res.status(500).json({
+            message: 'Server Error during payment confirmation',
+            error: error.message
         });
     }
 });
