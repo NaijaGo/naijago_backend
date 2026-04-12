@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { protect } = require('../middleware/authMiddleware');
+const { protect, authorizeRoles } = require('../middleware/authMiddleware');
 const cloudinary = require('cloudinary').v2;
 const fileUpload = require('express-fileupload');
 const fs = require('fs'); // Moved to top so all routes can use it
@@ -33,6 +33,30 @@ router.post('/cloudinary', protect, async (req, res) => {
     res.json({ url: result.secure_url });
   } catch (error) {
     res.status(500).json({ message: 'Failed to upload image' });
+  }
+});
+
+router.post('/cloudinary/carousel', protect, authorizeRoles('admin'), async (req, res) => {
+  try {
+    if (!req.files || Object.keys(req.files).length === 0) {
+      return res.status(400).json({ message: 'No image was uploaded.' });
+    }
+
+    const file = req.files.image;
+    const placement = ['main', 'promo'].includes(String(req.body?.placement || '').toLowerCase())
+      ? String(req.body.placement).toLowerCase()
+      : 'misc';
+
+    const result = await cloudinary.uploader.upload(file.tempFilePath, {
+      folder: `carousel-slides/${placement}`,
+    });
+
+    if (fs.existsSync(file.tempFilePath)) fs.unlinkSync(file.tempFilePath);
+
+    res.json({ url: result.secure_url });
+  } catch (error) {
+    console.error('Carousel upload failed:', error);
+    res.status(500).json({ message: 'Failed to upload carousel image.' });
   }
 });
 

@@ -15,11 +15,11 @@ const fs = require('fs');
 
 const connectDB = require('./config/db');
 const { notFound, errorHandler } = require('./middleware/errorMiddleware');
+const { initializeReferralProgramSettings } = require('./services/referralService');
+const { initializeDeliveryFeeSettings } = require('./services/deliveryFeeService');
 
 const app = express();
 app.set('trust proxy', true);
-
-connectDB();
 
 const PORT = process.env.PORT || 5000;
 
@@ -47,9 +47,13 @@ app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // Routes (KEEP BOTH - add company routes, keep rider routes)
 app.use('/api/auth', require('./routes/authRoutes'));
+app.use('/api/referrals', require('./routes/referralRoutes'));
+app.use('/api/referral', require('./routes/referralRoutes'));
+app.use('/api/carousels', require('./routes/carouselRoutes'));
 app.use('/api/companies', require('./routes/companyRoutes')); // ADDED
 app.use('/api/vendor', require('./routes/vendorRoutes'));
 app.use('/api/admin', require('./routes/adminRoutes'));
+app.use('/api/admin', require('./routes/adminCarouselRoutes'));
 app.use('/api/products', require('./routes/productRoutes'));
 app.use('/api/orders', require('./routes/orderRoutes'));
 app.use('/api/reviews', require('./routes/reviewsRoutes'));
@@ -1256,16 +1260,37 @@ app.set('notifyVendor', (vendorId, data) => {
 app.use(notFound);
 app.use(errorHandler);
 
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(colors.cyan.underline(`🚀 Server running on http://0.0.0.0:${PORT}`));
-  console.log(colors.green(`📡 Real-time tracking system active with DUAL RIDER SYSTEM`));
-  console.log(colors.yellow(`📊 Available socket events:`));
-  console.log(colors.yellow(`   - Individual Rider: rider_location_update, status_update, delivery_update`));
-  console.log(colors.yellow(`   - Company Rider: company_rider_location_update, company_rider_status_update`));
-  console.log(colors.yellow(`   - Company: company_dashboard_stats, company_monitor_riders`));
-  console.log(colors.yellow(`   - Admin: track_rider (with type), assign_rider_to_order (with type)`));
-  console.log(colors.yellow(`   - Vendor: shipment_ready_for_pickup (works with both)`));
-  console.log(colors.yellow(`   - User: track_my_order (works with both)`));
+const startServer = async () => {
+  await connectDB();
+  const referralSettingsState = await initializeReferralProgramSettings();
+  const deliveryFeeSettingsState = await initializeDeliveryFeeSettings();
+
+  server.listen(PORT, '0.0.0.0', () => {
+    console.log(colors.cyan.underline(`🚀 Server running on http://0.0.0.0:${PORT}`));
+    console.log(colors.green(`📡 Real-time tracking system active with DUAL RIDER SYSTEM`));
+    console.log(colors.yellow(`📊 Available socket events:`));
+    console.log(colors.yellow(`   - Individual Rider: rider_location_update, status_update, delivery_update`));
+    console.log(colors.yellow(`   - Company Rider: company_rider_location_update, company_rider_status_update`));
+    console.log(colors.yellow(`   - Company: company_dashboard_stats, company_monitor_riders`));
+    console.log(colors.yellow(`   - Admin: track_rider (with type), assign_rider_to_order (with type)`));
+    console.log(colors.yellow(`   - Vendor: shipment_ready_for_pickup (works with both)`));
+    console.log(colors.yellow(`   - User: track_my_order (works with both)`));
+    console.log(
+      colors.blue(
+        `🎁 Referral reward setting ready at ₦${referralSettingsState.referralRewardAmount}.`,
+      ),
+    );
+    console.log(
+      colors.blue(
+        `🚚 Delivery fee zones ready with ${deliveryFeeSettingsState.zoneCount} configured Abuja areas. Fallback: ₦${deliveryFeeSettingsState.minimumDeliveryFee} min, ₦${deliveryFeeSettingsState.fallbackRatePerKm}/km.`,
+      ),
+    );
+  });
+};
+
+startServer().catch((error) => {
+  console.error(colors.red.bold(`Server startup error: ${error.message}`));
+  process.exit(1);
 });
 
 

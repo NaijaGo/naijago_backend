@@ -29,6 +29,12 @@ const UserSchema = new mongoose.Schema({
     trim: true,
     match: [/^(?:\+?234|0)[789]\d{9}$/, 'Please enter a valid Nigerian phone number'],
   },
+  alternatePhoneNumber: {
+    type: String,
+    trim: true,
+    sparse: true,
+    match: [/^(?:\+?234|0)[789]\d{9}$/, 'Please enter a valid Nigerian phone number'],
+  },
   password: {
     type: String,
     required: [true, 'Password is required'],
@@ -141,10 +147,33 @@ const UserSchema = new mongoose.Schema({
       city: { type: String, required: true },
       postalCode: { type: String, required: true },
       country: { type: String, required: true },
+      phoneNumber: { type: String, trim: true },
       isDefault: { type: Boolean, default: false }, // Mark one as default
       _id: false // Do not create a separate _id for subdocuments unless needed
     }
   ],
+  referralCode: {
+    type: String,
+    unique: true,
+    sparse: true,
+    trim: true,
+    uppercase: true,
+  },
+  referredBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    sparse: true,
+  },
+  referredAt: {
+    type: Date,
+  },
+  referralRewardGrantedAt: {
+    type: Date,
+  },
+  referralRewardAmount: {
+    type: Number,
+    min: 0,
+  },
 
   // --- COMMON FIELDS ---
   otp: String,
@@ -159,6 +188,7 @@ const UserSchema = new mongoose.Schema({
           'payment_received',
           'wallet_deposit',
           'wallet_withdrawal',
+          'referral_reward',
           'vendor_status_update',
           'general',
           'order_update',

@@ -43,6 +43,7 @@ const MainOrderSchema = new mongoose.Schema({
         city: { type: String, required: true },
         postalCode: { type: String, required: true },
         country: { type: String, required: true },
+        phoneNumber: { type: String },
     },
     userLocation: { // User's delivery coordinates (required for distance calc)
         latitude: { type: Number, required: true },
@@ -99,6 +100,7 @@ const MainOrderSchema = new mongoose.Schema({
         'processing', 
         'partially_shipped', 
         'shipped', // <-- ADD THIS
+        'out_for_delivery',
         'delivered', // <-- ADD THIS, (You should probably replace 'completed' with 'delivered' or keep 'completed' for final closure)
         'completed', // Keeping 'completed' for final closed status
         'cancelled'

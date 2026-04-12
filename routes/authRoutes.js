@@ -13,6 +13,10 @@ const DisputeRequest = require('../models/DisputeRequest');
 const ReturnRequest = require('../models/ReturnRequest');
 const rateLimit = require('express-rate-limit');
 const notificationService = require('../services/notificationService');
+const {
+    ensureReferralCode,
+    findUserByReferralCode,
+} = require('../services/referralService');
 
 const router = express.Router();
 const resend = new Resend(process.env.RESEND_API_KEY);
@@ -174,22 +178,74 @@ const sendVerificationEmail = async (email, token, type) => {
 
 // --- Route 1: User Registration ---
 router.post('/register', async (req, res) => {
-    const { firstName, lastName, email, phoneNumber, password } = req.body;
+    const {
+        firstName,
+        lastName,
+        email,
+        phoneNumber,
+        password,
+        referralCode,
+        inviteCode,
+        refCode,
+        referalCode,
+    } = req.body;
     if (!firstName || !lastName || !email || !phoneNumber || !password) {
         return res.status(400).json({ message: 'Please enter all fields' });
     }
     try {
-        let user = await User.findOne({ $or: [{ email }, { phoneNumber }] });
+        const normalizedEmail = String(email).trim().toLowerCase();
+        const normalizedPhoneNumber = String(phoneNumber).trim();
+        const suppliedReferralCode = referralCode || inviteCode || refCode || referalCode;
+        let inviter = null;
+
+        if (suppliedReferralCode) {
+            inviter = await findUserByReferralCode(suppliedReferralCode);
+
+            if (!inviter) {
+                return res.status(400).json({
+                    message: 'Invalid referral code. Please check the code and try again.',
+                });
+            }
+
+            if (
+                inviter.email === normalizedEmail ||
+                inviter.phoneNumber === normalizedPhoneNumber
+            ) {
+                return res.status(400).json({
+                    message: 'You cannot use your own referral code.',
+                });
+            }
+        }
+
+        let user = await User.findOne({
+            $or: [{ email: normalizedEmail }, { phoneNumber: normalizedPhoneNumber }],
+        });
         if (user) {
             return res.status(400).json({ message: 'User with this email or phone number already exists' });
         }
         user = new User({
-            firstName, lastName, email, phoneNumber, password,
+            firstName: String(firstName).trim(),
+            lastName: String(lastName).trim(),
+            email: normalizedEmail,
+            phoneNumber: normalizedPhoneNumber,
+            password,
+            referredBy: inviter ? inviter._id : undefined,
+            referredAt: inviter ? new Date() : undefined,
         });
         const verificationToken = crypto.randomBytes(32).toString('hex');
         user.emailVerificationToken = verificationToken;
         user.emailVerificationExpires = Date.now() + 24 * 60 * 60 * 1000;
         await user.save();
+
+        try {
+            await ensureReferralCode(user);
+        } catch (referralCodeError) {
+            console.error('Referral code assignment failed:', referralCodeError);
+            await User.findByIdAndDelete(user._id);
+            return res.status(500).json({
+                message: 'Unable to finish registration right now. Please try again.',
+            });
+        }
 
         try {
             await sendVerificationEmail(user.email, verificationToken, 'email');
@@ -218,6 +274,7 @@ router.post('/register', async (req, res) => {
         res.status(201).json({
             message: 'User registered successfully. Please check your email for verification.',
             userId: user._id, email: user.email,
+            referralApplied: Boolean(inviter),
         });
     } catch (error) {
         console.error('Registration error:', error);
@@ -241,6 +298,7 @@ router.get('/email/verify/:token', async (req, res) => {
         user.emailVerificationToken = undefined;
         user.emailVerificationExpires = undefined;
         await user.save();
+
         res.status(200).send('Email successfully verified! You can now close this page and log in to the app.');
     } catch (error) {
         console.error('Email verification error:', error);
@@ -672,7 +730,7 @@ router.get('/me', protect, async (req, res) => {
         // req.user is populated by the 'protect' middleware
         // Select all fields relevant to the user's profile, including new vendor/wallet/notification fields
         const user = await User.findById(req.user._id).select(
-            '-password -emailVerificationToken -emailVerificationExpires -deviceVerificationToken -deviceVerificationExpires -passwordResetToken -passwordResetExpires'
+            '-password -emailVerificationToken -emailVerificationExpires -deviceVerificationToken -deviceVerificationExpires -passwordResetToken -passwordResetExpires -referralCode -referredBy -referredAt'
         );
 
         if (!user) {
@@ -1270,7 +1328,7 @@ router.delete('/saved-items/:productId', protect, async (req, res) => {
 // @route   POST /api/auth/addresses
 // @access  Private
 router.post('/addresses', protect, async (req, res) => {
-    const { address, city, postalCode, country, isDefault } = req.body;
+    const { address, city, postalCode, country, isDefault, phoneNumber } = req.body;
 
     if (!address || !city || !postalCode || !country) {
         return res.status(400).json({ message: 'All address fields are required.' });
@@ -1292,7 +1350,14 @@ router.post('/addresses', protect, async (req, res) => {
             req.body.isDefault = true; // Modify req.body to reflect this for the push
         }
 
-        user.deliveryAddresses.push({ address, city, postalCode, country, isDefault: req.body.isDefault });
+        user.deliveryAddresses.push({
+            address,
+            city,
+            postalCode,
+            country,
+            phoneNumber: typeof phoneNumber === 'string' ? phoneNumber.trim() : undefined,
+            isDefault: req.body.isDefault
+        });
         await user.save();
 
         res.status(201).json({ message: 'Address added successfully.', addresses: user.deliveryAddresses });
@@ -1307,7 +1372,7 @@ router.post('/addresses', protect, async (req, res) => {
 // @access  Private
 router.put('/addresses/:index', protect, async (req, res) => {
     const { index } = req.params; // Index of the address in the array
-    const { address, city, postalCode, country, isDefault } = req.body;
+    const { address, city, postalCode, country, isDefault, phoneNumber } = req.body;
 
     try {
         const user = await User.findById(req.user._id);
@@ -1331,6 +1396,12 @@ router.put('/addresses/:index', protect, async (req, res) => {
         targetAddress.city = city || targetAddress.city;
         targetAddress.postalCode = postalCode || targetAddress.postalCode;
         targetAddress.country = country || targetAddress.country;
+        if (phoneNumber !== undefined) {
+            targetAddress.phoneNumber =
+                typeof phoneNumber === 'string' && phoneNumber.trim().length > 0
+                    ? phoneNumber.trim()
+                    : undefined;
+        }
         targetAddress.isDefault = isDefault !== undefined ? isDefault : targetAddress.isDefault;
 
         await user.save(); // Mongoose will detect changes in subdocuments and save
@@ -1388,7 +1459,14 @@ router.put('/profile', protect, async (req, res) => {
     // const path = require('path'); 
     // const fs = require('fs');
 
-    const { firstName, lastName, email, phoneNumber, profilePicBase64 } = req.body;
+    const {
+        firstName,
+        lastName,
+        email,
+        phoneNumber,
+        alternatePhoneNumber,
+        profilePicBase64
+    } = req.body;
 
     try {
         const user = await User.findById(req.user._id);
@@ -1401,6 +1479,16 @@ router.put('/profile', protect, async (req, res) => {
         user.firstName = firstName || user.firstName;
         user.lastName = lastName || user.lastName;
         user.phoneNumber = phoneNumber || user.phoneNumber;
+        if (alternatePhoneNumber !== undefined) {
+            const normalizedAlternatePhoneNumber =
+                typeof alternatePhoneNumber === 'string'
+                    ? alternatePhoneNumber.trim()
+                    : '';
+            user.alternatePhoneNumber =
+                normalizedAlternatePhoneNumber.length > 0
+                    ? normalizedAlternatePhoneNumber
+                    : undefined;
+        }
 
         // Only update email if it's different and not already taken by another user
         if (email && email !== user.email) {

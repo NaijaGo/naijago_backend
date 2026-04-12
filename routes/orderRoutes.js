@@ -10,6 +10,8 @@ const Rider = require('../models/Rider');
 const { protect, authorizeRoles } = require('../middleware/authMiddleware');
 const axios = require("axios");
 const notificationService = require('../services/notificationService');
+const { grantReferralRewardForVerifiedUser } = require('../services/referralService');
+const { getDeliveryFeeSettings, buildDeliveryFeeQuote } = require('../services/deliveryFeeService');
 
 // Category-based commission rates
 const CATEGORY_COMMISSION_RATES = {
@@ -319,20 +321,6 @@ function calculateDistance(lat1, lon1, lat2, lon2) {
 }
 // 👆 END OF ADDITIONS 1
 
-// --- Helper Function: Shipping Cost (Based on your N200/km rule) ---
-const calculateShippingCost = (distanceKm, city) => {
-    const ratePerKm = 200;
-    let shippingPrice = distanceKm * ratePerKm;
-    
-    // Minimum flat fee as a business rule
-    if (shippingPrice < 1000) {
-        shippingPrice = 1000.00; 
-    }
-    
-    return parseFloat(shippingPrice.toFixed(2));
-};
-// ------------------------------------------------------------------
-
 // @desc    Get all orders (Admin access only)
 // @route   GET /api/orders
 // @access  Private/Admin
@@ -379,6 +367,8 @@ router.post('/summary', protect, async (req, res) => {
         const vendorCartMap = new Map();
         let totalSubtotal = 0;
         let totalPlatformFees = 0;
+        const deliveryFeeSettings = await getDeliveryFeeSettings();
+        let matchedDeliveryZone = null;
 
         // 1. Group items by vendor and calculate subtotal for each vendor
         for (const item of cartItems) {
@@ -453,8 +443,13 @@ router.post('/summary', protect, async (req, res) => {
                 userLocation.longitude
             );
             
-            // Calculate Shipping Price
-            const shippingPrice = calculateShippingCost(distanceKm, shippingAddress.city);
+            const deliveryFeeQuote = buildDeliveryFeeQuote({
+                shippingAddress,
+                distanceKm,
+                settings: deliveryFeeSettings,
+            });
+            const shippingPrice = deliveryFeeQuote.amount;
+            matchedDeliveryZone = matchedDeliveryZone || deliveryFeeQuote.zone;
             
             totalShippingPrice += shippingPrice;
 
@@ -464,6 +459,15 @@ router.post('/summary', protect, async (req, res) => {
                 vendorLocation: vendorLocation, 
                 subtotal: parseFloat(data.subtotal.toFixed(2)),
                 shippingPrice: shippingPrice,
+                deliveryFeeSource: deliveryFeeQuote.source,
+                deliveryFeeZone: deliveryFeeQuote.zone
+                    ? {
+                        zoneKey: deliveryFeeQuote.zone.zoneKey,
+                        zoneName: deliveryFeeQuote.zone.zoneName,
+                        group: deliveryFeeQuote.zone.group,
+                        amount: deliveryFeeQuote.zone.amount,
+                    }
+                    : null,
                 platformFee: parseFloat(data.platformFee.toFixed(2)),
                 commissionRate: parseFloat(data.commissionRate.toFixed(3)),
                 // Total cost for the items and delivery from this specific vendor
@@ -494,6 +498,18 @@ router.post('/summary', protect, async (req, res) => {
             totalPrice: parseFloat(totalPrice.toFixed(2)),
             taxPrice: req.body.taxPrice || 0.0,
             shipmentSummaries,
+            deliveryFeePolicy: {
+                fallbackRatePerKm: deliveryFeeSettings.fallbackRatePerKm,
+                minimumDeliveryFee: deliveryFeeSettings.minimumDeliveryFee,
+                matchedZone: matchedDeliveryZone
+                    ? {
+                        zoneKey: matchedDeliveryZone.zoneKey,
+                        zoneName: matchedDeliveryZone.zoneName,
+                        group: matchedDeliveryZone.group,
+                        amount: matchedDeliveryZone.amount,
+                    }
+                    : null,
+            },
             userLocation, 
             shippingAddress,
             commissionSummary: {
@@ -672,7 +688,7 @@ router.get('/my', protect, async (req, res) => {
                 populate: [
                     { 
                         path: 'vendor', 
-                        select: 'businessName businessLocation' 
+                        select: 'businessName businessLocation phoneNumber alternatePhoneNumber'
                     },
                     { 
                         path: 'items.product', 
@@ -680,7 +696,7 @@ router.get('/my', protect, async (req, res) => {
                     }
                 ]
             })
-            .populate('rider', 'fullName phoneNumber plateNumber')
+            .populate('rider', 'fullName phoneNumber plateNumber currentLocation')
             .sort({ createdAt: -1 });
         
         // Add logging for debugging
@@ -965,6 +981,12 @@ Status: Ready for processing`;
         const updatedOrder = await mainOrder.save({ session });
         await session.commitTransaction();
         session.endSession();
+
+        try {
+            await grantReferralRewardForVerifiedUser(req.user.id);
+        } catch (referralError) {
+            console.error('Referral reward processing error after wallet payment:', referralError);
+        }
 
         res.json({
             ...updatedOrder.toObject(),
@@ -1438,6 +1460,13 @@ router.put('/:id/pay', protect, async (req, res) => {
         const updatedOrder = await mainOrder.save({ session });
         await session.commitTransaction();
         session.endSession();
+
+        try {
+            await grantReferralRewardForVerifiedUser(req.user.id);
+        } catch (referralError) {
+            console.error('[PAY ENDPOINT] Referral reward processing error:', referralError);
+        }
+
         console.log(`[PAY ENDPOINT] SUCCESS - Order ${mainOrder._id} marked as paid | Total: ₦${updatedOrder.totalPrice}`);
         res.json(updatedOrder);
     } catch (error) {
@@ -1898,6 +1927,9 @@ router.put('/:id/dispatch-status', protect, authorizeRoles('dispatch', 'admin'),
 router.put('/:id/status', protect, authorizeRoles('admin'), async (req, res) => {
     const { status } = req.body;
     const MAIN_ORDER_ID = req.params.id;
+    let mainOrder;
+    let updatedMainOrder;
+    let payoutSummary = null;
 
     const validStatuses = [
         'pending_payment',
@@ -1920,7 +1952,7 @@ router.put('/:id/status', protect, authorizeRoles('admin'), async (req, res) => 
     session.startTransaction();
 
     try {
-        const mainOrder = await MainOrder.findById(MAIN_ORDER_ID).session(session);
+        mainOrder = await MainOrder.findById(MAIN_ORDER_ID).session(session);
         if (!mainOrder) {
             await session.abortTransaction();
             session.endSession();
@@ -1938,6 +1970,53 @@ router.put('/:id/status', protect, authorizeRoles('admin'), async (req, res) => 
 
         // Update the status
         mainOrder.mainOrderStatus = status;
+
+        if (status === 'processing') {
+            mainOrder.shipmentStatus = 'processing';
+            await Shipment.updateMany(
+                {
+                    mainOrder: MAIN_ORDER_ID,
+                    shipmentStatus: { $nin: ['delivered', 'cancelled', 'returned'] }
+                },
+                { $set: { shipmentStatus: 'processing' } },
+                { session }
+            );
+        } else if (status === 'out_for_delivery') {
+            mainOrder.shipmentStatus = 'out_for_delivery';
+            await Shipment.updateMany(
+                {
+                    mainOrder: MAIN_ORDER_ID,
+                    shipmentStatus: { $nin: ['delivered', 'cancelled', 'returned'] }
+                },
+                { $set: { shipmentStatus: 'out_for_delivery' } },
+                { session }
+            );
+        } else if (status === 'cancelled') {
+            mainOrder.shipmentStatus = 'cancelled';
+            await Shipment.updateMany(
+                {
+                    mainOrder: MAIN_ORDER_ID,
+                    shipmentStatus: { $nin: ['delivered', 'cancelled', 'returned'] }
+                },
+                { $set: { shipmentStatus: 'cancelled' } },
+                { session }
+            );
+        } else if (status === 'delivered') {
+            mainOrder.isDelivered = true;
+            mainOrder.deliveredAt = Date.now();
+            mainOrder.shipmentStatus = 'delivered';
+            await Shipment.updateMany(
+                { mainOrder: MAIN_ORDER_ID, isDelivered: { $ne: true } },
+                {
+                    $set: {
+                        shipmentStatus: 'delivered',
+                        isDelivered: true,
+                        deliveredAt: new Date()
+                    }
+                },
+                { session }
+            );
+        }
 
         // SIMULTANEOUS PAYOUT + NOTIFICATION LOGIC WHEN STATUS IS 'completed'
         if (status === 'completed') {
@@ -2054,28 +2133,40 @@ router.put('/:id/status', protect, authorizeRoles('admin'), async (req, res) => 
                     // totalRiderPayout,
                     totalCompanySettlement,
                     payoutDate: Date.now(),
-                    details: payoutDetails
+                        details: payoutDetails
+                };
+
+                payoutSummary = {
+                    totalVendorPayout,
+                    totalCompanySettlement,
+                    payoutDate: mainOrder.payoutDetails.payoutDate
                 };
             }
         }
 
-        const updatedMainOrder = await mainOrder.save({ session });
+        updatedMainOrder = await mainOrder.save({ session });
         await session.commitTransaction();
         session.endSession();
+
+        const emitOrderUpdate = req.app.get('emitOrderUpdate');
+        if (typeof emitOrderUpdate === 'function') {
+            emitOrderUpdate(MAIN_ORDER_ID, {
+                orderId: MAIN_ORDER_ID,
+                status,
+                shipmentStatus: updatedMainOrder.shipmentStatus,
+                deliveredAt: updatedMainOrder.deliveredAt,
+                vendorPaidAt: updatedMainOrder.vendorPaidAt,
+                isPaid: updatedMainOrder.isPaid,
+                updatedAt: updatedMainOrder.updatedAt,
+                message: `Order status updated to ${status.replace(/_/g, ' ')}.`,
+            });
+        }
 
         // CHANGED: Updated success message to reflect rider payments are disabled
         res.json({
             message: `Main Order ${MAIN_ORDER_ID} status updated to ${status}.${status === 'completed' ? ' Vendors paid (rider payments disabled).' : ''}`,
             order: updatedMainOrder,
-            ...(status === 'completed' && mainOrder.isPaid ? {
-                payoutSummary: {
-                    totalVendorPayout: mainOrder.payoutDetails?.totalVendorPayout || 0,
-                    // CHANGED: Removed totalRiderPayout from response
-                    // totalRiderPayout: mainOrder.payoutDetails?.totalRiderPayout || 0,
-                    totalCompanySettlement: mainOrder.payoutDetails?.totalCompanySettlement || 0,
-                    payoutDate: mainOrder.payoutDetails?.payoutDate
-                }
-            } : {})
+            ...(status === 'completed' && payoutSummary ? { payoutSummary } : {})
         });
 
     } catch (error) {
@@ -2083,6 +2174,7 @@ router.put('/:id/status', protect, authorizeRoles('admin'), async (req, res) => 
         session.endSession();
         console.error('Error updating main order status:', error);
         res.status(500).json({ message: 'Server Error during main order status update.', error: error.message });
+        return;
     }
 
     // Optional: Send notification to buyer about status change
@@ -2097,6 +2189,14 @@ router.put('/:id/status', protect, authorizeRoles('admin'), async (req, res) => 
                 title = 'Order Shipped!';
                 message = `Your order #${MAIN_ORDER_ID} has been shipped. Track your delivery in the app.`;
                 break;
+            case 'partially_shipped':
+                title = 'Order Update';
+                message = `Part of your order #${MAIN_ORDER_ID} has moved forward in fulfilment.`;
+                break;
+            case 'out_for_delivery':
+                title = 'Out for Delivery';
+                message = `Your order #${MAIN_ORDER_ID} is currently out for delivery.`;
+                break;
             case 'delivered':
                 title = 'Order Delivered!';
                 message = `Your order #${MAIN_ORDER_ID} has been delivered. Please confirm receipt.`;
@@ -2104,6 +2204,10 @@ router.put('/:id/status', protect, authorizeRoles('admin'), async (req, res) => 
             case 'completed':
                 title = 'Order Completed';
                 message = `Order #${MAIN_ORDER_ID} is now complete. Thank you for shopping with us!`;
+                break;
+            case 'cancelled':
+                title = 'Order Cancelled';
+                message = `Your order #${MAIN_ORDER_ID} has been cancelled.`;
                 break;
         }
 
@@ -2268,6 +2372,12 @@ router.post('/webhooks/flutterwave', async (req, res) => {
 
     await session.commitTransaction();
     console.log(`Webhook success: Order ${order._id} marked paid via webhook (tx_ref: ${tx.tx_ref})`);
+
+    try {
+      await grantReferralRewardForVerifiedUser(order.user);
+    } catch (referralError) {
+      console.error('Webhook referral reward processing error:', referralError);
+    }
 
     res.sendStatus(200);
   } catch (err) {

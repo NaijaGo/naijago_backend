@@ -12,7 +12,16 @@ const router = express.Router();
 // @access  Private (Authenticated User)
 router.post('/request', protect, async (req, res) => {
     // UPDATED: Added businessLocation to the request body destructuring
-    const { firstName, lastName, gender, businessName, businessCategories, termsAccepted, businessLocation } = req.body;
+    const {
+        firstName,
+        lastName,
+        gender,
+        businessName,
+        businessCategories,
+        termsAccepted,
+        businessLocation,
+        alternatePhoneNumber
+    } = req.body;
     const userId = req.user.id; // User ID from the authenticated token
 
     // UPDATED: Added a check for businessLocation
@@ -52,6 +61,10 @@ router.post('/request', protect, async (req, res) => {
         user.businessName = businessName;
         user.businessCategories = businessCategories;
         user.businessLocation = businessLocation; // NEW: Save the business location data
+        user.alternatePhoneNumber =
+            typeof alternatePhoneNumber === 'string' && alternatePhoneNumber.trim()
+                ? alternatePhoneNumber.trim()
+                : user.alternatePhoneNumber;
         // user.profilePicUrl = profilePicUrl; // Will be implemented when image upload is ready
         user.vendorStatus = 'sent'; // Initial status: request sent
         user.vendorRequestDate = Date.now(); // Record the request date
