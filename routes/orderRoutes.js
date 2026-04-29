@@ -14,288 +14,381 @@ const { grantReferralRewardForVerifiedUser } = require('../services/referralServ
 const { getDeliveryFeeSettings, buildDeliveryFeeQuote } = require('../services/deliveryFeeService');
 
 // Category-based commission rates
+// const CATEGORY_COMMISSION_RATES = {
+//     // HIGH COMMISSION CATEGORIES (15%) - Luxury/High-margin items
+//     'high': {
+//         rate: 0.15,
+//         categories: [
+//             // Luxury Fashion
+//             'Fashion > Men\'s Fashion',
+//             'Fashion > Women\'s Fashion',
+//             'Fashion > Watches',
+//             'Fashion > Jewelry',
+//             'Fashion > Eyewear',
+            
+//             // Electronics & Tech
+//             'Electronics > Television & Video',
+//             'Electronics > Camera & Photo',
+//             'Electronics > Generator & Portable Power',
+//             'Electronics > Gadgets',
+//             'Electronics > Drones',
+//             'Electronics > Smart Home Devices',
+//             'Computing > Computers',
+            
+//             // Luxury Items
+//             'Home & Office > Appliances',
+//             'Home & Office > Furniture',
+//             'Home & Office > Lighting',
+//             'Home & Office > Home Security',
+            
+//             // Health & Beauty Luxury
+//             'Health & Beauty > Make Up',
+//             'Health & Beauty > Fragrance',
+//             'Health & Beauty > Skin Care & Cosmetics',
+            
+//             // Automotive
+//             'Automobiles > Performance Parts',
+            
+//             // Gaming
+//             'Gaming > Play Station',
+//             'Gaming > Xbox',
+//             'Gaming > Nintendo',
+//             'Gaming > PC Gaming',
+//             'Gaming > Gaming Consoles',
+//             'Gaming > Video Games',
+//             'Gaming > VR Headsets',
+            
+//             // Sporting Goods (High-end)
+//             'Sporting Goods > Cardio Training',
+//             'Sporting Goods > Strength & Training Equipment',
+//             'Sporting Goods > Fitness Trackers',
+            
+//             // Musical Instruments
+//             'Music & Instruments > Guitars',
+//             'Music & Instruments > Keyboards & Pianos',
+//             'Music & Instruments > Audio Equipment',
+            
+//             // Photography
+//             'Photography > Cameras',
+//             'Photography > Lenses',
+            
+//             // Phones & Tablets
+//             'Phones & Tablets > Mobile Phones',
+//             'Phones & Tablets > Tablets',
+//             'Phones & Tablets > Smartphones',
+//             'Phones & Tablets > Wearable Technology',
+            
+//             // Jewelry & Watches
+//             'Jewelry & Watches > Fine Jewelry',
+//             'Jewelry & Watches > Fashion Jewelry',
+//             'Jewelry & Watches > Wrist Watches',
+//         ]
+//     },
+    
+//     // MEDIUM COMMISSION CATEGORIES (12.5%) - Mid-range items
+//     'medium': {
+//         rate: 0.125,
+//         categories: [
+//             // Fashion (non-luxury)
+//             'Fashion > Kids\' Fashion',
+//             'Fashion > Luggages & Travel Gear',
+//             'Fashion > Hair & Wigs',
+//             'Fashion > Footwear',
+//             'Fashion > Bags & Purses',
+//             'Fashion > Belts & Accessories',
+//             'Fashion > Traditional Attire',
+//             'Fashion > Underwear & Lingerie',
+//             'Fashion > Sportswear',
+            
+//             // Electronics (mid-range)
+//             'Electronics > Audios',
+//             'Electronics > Home Theater Systems',
+//             'Electronics > Headphones & Earbuds',
+//             'Electronics > Car Electronics',
+//             'Electronics > Batteries & Power',
+//             'Computing > Data Storage',
+//             'Computing > Anti Virus & Security',
+//             'Computing > Printers & Computer Accessories',
+//             'Computing > Keyboards & Mice',
+            
+//             // Home & Office (mid-range)
+//             'Home & Office > Home & Kitchen',
+//             'Home & Office > Home Interior & Exterior',
+//             'Home & Office > Office Products',
+//             'Home & Office > Cleaning Supplies',
+//             'Home & Office > Storage & Organization',
+//             'Home & Office > Garden & Outdoor',
+//             'Home & Office > Bedding & Bath',
+            
+//             // Health & Beauty (mid-range)
+//             'Health & Beauty > Hair Care',
+//             'Health & Beauty > Oral Care',
+//             'Health & Beauty > Personal Care',
+//             'Health & Beauty > Shaving & Hair Removal',
+//             'Health & Beauty > Vitamins & Supplements',
+            
+//             // Baby Products
+//             'Baby Products > Apparels & Accessories',
+//             'Baby Products > Diapering',
+//             'Baby Products > Feeding',
+//             'Baby Products > Baby Toddlers Toys',
+//             'Baby Products > Gears',
+//             'Baby Products > Bathing & Skin Care',
+//             'Baby Products > Potty Training',
+//             'Baby Products > Safety',
+//             'Baby Products > Nursery Furniture',
+//             'Baby Products > Strollers & Prams',
+//             'Baby Products > Car Seats',
+//             'Baby Products > Educational Toys',
+            
+//             // Books & Stationery
+//             'Books & Stationery > Fiction Books',
+//             'Books & Stationery > Comics',
+//             'Books & Stationery > Technology',
+//             'Books & Stationery > Business',
+//             'Books & Stationery > Story',
+//             'Books & Stationery > Religious',
+//             'Books & Stationery > Non-Fiction',
+//             'Books & Stationery > Academic Textbooks',
+//             'Books & Stationery > Children Books',
+//             'Books & Stationery > Magazines',
+//             'Books & Stationery > Writing Instruments',
+//             'Books & Stationery > Office Supplies',
+//             'Books & Stationery > Art Supplies',
+//             'Books & Stationery > Calendars & Planners',
+            
+//             // Phones & Tablets Accessories
+//             'Phones & Tablets > Mobile Phone Accessories',
+//             'Phones & Tablets > Phone Cases & Covers',
+//             'Phones & Tablets > Screen Protectors',
+//             'Phones & Tablets > Chargers & Cables',
+//             'Phones & Tablets > Power Banks',
+//             'Phones & Tablets > Bluetooth Accessories',
+//             'Phones & Tablets > Feature Phones',
+            
+//             // Sporting Goods (mid-range)
+//             'Sporting Goods > Team Sports',
+//             'Sporting Goods > Outdoor & Adventures',
+//             'Sporting Goods > Yoga & Pilates',
+//             'Sporting Goods > Swimming',
+//             'Sporting Goods > Cycling',
+//             'Sporting Goods > Camping & Hiking',
+//             'Sporting Goods > Golf',
+//             'Sporting Goods > Martial Arts',
+            
+//             // Gaming (mid-range)
+//             'Gaming > Gaming Accessories',
+//             'Gaming > Arcade Games',
+//             'Gaming > Board Games',
+//             'Gaming > Card Games',
+//             'Gaming > Puzzles',
+            
+//             // Music & Instruments (mid-range)
+//             'Music & Instruments > Wind Instruments',
+            
+//             // Photography Accessories
+//             'Photography > Lighting Equipment',
+//             'Photography > Camera Bags & Cases',
+//             'Photography > Tripods & Supports',
+//         ]
+//     },
+    
+//     // LOW COMMISSION CATEGORIES (10%) - Low-margin/essential items
+//     'low': {
+//         rate: 0.10,
+//         categories: [
+//             // Groceries & Essentials
+//             'Groceries > Beer, Wine & Spirits',
+//             'Groceries > Food Cupboard',
+//             'Groceries > House Hold Cleaning',
+//             'Groceries > Fresh Produce',
+//             'Groceries > Dairy & Eggs',
+//             'Groceries > Seafood',
+            
+//             // Health & Medicine
+//             'Health & Beauty > Medicine',
+//             'Health & Beauty > Condoms',
+//             'Health & Beauty > Sex Toys',
+//             'Health & Beauty > First Aid',
+//             'Health & Beauty > Medical Equipment',
+//             'Health & Beauty > Feminine Care',
+            
+//             // Automotive Essentials
+//             'Automobiles > Car Care',
+//             'Automobiles > Car Exterior and Interior Accessories',
+//             'Automobiles > Tools & Equipment',
+//             'Automobiles > Oils & Fluids',
+//             'Automobiles > Car Safety',
+            
+//             // Animal Products
+//             'Animal Products > Chicken Feeds',
+//             'Animal Products > Dog Feeds',
+//             'Animal Products > Cat Feeds',
+//             'Animal Products > Fish Feeds',
+//             'Animal Products > Pig Feeds',
+//             'Animal Products > Pet Accessories',
+//             'Animal Products > Pet Health & Care',
+//             'Animal Products > Pet Toys',
+//             'Animal Products > Pet Clothing',
+//             'Animal Products > Pet Grooming',
+//             'Animal Products > Aquarium Supplies',
+//             'Animal Products > Bird Supplies',
+            
+//             // Building & Construction
+//             'Building & Construction > Building Materials',
+//             'Building & Construction > Electrical',
+//             'Building & Construction > Plumbing',
+//             'Building & Construction > Tools & Machinery',
+//             'Building & Construction > Safety Equipment',
+//             'Building & Construction > Paints & Coatings',
+//             'Building & Construction > Hardware',
+            
+//             // Industrial & Scientific
+//             'Industrial & Scientific > Lab Equipment',
+//             'Industrial & Scientific > Packaging & Shipping',
+//             'Industrial & Scientific > Janitorial & Sanitation',
+            
+//             // Agriculture
+//             'Agriculture > Fertilizers',
+//             'Agriculture > Pesticides',
+            
+//             // Toys & Games (non-electronic)
+//             'Toys & Games > Dolls',
+//             'Toys & Games > Educational Toys',
+//             'Toys & Games > Outdoor Toys',
+//             'Toys & Games > Remote Control Toys',
+//             'Toys & Games > Stuffed Animals',
+//             'Toys & Games > Toy Vehicles',
+            
+//             // Arts & Crafts
+//             'Arts & Crafts > Painting',
+//             'Arts & Crafts > Beading & Jewelry Making',
+//             'Arts & Crafts > Clay & Pottery',
+            
+//             // Food & Beverage Equipment
+//             'Food & Beverage > Restaurant Equipment',
+//             'Food & Beverage > Catering Supplies',
+//             'Food & Beverage > Baking Supplies',
+//             'Food & Beverage > Food Processing',
+//             'Food & Beverage > Beverage Equipment',
+//             'Food & Beverage > Kitchen Utensils',
+//             'Food & Beverage > Food Packaging',
+            
+//             // Travel & Tourism
+//             'Travel & Tourism > Travel Accessories',
+//             'Travel & Tourism > Luggage',
+//             'Travel & Tourism > Hotel Supplies',
+            
+//             // Wedding & Events
+//             'Wedding & Events > Wedding Attire',
+//         ]
+//     }
+// };
+
+
+// Category-based commission rates (NaijaGo Final Structure)
 const CATEGORY_COMMISSION_RATES = {
-    // HIGH COMMISSION CATEGORIES (15%) - Luxury/High-margin items
-    'high': {
-        rate: 0.15,
-        categories: [
-            // Luxury Fashion
-            'Fashion > Men\'s Fashion',
-            'Fashion > Women\'s Fashion',
-            'Fashion > Watches',
-            'Fashion > Jewelry',
-            'Fashion > Eyewear',
-            
-            // Electronics & Tech
-            'Electronics > Television & Video',
-            'Electronics > Camera & Photo',
-            'Electronics > Generator & Portable Power',
-            'Electronics > Gadgets',
-            'Electronics > Drones',
-            'Electronics > Smart Home Devices',
-            'Computing > Computers',
-            
-            // Luxury Items
-            'Home & Office > Appliances',
-            'Home & Office > Furniture',
-            'Home & Office > Lighting',
-            'Home & Office > Home Security',
-            
-            // Health & Beauty Luxury
-            'Health & Beauty > Make Up',
-            'Health & Beauty > Fragrance',
-            'Health & Beauty > Skin Care & Cosmetics',
-            
-            // Automotive
-            'Automobiles > Performance Parts',
-            
-            // Gaming
-            'Gaming > Play Station',
-            'Gaming > Xbox',
-            'Gaming > Nintendo',
-            'Gaming > PC Gaming',
-            'Gaming > Gaming Consoles',
-            'Gaming > Video Games',
-            'Gaming > VR Headsets',
-            
-            // Sporting Goods (High-end)
-            'Sporting Goods > Cardio Training',
-            'Sporting Goods > Strength & Training Equipment',
-            'Sporting Goods > Fitness Trackers',
-            
-            // Musical Instruments
-            'Music & Instruments > Guitars',
-            'Music & Instruments > Keyboards & Pianos',
-            'Music & Instruments > Audio Equipment',
-            
-            // Photography
-            'Photography > Cameras',
-            'Photography > Lenses',
-            
-            // Phones & Tablets
-            'Phones & Tablets > Mobile Phones',
-            'Phones & Tablets > Tablets',
-            'Phones & Tablets > Smartphones',
-            'Phones & Tablets > Wearable Technology',
-            
-            // Jewelry & Watches
-            'Jewelry & Watches > Fine Jewelry',
-            'Jewelry & Watches > Fashion Jewelry',
-            'Jewelry & Watches > Wrist Watches',
-        ]
-    },
-    
-    // MEDIUM COMMISSION CATEGORIES (12.5%) - Mid-range items
-    'medium': {
-        rate: 0.125,
-        categories: [
-            // Fashion (non-luxury)
-            'Fashion > Kids\' Fashion',
-            'Fashion > Luggages & Travel Gear',
-            'Fashion > Hair & Wigs',
-            'Fashion > Footwear',
-            'Fashion > Bags & Purses',
-            'Fashion > Belts & Accessories',
-            'Fashion > Traditional Attire',
-            'Fashion > Underwear & Lingerie',
-            'Fashion > Sportswear',
-            
-            // Electronics (mid-range)
-            'Electronics > Audios',
-            'Electronics > Home Theater Systems',
-            'Electronics > Headphones & Earbuds',
-            'Electronics > Car Electronics',
-            'Electronics > Batteries & Power',
-            'Computing > Data Storage',
-            'Computing > Anti Virus & Security',
-            'Computing > Printers & Computer Accessories',
-            'Computing > Keyboards & Mice',
-            
-            // Home & Office (mid-range)
-            'Home & Office > Home & Kitchen',
-            'Home & Office > Home Interior & Exterior',
-            'Home & Office > Office Products',
-            'Home & Office > Cleaning Supplies',
-            'Home & Office > Storage & Organization',
-            'Home & Office > Garden & Outdoor',
-            'Home & Office > Bedding & Bath',
-            
-            // Health & Beauty (mid-range)
-            'Health & Beauty > Hair Care',
-            'Health & Beauty > Oral Care',
-            'Health & Beauty > Personal Care',
-            'Health & Beauty > Shaving & Hair Removal',
-            'Health & Beauty > Vitamins & Supplements',
-            
-            // Baby Products
-            'Baby Products > Apparels & Accessories',
-            'Baby Products > Diapering',
-            'Baby Products > Feeding',
-            'Baby Products > Baby Toddlers Toys',
-            'Baby Products > Gears',
-            'Baby Products > Bathing & Skin Care',
-            'Baby Products > Potty Training',
-            'Baby Products > Safety',
-            'Baby Products > Nursery Furniture',
-            'Baby Products > Strollers & Prams',
-            'Baby Products > Car Seats',
-            'Baby Products > Educational Toys',
-            
-            // Books & Stationery
-            'Books & Stationery > Fiction Books',
-            'Books & Stationery > Comics',
-            'Books & Stationery > Technology',
-            'Books & Stationery > Business',
-            'Books & Stationery > Story',
-            'Books & Stationery > Religious',
-            'Books & Stationery > Non-Fiction',
-            'Books & Stationery > Academic Textbooks',
-            'Books & Stationery > Children Books',
-            'Books & Stationery > Magazines',
-            'Books & Stationery > Writing Instruments',
-            'Books & Stationery > Office Supplies',
-            'Books & Stationery > Art Supplies',
-            'Books & Stationery > Calendars & Planners',
-            
-            // Phones & Tablets Accessories
-            'Phones & Tablets > Mobile Phone Accessories',
-            'Phones & Tablets > Phone Cases & Covers',
-            'Phones & Tablets > Screen Protectors',
-            'Phones & Tablets > Chargers & Cables',
-            'Phones & Tablets > Power Banks',
-            'Phones & Tablets > Bluetooth Accessories',
-            'Phones & Tablets > Feature Phones',
-            
-            // Sporting Goods (mid-range)
-            'Sporting Goods > Team Sports',
-            'Sporting Goods > Outdoor & Adventures',
-            'Sporting Goods > Yoga & Pilates',
-            'Sporting Goods > Swimming',
-            'Sporting Goods > Cycling',
-            'Sporting Goods > Camping & Hiking',
-            'Sporting Goods > Golf',
-            'Sporting Goods > Martial Arts',
-            
-            // Gaming (mid-range)
-            'Gaming > Gaming Accessories',
-            'Gaming > Arcade Games',
-            'Gaming > Board Games',
-            'Gaming > Card Games',
-            'Gaming > Puzzles',
-            
-            // Music & Instruments (mid-range)
-            'Music & Instruments > Wind Instruments',
-            
-            // Photography Accessories
-            'Photography > Lighting Equipment',
-            'Photography > Camera Bags & Cases',
-            'Photography > Tripods & Supports',
-        ]
-    },
-    
-    // LOW COMMISSION CATEGORIES (10%) - Low-margin/essential items
-    'low': {
-        rate: 0.10,
-        categories: [
-            // Groceries & Essentials
-            'Groceries > Beer, Wine & Spirits',
-            'Groceries > Food Cupboard',
-            'Groceries > House Hold Cleaning',
-            'Groceries > Fresh Produce',
-            'Groceries > Dairy & Eggs',
-            'Groceries > Seafood',
-            
-            // Health & Medicine
-            'Health & Beauty > Medicine',
-            'Health & Beauty > Condoms',
-            'Health & Beauty > Sex Toys',
-            'Health & Beauty > First Aid',
-            'Health & Beauty > Medical Equipment',
-            'Health & Beauty > Feminine Care',
-            
-            // Automotive Essentials
-            'Automobiles > Car Care',
-            'Automobiles > Car Exterior and Interior Accessories',
-            'Automobiles > Tools & Equipment',
-            'Automobiles > Oils & Fluids',
-            'Automobiles > Car Safety',
-            
-            // Animal Products
-            'Animal Products > Chicken Feeds',
-            'Animal Products > Dog Feeds',
-            'Animal Products > Cat Feeds',
-            'Animal Products > Fish Feeds',
-            'Animal Products > Pig Feeds',
-            'Animal Products > Pet Accessories',
-            'Animal Products > Pet Health & Care',
-            'Animal Products > Pet Toys',
-            'Animal Products > Pet Clothing',
-            'Animal Products > Pet Grooming',
-            'Animal Products > Aquarium Supplies',
-            'Animal Products > Bird Supplies',
-            
-            // Building & Construction
-            'Building & Construction > Building Materials',
-            'Building & Construction > Electrical',
-            'Building & Construction > Plumbing',
-            'Building & Construction > Tools & Machinery',
-            'Building & Construction > Safety Equipment',
-            'Building & Construction > Paints & Coatings',
-            'Building & Construction > Hardware',
-            
-            // Industrial & Scientific
-            'Industrial & Scientific > Lab Equipment',
-            'Industrial & Scientific > Packaging & Shipping',
-            'Industrial & Scientific > Janitorial & Sanitation',
-            
-            // Agriculture
-            'Agriculture > Fertilizers',
-            'Agriculture > Pesticides',
-            
-            // Toys & Games (non-electronic)
-            'Toys & Games > Dolls',
-            'Toys & Games > Educational Toys',
-            'Toys & Games > Outdoor Toys',
-            'Toys & Games > Remote Control Toys',
-            'Toys & Games > Stuffed Animals',
-            'Toys & Games > Toy Vehicles',
-            
-            // Arts & Crafts
-            'Arts & Crafts > Painting',
-            'Arts & Crafts > Beading & Jewelry Making',
-            'Arts & Crafts > Clay & Pottery',
-            
-            // Food & Beverage Equipment
-            'Food & Beverage > Restaurant Equipment',
-            'Food & Beverage > Catering Supplies',
-            'Food & Beverage > Baking Supplies',
-            'Food & Beverage > Food Processing',
-            'Food & Beverage > Beverage Equipment',
-            'Food & Beverage > Kitchen Utensils',
-            'Food & Beverage > Food Packaging',
-            
-            // Travel & Tourism
-            'Travel & Tourism > Travel Accessories',
-            'Travel & Tourism > Luggage',
-            'Travel & Tourism > Hotel Supplies',
-            
-            // Wedding & Events
-            'Wedding & Events > Wedding Attire',
-        ]
-    }
+    // Core Marketplace
+    'Groceries': 0.05,
+    'Food & Beverage': 0.05,
+
+    'Phones & Tablets': 0.06,
+    'Computing': 0.06,
+    'Electronics': 0.06,
+    'Appliances': 0.06,
+
+    // Lifestyle & High Margin
+    'Fashion': 0.12,
+    'Jewelry & Watches': 0.12,
+    'Fragrances': 0.12,
+    'Health & Beauty': 0.06,
+
+    // Home & Living
+    'Home & Kitchen': 0.07,
+    'Furniture': 0.08,
+    'Home Interior & Exterior': 0.08,
+    'Lighting': 0.08,
+
+    // Everyday & Business
+    'Office Products': 0.07,
+    'Automobile': 0.08,
+    'Agriculture': 0.05,
+
+    // Entertainment & Hobby
+    'Gaming': 0.10,
+    'Sporting Goods': 0.10,
+    'Toys & Games': 0.10,
+    'Music & Instruments': 0.08,
+    'Arts & Crafts': 0.10,
+    'Photography': 0.08,
+
+    // Services
+    'Travel & Tourism': 0.10,
+    'Events': 0.10,
 };
 
 // Helper function to get commission rate based on category
-function getCommissionRateForCategory(category) {
-    // Check each commission tier
-    for (const [tier, data] of Object.entries(CATEGORY_COMMISSION_RATES)) {
-        if (data.categories.includes(category)) {
-            return data.rate;
-        }
-    }
+// function getCommissionRateForCategory(category) {
+//     // Check each commission tier
+//     for (const [tier, data] of Object.entries(CATEGORY_COMMISSION_RATES)) {
+//         if (data.categories.includes(category)) {
+//             return data.rate;
+//         }
+//     }
     
-    // Default rate if category not found
-    return 0.125; // 12.5% default
+//     // Default rate if category not found
+//     return 0.125; // 12.5% default
+// }
+
+function getCommissionRateForCategory(category) {
+    if (!category || typeof category !== 'string') return 0.08;
+
+    const normalizedCategory = category.trim();
+    const mainCategory = normalizedCategory.split('>')[0].trim();
+    const subCategory = normalizedCategory.includes('>')
+        ? normalizedCategory.split('>')[1].trim()
+        : '';
+
+    // Exact match first
+    if (CATEGORY_COMMISSION_RATES[normalizedCategory]) {
+        return CATEGORY_COMMISSION_RATES[normalizedCategory];
+    }
+
+    // Main category match
+    if (CATEGORY_COMMISSION_RATES[mainCategory]) {
+        return CATEGORY_COMMISSION_RATES[mainCategory];
+    }
+
+    // Support old DB category names
+    const CATEGORY_ALIASES = {
+        'Home & Office': {
+            'Home & Kitchen': 0.07,
+            'Furniture': 0.08,
+            'Home Interior & Exterior': 0.08,
+            'Lighting': 0.08,
+            'Office Products': 0.07,
+            'Appliances': 0.06,
+        },
+        'Automobiles': 0.08,
+        'Automobile': 0.08,
+        'Health & Beauty': 0.06,
+        'Fragrance': 0.12,
+        'Fragrances': 0.12,
+        'Groceries': 0.05,
+        'Animal Products': 0.05,
+    };
+
+    const alias = CATEGORY_ALIASES[mainCategory];
+
+    if (typeof alias === 'number') {
+        return alias;
+    }
+
+    if (alias && subCategory && alias[subCategory]) {
+        return alias[subCategory];
+    }
+
+    return 0.08;
 }
 
 // 👇 START OF ADDITIONS 1: Distance Calculation Utility (KEEPING THIS)
@@ -515,7 +608,7 @@ router.post('/summary', protect, async (req, res) => {
             commissionSummary: {
                 totalCommission: parseFloat(totalPlatformFees.toFixed(2)),
                 averageRate: parseFloat((totalPlatformFees / totalSubtotal).toFixed(3)),
-                note: 'Commission rates vary by product category (10-15%)'
+                note: 'Commission rates vary by product category (5% - 12%)'
             }
         });
 
@@ -758,35 +851,61 @@ router.get('/vendor', protect, authorizeRoles('vendor', 'admin'), async (req, re
     // @desc    Get commission rates for different categories
     // @route   GET /api/orders/commission-rates
     // @access  Public
-    router.get('/commission-rates', async (req, res) => {
+        router.get('/commission-rates', async (req, res) => {
         try {
             const commissionStructure = {};
-            
-            // Transform the CATEGORY_COMMISSION_RATES for easier consumption
-            for (const [tier, data] of Object.entries(CATEGORY_COMMISSION_RATES)) {
-                commissionStructure[tier] = {
-                    rate: data.rate * 100, // Convert to percentage
-                    rateDecimal: data.rate,
-                    description: getTierDescription(tier),
-                    exampleCategories: data.categories.slice(0, 5) // Show first 5 examples
+
+            for (const [category, rate] of Object.entries(CATEGORY_COMMISSION_RATES)) {
+                commissionStructure[category] = {
+                    rate: rate * 100,
+                    rateDecimal: rate
                 };
             }
-            
+
             res.json({
                 success: true,
                 commissionStructure,
-                note: 'Commission rates are applied per product based on category',
-                defaultRate: 0.125 // Default if category not found
+                note: 'Commission rates are applied per product category',
+                defaultRate: 0.08
             });
         } catch (error) {
             console.error('Error fetching commission rates:', error);
-            res.status(500).json({ 
-                success: false, 
-                message: 'Error fetching commission rates', 
-                error: error.message 
+            res.status(500).json({
+                success: false,
+                message: 'Error fetching commission rates',
+                error: error.message
             });
         }
     });
+    // router.get('/commission-rates', async (req, res) => {
+    //     try {
+    //         const commissionStructure = {};
+            
+    //         // Transform the CATEGORY_COMMISSION_RATES for easier consumption
+    //         for (const [tier, data] of Object.entries(CATEGORY_COMMISSION_RATES)) {
+    //             commissionStructure[tier] = {
+    //                 rate: data.rate * 100, // Convert to percentage
+    //                 rateDecimal: data.rate,
+    //                 description: getTierDescription(tier),
+    //                 exampleCategories: data.categories.slice(0, 5) // Show first 5 examples
+    //             };
+    //         }
+            
+    //         res.json({
+    //             success: true,
+    //             commissionStructure,
+    //             note: 'Commission rates are applied per product based on category',
+    //             defaultRate: 0.125 // Default if category not found
+    //         });
+    //     } catch (error) {
+    //         console.error('Error fetching commission rates:', error);
+    //         res.status(500).json({ 
+    //             success: false, 
+    //             message: 'Error fetching commission rates', 
+    //             error: error.message 
+    //         });
+    //     }
+    // });
 
     // Helper function for tier descriptions
     function getTierDescription(tier) {
@@ -1000,331 +1119,6 @@ Status: Ready for processing`;
     }
 });
 
-
-// // ## Flutterwave Payment Route (Escrow)
-
-// // ## Flutterwave Payment Route (Escrow)
-// // @desc Update MainOrder/Shipments to paid + verify Flutterwave (NO IMMEDIATE VENDOR CREDIT)
-// // @route PUT /api/orders/:id/pay
-// // @access Private
-// router.put('/:id/pay', protect, async (req, res) => {
-//     const session = await mongoose.startSession();
-//     session.startTransaction();
-//     try {
-//         const mainOrder = await MainOrder.findById(req.params.id).session(session);
-//         if (!mainOrder) {
-//             await session.abortTransaction();
-//             session.endSession();
-//             return res.status(404).json({ message: 'Main Order not found' });
-//         }
-//         if (mainOrder.isPaid) {
-//             await session.abortTransaction();
-//             session.endSession();
-//             return res.status(400).json({ message: 'Order is already paid' });
-//         }
-//         if (mainOrder.user.toString() !== req.user.id.toString()) {
-//             await session.abortTransaction();
-//             session.endSession();
-//             return res.status(401).json({ message: 'Not authorized to modify this order' });
-//         }
-//         const { transaction_id } = req.body;
-//         if (!transaction_id) {
-//             await session.abortTransaction();
-//             session.endSession();
-//             return res.status(400).json({ message: 'Transaction ID is required' });
-//         }
-
-//         // Verify payment with Flutterwave
-//         const flwResponse = await axios.get(
-//             `https://api.flutterwave.com/v3/transactions/${transaction_id}/verify`,
-//             {
-//                 headers: { Authorization: `Bearer ${process.env.FLUTTERWAVE_SECRET_KEY}` }
-//             }
-//         );
-//         const flwData = flwResponse.data;
-
-//         if (flwData.status !== "success" || flwData.data.status !== "successful") {
-//             await MainOrder.deleteOne({ _id: mainOrder._id }, { session });
-//             await Shipment.deleteMany({ mainOrder: mainOrder._id }, { session });
-//             await session.commitTransaction();
-//             session.endSession();
-//             return res.status(400).json({
-//                 message: 'Payment verification failed and order has been removed.',
-//                 flutterwave: flwData
-//             });
-//         }
-
-//         // Verified — update MainOrder
-//         mainOrder.isPaid = true;
-//         mainOrder.paidAt = Date.now();
-//         mainOrder.mainOrderStatus = 'processing';
-//         mainOrder.paymentResult = {
-//             id: flwData.data.id,
-//             status: flwData.data.status,
-//             tx_ref: flwData.data.tx_ref,
-//             flw_ref: flwData.data.flw_ref,
-//             amount: flwData.data.amount,
-//             currency: flwData.data.currency,
-//             email_address: flwData.data.customer.email,
-//         };
-
-//         // Update shipments & stock
-//         const shipments = await Shipment.find({ mainOrder: mainOrder._id }).session(session);
-//         const productUpdates = [];
-//         for (const shipment of shipments) {
-//             shipment.shipmentStatus = 'processing';
-//             await shipment.save({ session });
-
-//             // ───────────────────────────────────────────────────────────────
-//             //   NEW: OneSignal push to vendor on successful Flutterwave payment
-//             // ───────────────────────────────────────────────────────────────
-//             try {
-//                 const shortId = mainOrder._id.toString().slice(-8);
-//                 const itemCount = shipment.items.reduce((sum, i) => sum + i.quantity, 0);
-
-//                 await notificationService.sendToUser(
-//                     shipment.vendor.toString(),
-//                     {
-//                         title: "🛒 New Paid Order!",
-//                         message: `New paid order received (#${shortId}) — ${itemCount} item(s) • ₦${shipment.subtotal.toFixed(0)}. Start preparing!`,
-//                         data: {
-//                             type: "new_paid_order_vendor",
-//                             orderId: mainOrder._id.toString(),
-//                             shipmentId: shipment._id.toString(),
-//                             subtotal: shipment.subtotal,
-//                             itemCount,
-//                             paymentMethod: "Flutterwave",
-//                             timestamp: Date.now()
-//                         }
-//                     }
-//                 );
-//             } catch (pushErr) {
-//                 console.error(`Failed to send Flutterwave paid-order push to vendor ${shipment.vendor}:`, pushErr);
-//             }
-//             // ───────────────────────────────────────────────────────────────
-
-//             for (const item of shipment.items) {
-//                 const soldCount = item.quantity;
-//                 productUpdates.push(
-//                     Product.findByIdAndUpdate(
-//                         item.product,
-//                         { $inc: { salesCount: soldCount, stockQuantity: -soldCount } },
-//                         { new: true, session }
-//                     )
-//                 );
-//             }
-//         }
-//         await Promise.all(productUpdates);
-
-//         const updatedOrder = await mainOrder.save({ session });
-//         await session.commitTransaction();
-//         session.endSession();
-
-//         res.json(updatedOrder);
-//     } catch (error) {
-//         await session.abortTransaction();
-//         session.endSession();
-//         console.error('Error verifying payment and updating order:', error.response?.data || error.message);
-//         res.status(500).json({ message: 'Server Error', error: error.response?.data || error.message });
-//     }
-// });
-
-
-
-
-// // @desc Update MainOrder/Shipments to paid + verify Flutterwave (NO IMMEDIATE VENDOR CREDIT)
-// // @route PUT /api/orders/:id/pay
-// // @access Private
-// router.put('/:id/pay', protect, async (req, res) => {
-//     const session = await mongoose.startSession();
-//     session.startTransaction();
-
-//     try {
-//         console.log(`[PAY ENDPOINT] Starting payment confirmation for order ID: ${req.params.id} | User: ${req.user.id}`);
-
-//         const mainOrder = await MainOrder.findById(req.params.id).session(session);
-//         if (!mainOrder) {
-//             console.error(`[PAY ENDPOINT] ERROR: Main Order not found - ID: ${req.params.id}`);
-//             await session.abortTransaction();
-//             session.endSession();
-//             return res.status(404).json({ message: 'Main Order not found' });
-//         }
-
-//         console.log(`[PAY ENDPOINT] Found order: ${mainOrder._id} | Current isPaid: ${mainOrder.isPaid} | Status: ${mainOrder.mainOrderStatus}`);
-
-//         if (mainOrder.isPaid) {
-//             console.warn(`[PAY ENDPOINT] WARNING: Order already paid - ID: ${mainOrder._id} | Paid at: ${mainOrder.paidAt}`);
-//             await session.abortTransaction();
-//             session.endSession();
-//             return res.status(400).json({ message: 'Order is already paid' });
-//         }
-
-//         if (mainOrder.user.toString() !== req.user.id.toString()) {
-//             console.error(`[PAY ENDPOINT] Unauthorized attempt - Order user: ${mainOrder.user} | Request user: ${req.user.id}`);
-//             await session.abortTransaction();
-//             session.endSession();
-//             return res.status(401).json({ message: 'Not authorized to modify this order' });
-//         }
-
-//         const { transaction_id } = req.body;
-//         if (!transaction_id) {
-//             console.error(`[PAY ENDPOINT] Missing transaction_id - Order: ${mainOrder._id}`);
-//             await session.abortTransaction();
-//             session.endSession();
-//             return res.status(400).json({ message: 'Transaction ID is required' });
-//         }
-
-//         console.log(`[PAY ENDPOINT] Received tx_ref / transaction_id: ${transaction_id}`);
-
-//         // ────────────────────────────────────────────────────────────────
-//         // Idempotency check: prevent replay of same tx_ref on different orders
-//         // ────────────────────────────────────────────────────────────────
-//         const alreadyUsed = await MainOrder.findOne({
-//             'paymentResult.tx_ref': transaction_id,
-//             _id: { $ne: mainOrder._id }   // allow retry on the same order
-//         }).select('_id paymentResult').session(session);
-
-//         if (alreadyUsed) {
-//             console.warn(`[PAY ENDPOINT] REPLAY DETECTED - tx_ref ${transaction_id} already used on order ${alreadyUsed._id}`);
-//             await session.abortTransaction();
-//             session.endSession();
-//             return res.status(409).json({
-//                 message: 'This transaction reference has already been used on another order'
-//             });
-//         }
-
-//         console.log(`[PAY ENDPOINT] Idempotency check passed - no conflicting order found for tx_ref: ${transaction_id}`);
-
-//         // Verify payment with Flutterwave
-//         console.log(`[PAY ENDPOINT] Verifying transaction with Flutterwave: ${transaction_id}`);
-//         const flwResponse = await axios.get(
-//             `https://api.flutterwave.com/v3/transactions/${transaction_id}/verify`,
-//             {
-//                 headers: { Authorization: `Bearer ${process.env.FLUTTERWAVE_SECRET_KEY}` }
-//             }
-//         );
-
-//         const flwData = flwResponse.data;
-
-//         console.log(`[PAY ENDPOINT] Flutterwave verify response - Status: ${flwData.status} | Data status: ${flwData.data?.status} | Amount: ${flwData.data?.amount} | tx_ref: ${flwData.data?.tx_ref}`);
-
-//         if (flwData.status !== "success" || flwData.data.status !== "successful") {
-//             console.error(`[PAY ENDPOINT] VERIFICATION FAILED - Order: ${mainOrder._id} | tx_ref: ${transaction_id} | Flutterwave response:`, JSON.stringify(flwData, null, 2));
-
-//             await MainOrder.deleteOne({ _id: mainOrder._id }, { session });
-//             await Shipment.deleteMany({ mainOrder: mainOrder._id }, { session });
-
-//             await session.commitTransaction();
-//             session.endSession();
-
-//             return res.status(400).json({
-//                 message: 'Payment verification failed and order has been removed.',
-//                 flutterwave: flwData
-//             });
-//         }
-
-//         console.log(`[PAY ENDPOINT] VERIFICATION SUCCESS - tx_ref: ${transaction_id} | Amount: ${flwData.data.amount} NGN | Customer: ${flwData.data.customer.email}`);
-
-//         // Verified — update MainOrder
-//         mainOrder.isPaid = true;
-//         mainOrder.paidAt = Date.now();
-//         mainOrder.mainOrderStatus = 'processing';
-//         mainOrder.paymentResult = {
-//             id: flwData.data.id,
-//             status: flwData.data.status,
-//             tx_ref: flwData.data.tx_ref,
-//             flw_ref: flwData.data.flw_ref,
-//             amount: flwData.data.amount,
-//             currency: flwData.data.currency,
-//             email_address: flwData.data.customer.email,
-//             verifiedAt: new Date(),
-//             verificationMethod: 'direct_verify'
-//         };
-
-//         console.log(`[PAY ENDPOINT] Updated paymentResult for order ${mainOrder._id}:`, JSON.stringify(mainOrder.paymentResult, null, 2));
-
-//         // Update shipments & stock
-//         const shipments = await Shipment.find({ mainOrder: mainOrder._id }).session(session);
-//         const productUpdates = [];
-
-//         console.log(`[PAY ENDPOINT] Found ${shipments.length} shipments for order ${mainOrder._id}`);
-
-//         for (const shipment of shipments) {
-//             shipment.shipmentStatus = 'processing';
-//             await shipment.save({ session });
-
-//             console.log(`[PAY ENDPOINT] Shipment ${shipment._id} → status set to 'processing'`);
-
-//             // Vendor notification (existing logic - no change)
-//             try {
-//                 const shortId = mainOrder._id.toString().slice(-8);
-//                 const itemCount = shipment.items.reduce((sum, i) => sum + i.quantity, 0);
-//                 await notificationService.sendToUser(
-//                     shipment.vendor.toString(),
-//                     {
-//                         title: "🛒 New Paid Order!",
-//                         message: `New paid order received (#${shortId}) — ${itemCount} item(s) • ₦${shipment.subtotal.toFixed(0)}. Start preparing!`,
-//                         data: {
-//                             type: "new_paid_order_vendor",
-//                             orderId: mainOrder._id.toString(),
-//                             shipmentId: shipment._id.toString(),
-//                             subtotal: shipment.subtotal,
-//                             itemCount,
-//                             paymentMethod: "Flutterwave",
-//                             timestamp: Date.now()
-//                         }
-//                     }
-//                 );
-//                 console.log(`[PAY ENDPOINT] Vendor notification sent for shipment ${shipment._id}`);
-//             } catch (pushErr) {
-//                 console.error(`[PAY ENDPOINT] Failed to send paid-order push to vendor ${shipment.vendor}:`, pushErr.message);
-//             }
-
-//             for (const item of shipment.items) {
-//                 const soldCount = item.quantity;
-//                 productUpdates.push(
-//                     Product.findByIdAndUpdate(
-//                         item.product,
-//                         { $inc: { salesCount: soldCount, stockQuantity: -soldCount } },
-//                         { new: true, session }
-//                     )
-//                 );
-//             }
-//         }
-
-//         await Promise.all(productUpdates);
-//         console.log(`[PAY ENDPOINT] Stock updated for ${productUpdates.length} products`);
-
-//         const updatedOrder = await mainOrder.save({ session });
-//         await session.commitTransaction();
-//         session.endSession();
-
-//         console.log(`[PAY ENDPOINT] SUCCESS - Order ${mainOrder._id} marked as paid | Total: ₦${updatedOrder.totalPrice}`);
-
-//         res.json(updatedOrder);
-
-//     } catch (error) {
-//         await session.abortTransaction();
-//         session.endSession();
-
-//         console.error(`[PAY ENDPOINT] CRITICAL ERROR for order ${req.params.id}:`, {
-//             message: error.message,
-//             stack: error.stack,
-//             flutterwaveError: error.response?.data || null
-//         });
-
-//         res.status(500).json({ 
-//             message: 'Server Error during payment confirmation', 
-//             error: error.message 
-//         });
-//     }
-// });
-
-
-
-// @desc Update MainOrder/Shipments to paid + verify Flutterwave (NO IMMEDIATE VENDOR CREDIT)
-// @route PUT /api/orders/:id/pay
-// @access Private
 router.put('/:id/pay', protect, async (req, res) => {
     const session = await mongoose.startSession();
     session.startTransaction();
@@ -1670,260 +1464,6 @@ router.put('/:id/dispatch-status', protect, authorizeRoles('dispatch', 'admin'),
 
 
 
-// @desc Update MainOrder status (Admin only)
-// @route PUT /api/orders/:id/status
-// @access Private/Admin
-// router.put('/:id/status', protect, authorizeRoles('admin'), async (req, res) => {
-//     const { status } = req.body;
-//     const MAIN_ORDER_ID = req.params.id;
-
-//     const validStatuses = [
-//         'pending_payment',
-//         'processing',
-//         'partially_shipped',
-//         'shipped',
-//         'out_for_delivery',
-//         'delivered',
-//         'completed',
-//         'cancelled'
-//     ];
-
-//     if (!validStatuses.includes(status)) {
-//         return res.status(400).json({
-//             message: `Invalid main order status: ${status}. Must be one of: ${validStatuses.join(', ')}`
-//         });
-//     }
-
-//     const session = await mongoose.startSession();
-//     session.startTransaction();
-
-//     try {
-//         const mainOrder = await MainOrder.findById(MAIN_ORDER_ID).session(session);
-//         if (!mainOrder) {
-//             await session.abortTransaction();
-//             session.endSession();
-//             return res.status(404).json({ message: 'Main Order not found.' });
-//         }
-
-//         // Prevent double-crediting / double-completion
-//         if (status === 'completed' && mainOrder.mainOrderStatus === 'completed') {
-//             await session.abortTransaction();
-//             session.endSession();
-//             return res.status(400).json({
-//                 message: 'Order already marked as completed and credited. No further action allowed.'
-//             });
-//         }
-
-//         // Update the status
-//         mainOrder.mainOrderStatus = status;
-
-//         // SIMULTANEOUS PAYOUT + NOTIFICATION LOGIC WHEN STATUS IS 'completed'
-//         if (status === 'completed') {
-//             mainOrder.isDelivered = true;
-//             mainOrder.deliveredAt = Date.now();
-//             mainOrder.shipmentStatus = 'delivered';
-//             mainOrder.vendorPaidAt = Date.now();
-
-//             if (mainOrder.isPaid) {
-//                 const shipments = await Shipment.find({ mainOrder: MAIN_ORDER_ID }).session(session);
-
-//                 let totalRiderPayout = 0;
-//                 let totalVendorPayout = 0;
-//                 let totalCompanySettlement = 0;
-//                 let payoutDetails = [];
-
-//                 for (const shipment of shipments) {
-//                     const vendorEarning = shipment.subtotal - shipment.platformFee;
-//                     totalVendorPayout += vendorEarning;
-
-//                     let riderPayoutPerShipment = 0;
-//                     let companySettlementPerShipment = 0;
-
-//                     if (shipment.vendorLocation && mainOrder.userLocation) {
-//                         const distance = calculateDistance(
-//                             shipment.vendorLocation.latitude,
-//                             shipment.vendorLocation.longitude,
-//                             mainOrder.userLocation.latitude,
-//                             mainOrder.userLocation.longitude
-//                         );
-
-//                         companySettlementPerShipment = distance * 150;
-//                         totalCompanySettlement += companySettlementPerShipment;
-
-//                         riderPayoutPerShipment = distance * 150;
-//                         totalRiderPayout += riderPayoutPerShipment;
-//                     }
-
-//                     // Credit vendor
-//                     const updatedVendor = await User.findByIdAndUpdate(
-//                         shipment.vendor,
-//                         {
-//                             $inc: { vendorWalletBalance: vendorEarning },
-//                             $push: {
-//                                 notifications: {
-//                                     $each: [{
-//                                         type: 'delivery_payout',
-//                                         message: `Payout of ₦${vendorEarning.toFixed(2)} received for completed order ${mainOrder._id}. Platform Fee: ₦${shipment.platformFee.toFixed(2)}.`,
-//                                         isRead: false,
-//                                         relatedModel: 'MainOrder',
-//                                         relatedId: mainOrder._id,
-//                                     }],
-//                                     $position: 0,
-//                                 },
-//                             },
-//                         },
-//                         { new: true, session }
-//                     );
-
-//                     // ───────────────────────────────────────────────────────────────
-//                     //                SEND ONESIGNAL NOTIFICATION TO VENDOR
-//                     // ───────────────────────────────────────────────────────────────
-//                     try {
-//                         await notificationService.sendToUser(
-//                             shipment.vendor.toString(),
-//                             {
-//                                 title: "🎉 Order Completed",
-//                                 message: `Order #${mainOrder._id.toString().slice(-8)} has been marked as completed. Thank you for your service!`,
-//                                 data: {
-//                                     type: "order_completed_vendor",
-//                                     orderId: mainOrder._id.toString(),
-//                                     status: "completed",
-//                                     completedAt: new Date().toISOString(),
-//                                 }
-//                             }
-//                         );
-//                     } catch (notifyError) {
-//                         console.error(`Failed to send completion notification to vendor ${shipment.vendor}:`, notifyError);
-//                         // Do NOT throw - we don't want to rollback the whole payout
-//                     }
-//                     // ───────────────────────────────────────────────────────────────
-
-//                     payoutDetails.push({
-//                         vendorId: shipment.vendor,
-//                         vendorName: updatedVendor?.businessName || 'Unknown Vendor',
-//                         vendorPayout: vendorEarning,
-//                         shipmentId: shipment._id,
-//                         distance: calculateDistance(
-//                             shipment.vendorLocation.latitude,
-//                             shipment.vendorLocation.longitude,
-//                             mainOrder.userLocation.latitude,
-//                             mainOrder.userLocation.longitude
-//                         ),
-//                         riderPayout: riderPayoutPerShipment,
-//                         companySettlement: companySettlementPerShipment
-//                     });
-
-//                     if (!shipment.isDelivered) {
-//                         shipment.shipmentStatus = 'delivered';
-//                         shipment.isDelivered = true;
-//                         shipment.deliveredAt = Date.now();
-//                         await shipment.save({ session });
-//                     }
-//                 }
-
-//                 // Rider payout
-//                 if (mainOrder.rider && totalRiderPayout > 0) {
-//                     await Rider.findByIdAndUpdate(
-//                         mainOrder.rider,
-//                         {
-//                             $inc: {
-//                                 walletBalance: totalRiderPayout,
-//                                 totalEarnings: totalRiderPayout,
-//                                 completedDeliveries: 1
-//                             },
-//                             $push: {
-//                                 notifications: {
-//                                     type: 'delivery_payout',
-//                                     message: `₦${totalRiderPayout.toFixed(2)} credited for completing order ${mainOrder._id}.`,
-//                                     isRead: false,
-//                                     relatedModel: 'MainOrder',
-//                                     relatedId: mainOrder._id,
-//                                 }
-//                             }
-//                         },
-//                         { session }
-//                     );
-//                 }
-
-//                 mainOrder.companySettlementEarnings = totalCompanySettlement;
-//                 mainOrder.companySettlementStatus = 'unpaid';
-
-//                 mainOrder.payoutDetails = {
-//                     totalVendorPayout,
-//                     totalRiderPayout,
-//                     totalCompanySettlement,
-//                     payoutDate: Date.now(),
-//                     details: payoutDetails
-//                 };
-//             }
-//         }
-
-//         const updatedMainOrder = await mainOrder.save({ session });
-//         await session.commitTransaction();
-//         session.endSession();
-
-//         res.json({
-//             message: `Main Order ${MAIN_ORDER_ID} status updated to ${status}.${status === 'completed' ? ' Vendors and rider paid simultaneously.' : ''}`,
-//             order: updatedMainOrder,
-//             ...(status === 'completed' && mainOrder.isPaid ? {
-//                 payoutSummary: {
-//                     totalVendorPayout: mainOrder.payoutDetails?.totalVendorPayout || 0,
-//                     totalRiderPayout: mainOrder.payoutDetails?.totalRiderPayout || 0,
-//                     totalCompanySettlement: mainOrder.payoutDetails?.totalCompanySettlement || 0,
-//                     payoutDate: mainOrder.payoutDetails?.payoutDate
-//                 }
-//             } : {})
-//         });
-
-//     } catch (error) {
-//         await session.abortTransaction();
-//         session.endSession();
-//         console.error('Error updating main order status:', error);
-//         res.status(500).json({ message: 'Server Error during main order status update.', error: error.message });
-//     }
-
-//     // Optional: Send notification to buyer about status change
-//     try {
-//         let title, message;
-//         switch(status) {
-//             case 'processing':
-//                 title = 'Order Processing';
-//                 message = `Order #${MAIN_ORDER_ID} is now being processed by our vendors.`;
-//                 break;
-//             case 'shipped':
-//                 title = 'Order Shipped!';
-//                 message = `Your order #${MAIN_ORDER_ID} has been shipped. Track your delivery in the app.`;
-//                 break;
-//             case 'delivered':
-//                 title = 'Order Delivered!';
-//                 message = `Your order #${MAIN_ORDER_ID} has been delivered. Please confirm receipt.`;
-//                 break;
-//             case 'completed':
-//                 title = 'Order Completed';
-//                 message = `Order #${MAIN_ORDER_ID} is now complete. Thank you for shopping with us!`;
-//                 break;
-//         }
-
-//         if (title && message && mainOrder.user) {
-//             await notificationService.sendToUser(mainOrder.user.toString(), {
-//                 title,
-//                 message,
-//                 data: {
-//                     type: 'order_update',
-//                     orderId: MAIN_ORDER_ID,
-//                     status: status
-//                 }
-//             });
-//         }
-//     } catch (notifError) {
-//         console.error('Buyer status notification failed:', notifError);
-//     }
-// });
-
-
-// @desc Update MainOrder status (Admin only)
-// @route PUT /api/orders/:id/status
-// @access Private/Admin
 router.put('/:id/status', protect, authorizeRoles('admin'), async (req, res) => {
     const { status } = req.body;
     const MAIN_ORDER_ID = req.params.id;
