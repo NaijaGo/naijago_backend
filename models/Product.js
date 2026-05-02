@@ -97,6 +97,50 @@ const productSchema = mongoose.Schema(
       required: true,
       ref: 'User',
     },
+    productLocation: {
+      latitude: { type: Number },
+      longitude: { type: Number },
+      formattedAddress: { type: String, trim: true },
+    },
+
+    // Restaurant / food listing support
+    restaurantName: {
+      type: String,
+      trim: true,
+    },
+    foodInformation: {
+      type: String,
+      trim: true,
+    },
+    orderStartTime: {
+      type: String,
+      default: '09:00',
+      match: [/^\d{2}:\d{2}$/, 'Order start time must be HH:mm'],
+    },
+    orderEndTime: {
+      type: String,
+      default: '19:00',
+      match: [/^\d{2}:\d{2}$/, 'Order end time must be HH:mm'],
+    },
+
+    // Pharmacy / medicine access support
+    medicineAccess: {
+      type: String,
+      enum: ['over_the_counter', 'prescription', 'pharmacist_approval', 'restricted', null],
+      default: null,
+    },
+    isOverTheCounter: {
+      type: Boolean,
+      default: false,
+    },
+    requiresPrescription: {
+      type: Boolean,
+      default: false,
+    },
+    requiresPharmacistApproval: {
+      type: Boolean,
+      default: false,
+    },
 
     averageRating: {
       type: Number,
@@ -115,6 +159,26 @@ const productSchema = mongoose.Schema(
     isActive: {
       type: Boolean,
       default: true,
+    },
+    moderationStatus: {
+      type: String,
+      enum: ['approved', 'pending', 'rejected'],
+      default: 'approved',
+      index: true,
+    },
+    moderationNote: {
+      type: String,
+      trim: true,
+      default: '',
+    },
+    reviewedAt: {
+      type: Date,
+      default: null,
+    },
+    reviewedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
     },
 
     // Flashsale support

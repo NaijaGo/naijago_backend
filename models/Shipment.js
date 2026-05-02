@@ -15,6 +15,16 @@ const ShipmentItemSchema = new mongoose.Schema({
         type: mongoose.Schema.Types.Mixed, // Can be String, Object, or null
         default: null,
     },
+    category: { type: String },
+    commissionRate: { type: Number, default: 0 },
+    restaurantName: { type: String },
+    foodInformation: { type: String },
+    orderStartTime: { type: String },
+    orderEndTime: { type: String },
+    medicineAccess: { type: String },
+    isOverTheCounter: { type: Boolean, default: false },
+    requiresPrescription: { type: Boolean, default: false },
+    requiresPharmacistApproval: { type: Boolean, default: false },
 }, { _id: false });
 
 // Main Shipment Schema
@@ -66,9 +76,12 @@ const ShipmentSchema = new mongoose.Schema({
     
     shipmentStatus: { // Individual tracking status for this package
         type: String, 
-        enum: ['processing', 'ready_for_pickup', 'out_for_delivery', 'delivered', 'returned', 'cancelled'],
+        enum: ['processing', 'accepted', 'rejected', 'ready_for_pickup', 'out_for_delivery', 'delivered', 'returned', 'cancelled'],
         default: 'processing',
     },
+    acceptedAt: { type: Date },
+    rejectedAt: { type: Date },
+    rejectionReason: { type: String, trim: true, maxlength: 300 },
     
     // Security Codes (OTP)
     pickupOTP: { type: String },   // Generated when rider claims

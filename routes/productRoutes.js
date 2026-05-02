@@ -40,6 +40,149 @@ const multiUpload = upload.fields([
     { name: 'extraImages', maxCount: 10 },
 ]);
 
+const vendorPopulateFields = 'businessName businessLocation phoneNumber businessLogoUrl businessWhatsAppNumber businessSupportPhone deliveryRadiusKm prepTimeMinutes isTemporarilyClosed temporaryClosureReason operatingHours';
+
+const isMedicineCategory = (category = '') => {
+    const normalized = String(category).toLowerCase();
+    return normalized.includes('medicine') ||
+        normalized.includes('pharmacy') ||
+        normalized.includes('drug');
+};
+
+const isRestaurantCategory = (category = '') => {
+    const normalized = String(category).toLowerCase();
+    if (normalized.includes('restaurant equipment')) return false;
+    return normalized === 'restaurant' ||
+        normalized.startsWith('restaurant >') ||
+        normalized.includes('meal') ||
+        normalized.includes('fast food') ||
+        normalized.includes('local dishes') ||
+        normalized.includes('pastries') ||
+        normalized.includes('drinks') ||
+        normalized.includes('catering');
+};
+
+const requiresProductModeration = (category = '') =>
+    isRestaurantCategory(category) || isMedicineCategory(category);
+
+const toBoolean = (value) => value === true || value === 'true' || value === '1';
+
+const normalizeTime = (value, fallback) => {
+    const raw = typeof value === 'string' ? value.trim() : '';
+    return /^\d{2}:\d{2}$/.test(raw) ? raw : fallback;
+};
+
+const buildProductLocation = (body = {}) => {
+    const formattedAddress = String(
+        body.productLocationAddress ||
+        body.pickupLocationAddress ||
+        ''
+    ).trim();
+    const latitude = Number(body.productLatitude ?? body.pickupLatitude);
+    const longitude = Number(body.productLongitude ?? body.pickupLongitude);
+
+    if (!formattedAddress && !Number.isFinite(latitude) && !Number.isFinite(longitude)) {
+        return undefined;
+    }
+
+    return {
+        formattedAddress,
+        latitude: Number.isFinite(latitude) ? latitude : undefined,
+        longitude: Number.isFinite(longitude) ? longitude : undefined,
+    };
+};
+
+const resolveProductLocation = (product) => {
+    return product.productLocation?.latitude && product.productLocation?.longitude
+        ? product.productLocation
+        : product.vendor?.businessLocation;
+};
+
+const buildCategoryFilter = (category) => {
+    if (!category) return {};
+    if (String(category).toLowerCase() === 'restaurant') {
+        return {
+            category: {
+                $regex: /^(restaurant($| >)|.*\b(meal|fast food|local dishes|pastries|drinks|catering)\b.*)/i,
+            },
+        };
+    }
+    return { category: { $regex: new RegExp(`^${escapeRegex(category)}$`, 'i') } };
+};
+
+const escapeRegex = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+const distanceKm = (lat1, lon1, lat2, lon2) => {
+    const toRad = (degrees) => degrees * Math.PI / 180;
+    const earthRadiusKm = 6371;
+    const dLat = toRad(lat2 - lat1);
+    const dLon = toRad(lon2 - lon1);
+    const a = Math.sin(dLat / 2) ** 2 +
+        Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
+        Math.sin(dLon / 2) ** 2;
+    return earthRadiusKm * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+};
+
+const minutesFromTime = (value, fallback = null) => {
+    if (typeof value !== 'string' || !/^\d{2}:\d{2}$/.test(value)) return fallback;
+    const [hours, minutes] = value.split(':').map(Number);
+    return (hours * 60) + minutes;
+};
+
+const isWithinWindow = (currentMinutes, start, end) => {
+    const startMinutes = minutesFromTime(start, 0);
+    const endMinutes = minutesFromTime(end, 1439);
+    if (startMinutes <= endMinutes) {
+        return currentMinutes >= startMinutes && currentMinutes <= endMinutes;
+    }
+    return currentMinutes >= startMinutes || currentMinutes <= endMinutes;
+};
+
+const isRestaurantProductOpenNow = (product, now = new Date()) => {
+    if (product.vendor?.isTemporarilyClosed) return false;
+
+    const currentMinutes = (now.getHours() * 60) + now.getMinutes();
+    const day = now.toLocaleDateString('en-US', { weekday: 'long' }).toLowerCase();
+    const vendorHours = Array.isArray(product.vendor?.operatingHours)
+        ? product.vendor.operatingHours.find((entry) => entry.day === day)
+        : null;
+
+    if (vendorHours) {
+        if (vendorHours.isOpen === false) return false;
+        const lastOrderTime = vendorHours.lastOrderTime || vendorHours.closeTime;
+        if (!isWithinWindow(currentMinutes, vendorHours.openTime, lastOrderTime)) {
+            return false;
+        }
+    }
+
+    return isWithinWindow(
+        currentMinutes,
+        product.orderStartTime || '09:00',
+        product.orderEndTime || '19:00'
+    );
+};
+
+const restaurantMealKeywords = {
+    breakfast: ['breakfast', 'tea', 'coffee', 'pap', 'akara', 'bread', 'yam', 'egg'],
+    lunch: ['lunch', 'rice', 'swallow', 'meal', 'beans', 'spaghetti', 'jollof'],
+    dinner: ['dinner', 'grill', 'soup', 'pepper soup', 'shawarma', 'suya'],
+};
+
+const matchesRestaurantMeal = (product, mealType = '') => {
+    const keywords = restaurantMealKeywords[String(mealType).toLowerCase()];
+    if (!keywords) return true;
+
+    const source = [
+        product.name,
+        product.category,
+        product.description,
+        product.foodInformation,
+        product.restaurantName,
+    ].filter(Boolean).join(' ').toLowerCase();
+
+    return keywords.some((keyword) => source.includes(keyword));
+};
+
 // =============================================================
 // CREATE PRODUCT (UPDATED FOR SIZE DATA)
 // =============================================================
@@ -59,6 +202,14 @@ router.post(
             category, 
             stockQuantity, 
             is_flashsale,
+            restaurantName,
+            foodInformation,
+            orderStartTime,
+            orderEndTime,
+            medicineAccess,
+            isOverTheCounter,
+            requiresPrescription,
+            requiresPharmacistApproval,
             size_data // NEW: Size data from Flutter
         } = req.body;
 
@@ -70,6 +221,25 @@ router.post(
         }
 
         try {
+            const vendor = await User.findById(req.user._id);
+            if (!vendor || !vendor.isVendor || vendor.vendorStatus !== 'approved') {
+                return res.status(403).json({
+                    message: 'Only approved vendors can add products.',
+                });
+            }
+
+            if (isMedicineCategory(category) && vendor.role !== 'pharmacist') {
+                return res.status(403).json({
+                    message: 'Medicine listings are only available to approved pharmacist vendors.',
+                });
+            }
+
+            if (isRestaurantCategory(category) && !restaurantName) {
+                return res.status(400).json({
+                    message: 'Restaurant name is required for food listings.',
+                });
+            }
+
             // -----------------------------------------------------
             // HANDLE IMAGE UPLOAD TO CLOUDINARY
             // -----------------------------------------------------
@@ -141,6 +311,7 @@ router.post(
                 }
             }
 
+            const requiresModeration = requiresProductModeration(category);
             const product = new Product({
                 name,
                 description,
@@ -150,12 +321,36 @@ router.post(
                 imageUrls: uploadedImages,
                 sizeData, // NEW: Add size data to product
                 vendor: req.user._id,
+                productLocation: buildProductLocation(req.body),
                 is_flashsale: is_flashsale === 'true',
+                isActive: !requiresModeration,
+                moderationStatus: requiresModeration ? 'pending' : 'approved',
+                restaurantName: isRestaurantCategory(category) ? String(restaurantName).trim() : undefined,
+                foodInformation: isRestaurantCategory(category)
+                    ? String(foodInformation || description).trim()
+                    : undefined,
+                orderStartTime: isRestaurantCategory(category)
+                    ? normalizeTime(orderStartTime, '09:00')
+                    : undefined,
+                orderEndTime: isRestaurantCategory(category)
+                    ? normalizeTime(orderEndTime, '19:00')
+                    : undefined,
+                medicineAccess: isMedicineCategory(category)
+                    ? (medicineAccess || (toBoolean(isOverTheCounter) ? 'over_the_counter' : 'pharmacist_approval'))
+                    : undefined,
+                isOverTheCounter: isMedicineCategory(category)
+                    ? toBoolean(isOverTheCounter)
+                    : false,
+                requiresPrescription: isMedicineCategory(category)
+                    ? toBoolean(requiresPrescription)
+                    : false,
+                requiresPharmacistApproval: isMedicineCategory(category)
+                    ? toBoolean(requiresPharmacistApproval)
+                    : false,
             });
 
             const createdProduct = await product.save();
 
-            const vendor = await User.findById(req.user._id);
             if (vendor) {
                 vendor.totalProducts = (vendor.totalProducts || 0) + 1;
                 vendor.productsUnsold =
@@ -163,10 +358,12 @@ router.post(
                 await vendor.save();
             }
 
-            await createdProduct.populate('vendor', 'businessName');
+            await createdProduct.populate('vendor', vendorPopulateFields);
 
             res.status(201).json({
-                message: 'Product added successfully!',
+                message: requiresModeration
+                    ? 'Product submitted for admin review. It will go live after approval.'
+                    : 'Product added successfully!',
                 product: createdProduct,
             });
         } catch (error) {
@@ -211,6 +408,14 @@ router.put(
             category, 
             stockQuantity, 
             is_flashsale,
+            restaurantName,
+            foodInformation,
+            orderStartTime,
+            orderEndTime,
+            medicineAccess,
+            isOverTheCounter,
+            requiresPrescription,
+            requiresPharmacistApproval,
             size_data // NEW: Size data from Flutter
         } = req.body;
 
@@ -224,6 +429,20 @@ router.put(
             if (product.vendor.toString() !== req.user._id.toString()) {
                 return res.status(401).json({
                     message: 'Not authorized to update this product.',
+                });
+            }
+
+            const vendor = await User.findById(req.user._id);
+            const nextCategory = category || product.category;
+            if (isMedicineCategory(nextCategory) && vendor?.role !== 'pharmacist') {
+                return res.status(403).json({
+                    message: 'Medicine listings are only available to approved pharmacist vendors.',
+                });
+            }
+
+            if (isRestaurantCategory(nextCategory) && restaurantName !== undefined && !restaurantName) {
+                return res.status(400).json({
+                    message: 'Restaurant name is required for food listings.',
                 });
             }
 
@@ -304,11 +523,48 @@ router.put(
             product.stockQuantity = stockQuantity || product.stockQuantity;
             product.imageUrls = updatedImageUrls;
             product.sizeData = sizeData; // NEW: Update size data
+            const nextProductLocation = buildProductLocation(req.body);
+            if (nextProductLocation !== undefined) {
+                product.productLocation = nextProductLocation;
+            }
             if (is_flashsale !== undefined)
                 product.is_flashsale = is_flashsale === 'true';
+            if (requiresProductModeration(product.category)) {
+                product.isActive = false;
+                product.moderationStatus = 'pending';
+                product.moderationNote = '';
+                product.reviewedAt = null;
+                product.reviewedBy = null;
+            }
+
+            if (isRestaurantCategory(product.category)) {
+                if (restaurantName !== undefined) product.restaurantName = String(restaurantName).trim();
+                if (foodInformation !== undefined) product.foodInformation = String(foodInformation).trim();
+                if (orderStartTime !== undefined) product.orderStartTime = normalizeTime(orderStartTime, '09:00');
+                if (orderEndTime !== undefined) product.orderEndTime = normalizeTime(orderEndTime, '19:00');
+            } else {
+                product.restaurantName = undefined;
+                product.foodInformation = undefined;
+                product.orderStartTime = undefined;
+                product.orderEndTime = undefined;
+            }
+
+            if (isMedicineCategory(product.category)) {
+                if (medicineAccess !== undefined) product.medicineAccess = medicineAccess;
+                if (isOverTheCounter !== undefined) product.isOverTheCounter = toBoolean(isOverTheCounter);
+                if (requiresPrescription !== undefined) product.requiresPrescription = toBoolean(requiresPrescription);
+                if (requiresPharmacistApproval !== undefined) {
+                    product.requiresPharmacistApproval = toBoolean(requiresPharmacistApproval);
+                }
+            } else {
+                product.medicineAccess = undefined;
+                product.isOverTheCounter = false;
+                product.requiresPrescription = false;
+                product.requiresPharmacistApproval = false;
+            }
 
             const updatedProduct = await product.save();
-            await updatedProduct.populate('vendor', 'businessName');
+            await updatedProduct.populate('vendor', vendorPopulateFields);
 
             res.status(200).json({
                 message: 'Product updated successfully!',
@@ -336,7 +592,7 @@ router.get('/myproducts', protect, async (req, res) => {
 
         // Find products where the 'vendor' field matches the authenticated user's ID
         const products = await Product.find({ vendor: req.user._id })
-            .populate('vendor', 'businessName');
+            .populate('vendor', vendorPopulateFields);
 
         res.status(200).json(products);
     } catch (error) {
@@ -351,7 +607,7 @@ router.get('/newarrivals', async (req, res) => {
         const newArrivalsProducts = await Product.find({ isActive: true })
             .sort({ createdAt: -1 }) // Sort by creation date, newest first
             .limit(10) // Limit to a reasonable number of products
-            .populate('vendor', 'businessName');
+            .populate('vendor', vendorPopulateFields);
         
         res.status(200).json(newArrivalsProducts);
     } catch (error) {
@@ -364,7 +620,7 @@ router.get('/newarrivals', async (req, res) => {
 router.get('/flashsales', async (req, res) => {
     try {
         // Find all products that are active and marked as a flash sale
-        const flashSalesProducts = await Product.find({ isActive: true, is_flashsale: true }).populate('vendor', 'businessName');
+        const flashSalesProducts = await Product.find({ isActive: true, is_flashsale: true }).populate('vendor', vendorPopulateFields);
         
         res.status(200).json(flashSalesProducts);
     } catch (error) {
@@ -376,7 +632,7 @@ router.get('/flashsales', async (req, res) => {
 // @desc    Get products by a specific vendor (publicly viewable vendor stores)
 router.get('/vendor/:vendorId', async (req, res) => {
     try {
-        const products = await Product.find({ vendor: req.params.vendorId, isActive: true }).populate('vendor', 'firstName lastName businessName');
+        const products = await Product.find({ vendor: req.params.vendorId, isActive: true }).populate('vendor', `firstName lastName ${vendorPopulateFields}`);
         if (products.length === 0) {
             return res.status(404).json({ message: 'No products found for this vendor.' });
         }
@@ -413,7 +669,7 @@ router.get('/search', async (req, res) => {
         { description: { $regex: searchTerm, $options: 'i' } },
       ]
     })
-      .populate('vendor', 'businessName')
+      .populate('vendor', vendorPopulateFields)
       .limit(50);
 
     console.log(`Search for "${searchTerm}" → found ${products.length} products`);
@@ -425,10 +681,94 @@ router.get('/search', async (req, res) => {
   }
 });
 
+// @desc    Get restaurant/food products, optionally nearby by customer coordinates
+// @route   GET /api/products/restaurants?lat=&lng=&radiusKm=
+// @access  Public
+router.get('/restaurants', async (req, res) => {
+    try {
+        const lat = req.query.lat !== undefined ? Number(req.query.lat) : null;
+        const lng = req.query.lng !== undefined ? Number(req.query.lng) : null;
+        const radiusKm = req.query.radiusKm !== undefined ? Number(req.query.radiusKm) : 15;
+        const mealType = String(req.query.mealType || '').toLowerCase();
+        const openNow = toBoolean(req.query.openNow);
+        const minPrice = req.query.minPrice !== undefined ? Number(req.query.minPrice) : null;
+        const maxPrice = req.query.maxPrice !== undefined ? Number(req.query.maxPrice) : null;
+        const sort = String(req.query.sort || 'nearby').toLowerCase();
+
+        const filter = {
+            isActive: true,
+            ...buildCategoryFilter('Restaurant'),
+        };
+
+        if (Number.isFinite(minPrice) || Number.isFinite(maxPrice)) {
+            filter.price = {};
+            if (Number.isFinite(minPrice)) filter.price.$gte = minPrice;
+            if (Number.isFinite(maxPrice)) filter.price.$lte = maxPrice;
+        }
+
+        let products = await Product.find(filter).populate('vendor', vendorPopulateFields);
+
+        products = products.filter((product) => matchesRestaurantMeal(product, mealType));
+
+        if (openNow) {
+            products = products.filter((product) => isRestaurantProductOpenNow(product));
+        }
+
+        if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+            if (sort === 'popular') {
+                products.sort((a, b) => (b.salesCount || 0) - (a.salesCount || 0));
+            } else if (sort === 'price_low') {
+                products.sort((a, b) => (a.price || 0) - (b.price || 0));
+            } else if (sort === 'price_high') {
+                products.sort((a, b) => (b.price || 0) - (a.price || 0));
+            }
+            return res.status(200).json(products);
+        }
+
+        const withDistances = products.map((product) => {
+            const vendorLocation = resolveProductLocation(product);
+            if (!vendorLocation?.latitude || !vendorLocation?.longitude) {
+                return { product, distanceKm: null };
+            }
+
+            return {
+                product,
+                distanceKm: distanceKm(
+                    lat,
+                    lng,
+                    vendorLocation.latitude,
+                    vendorLocation.longitude
+                ),
+            };
+        });
+
+        const nearby = withDistances
+            .filter((entry) => entry.distanceKm !== null && entry.distanceKm <= radiusKm)
+            .sort((a, b) => {
+                if (sort === 'popular') {
+                    return (b.product.salesCount || 0) - (a.product.salesCount || 0);
+                }
+                if (sort === 'price_low') {
+                    return (a.product.price || 0) - (b.product.price || 0);
+                }
+                if (sort === 'price_high') {
+                    return (b.product.price || 0) - (a.product.price || 0);
+                }
+                return a.distanceKm - b.distanceKm;
+            })
+            .map((entry) => entry.product);
+
+        res.status(200).json(nearby.length > 0 ? nearby : products);
+    } catch (error) {
+        console.error('Error fetching restaurant products:', error);
+        res.status(500).json({ message: 'Server error fetching restaurant products.' });
+    }
+});
+
 // @desc    Get a single product by ID
 router.get('/:id', async (req, res) => {
     try {
-        const product = await Product.findById(req.params.id).populate('vendor', 'businessName');
+        const product = await Product.findById(req.params.id).populate('vendor', vendorPopulateFields);
         if (!product) {
             return res.status(404).json({ message: 'Product not found.' });
         }
@@ -446,16 +786,48 @@ router.get('/:id', async (req, res) => {
 router.get('/', async (req, res) => {
   try {
     const { category } = req.query;
+    const lat = req.query.lat !== undefined ? Number(req.query.lat) : null;
+    const lng = req.query.lng !== undefined ? Number(req.query.lng) : null;
+    const radiusKm = req.query.radiusKm !== undefined ? Number(req.query.radiusKm) : null;
     const filter = { isActive: true };
 
     if (category) {
-      filter.category = { $regex: new RegExp(`^${category}$`, 'i') };
+      Object.assign(filter, buildCategoryFilter(category));
     }
 
-    const products = await Product.find(filter).populate('vendor', 'businessName');
+    const products = await Product.find(filter).populate('vendor', vendorPopulateFields);
+    const canSortByCustomerLocation = Number.isFinite(lat) && Number.isFinite(lng);
+    const sortedProducts = canSortByCustomerLocation
+      ? products
+          .map((product) => {
+            const vendorLocation = resolveProductLocation(product);
+            if (!vendorLocation?.latitude || !vendorLocation?.longitude) {
+              return { product, distanceKm: null };
+            }
+
+            return {
+              product,
+              distanceKm: distanceKm(
+                lat,
+                lng,
+                vendorLocation.latitude,
+                vendorLocation.longitude
+              ),
+            };
+          })
+          .filter((entry) => !Number.isFinite(radiusKm) || entry.distanceKm === null || entry.distanceKm <= radiusKm)
+          .sort((a, b) => {
+            if (a.distanceKm === null && b.distanceKm === null) return 0;
+            if (a.distanceKm === null) return 1;
+            if (b.distanceKm === null) return -1;
+            return a.distanceKm - b.distanceKm;
+          })
+          .map((entry) => entry.product)
+      : products;
+
     console.log(`Backend: Fetched ${products.length} products${category ? ` for category "${category}"` : ''}.`);
     
-    res.status(200).json(products);
+    res.status(200).json(sortedProducts);
   } catch (error) {
     console.error('Error fetching products:', error);
     res.status(500).json({ message: 'Server error fetching products.' });
@@ -480,7 +852,7 @@ router.get('/size/:type', async (req, res) => {
         }
         
         const products = await Product.find(filter)
-            .populate('vendor', 'businessName');
+            .populate('vendor', vendorPopulateFields);
         
         res.status(200).json({
             count: products.length,

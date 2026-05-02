@@ -7,6 +7,8 @@ const Rider = require('../models/Rider');
 const Product = require('../models/Product');
 const MainOrder = require('../models/MainOrder');
 const Shipment = require('../models/Shipment');
+const NotificationLog = require('../models/NotificationLog');
+const AnalyticsEvent = require('../models/AnalyticsEvent');
 const { protect } = require('../middleware/authMiddleware'); // Import the protect middleware
 const {
     getReferralProgramSettings,
@@ -16,6 +18,10 @@ const {
     normalizeDeliveryFeeZones,
     DELIVERY_FEE_SETTINGS_KEY,
 } = require('../services/deliveryFeeService');
+const {
+    getPharmacySubscriptionSettings,
+    updatePharmacySubscriptionSettings,
+} = require('../services/pharmacySubscriptionService');
 
 const router = express.Router();
 const REFERRAL_SETTINGS_KEY = 'referral_program';
@@ -51,6 +57,16 @@ const buildDeliveryFeeSettingsPayload = (settings, message) => ({
     minimumDeliveryFee: settings.minimumDeliveryFee,
     zoneCount: Array.isArray(settings.zones) ? settings.zones.length : 0,
     zones: settings.zones,
+    source: settings.source,
+    updatedAt: settings.updatedAt,
+    updatedBy: settings.updatedBy,
+    createdAt: settings.createdAt,
+    history: settings.history,
+});
+
+const buildPharmacySubscriptionSettingsPayload = (settings, message) => ({
+    message,
+    plans: settings.plans,
     source: settings.source,
     updatedAt: settings.updatedAt,
     updatedBy: settings.updatedBy,
@@ -620,6 +636,152 @@ const authorizeAdmin = (req, res, next) => {
 };
 
 // --- Admin Routes ---
+
+router.get('/product-moderation', protect, authorizeAdmin, async (req, res) => {
+    try {
+        const status = req.query.status || 'pending';
+        const products = await Product.find({ moderationStatus: status })
+            .populate('vendor', 'businessName phoneNumber businessLocation')
+            .sort({ updatedAt: -1, createdAt: -1 })
+            .limit(100);
+        res.status(200).json(products);
+    } catch (error) {
+        console.error('Error fetching product moderation queue:', error);
+        res.status(500).json({ message: 'Failed to fetch product moderation queue.' });
+    }
+});
+
+router.put('/product-moderation/:productId', protect, authorizeAdmin, async (req, res) => {
+    try {
+        const status = String(req.body.status || '').trim().toLowerCase();
+        if (!['approved', 'rejected', 'pending'].includes(status)) {
+            return res.status(400).json({ message: 'Invalid moderation status.' });
+        }
+
+        const product = await Product.findById(req.params.productId);
+        if (!product) {
+            return res.status(404).json({ message: 'Product not found.' });
+        }
+
+        product.moderationStatus = status;
+        product.isActive = status === 'approved';
+        product.moderationNote = String(req.body.note || '').trim();
+        product.reviewedAt = new Date();
+        product.reviewedBy = req.user._id;
+        await product.save();
+        await product.populate('vendor', 'businessName phoneNumber businessLocation');
+
+        res.status(200).json({
+            message: `Product ${status}.`,
+            product,
+        });
+    } catch (error) {
+        console.error('Error updating product moderation status:', error);
+        res.status(500).json({ message: 'Failed to update product moderation status.' });
+    }
+});
+
+router.get('/notification-logs', protect, authorizeAdmin, async (req, res) => {
+    try {
+        const filter = {};
+        if (req.query.channel) filter.channel = req.query.channel;
+        if (req.query.status) filter.status = req.query.status;
+        if (req.query.vendorId) filter.vendor = req.query.vendorId;
+        if (req.query.shipmentId) filter.shipment = req.query.shipmentId;
+        if (req.query.orderId) filter.order = req.query.orderId;
+
+        const limit = Math.min(Number(req.query.limit) || 100, 200);
+        const logs = await NotificationLog.find(filter)
+            .populate('vendor', 'businessName firstName lastName phoneNumber')
+            .sort({ createdAt: -1 })
+            .limit(limit);
+
+        res.status(200).json(logs);
+    } catch (error) {
+        console.error('Error fetching notification logs:', error);
+        res.status(500).json({ message: 'Failed to fetch notification logs.' });
+    }
+});
+
+router.get('/engagement-analytics', protect, authorizeAdmin, async (req, res) => {
+    try {
+        const days = Math.min(Math.max(Number(req.query.days) || 30, 1), 365);
+        const since = new Date(Date.now() - (days * DAY_IN_MS));
+        const eventMatch = { createdAt: { $gte: since } };
+        const notificationMatch = { createdAt: { $gte: since }, channel: 'whatsapp' };
+
+        const [
+            eventTotals,
+            carouselByPlacement,
+            restaurantByCity,
+            pharmacyBySource,
+            recentEvents,
+            whatsappTotals,
+            recentWhatsappLogs,
+        ] = await Promise.all([
+            AnalyticsEvent.aggregate([
+                { $match: eventMatch },
+                { $group: { _id: '$eventType', count: { $sum: 1 } } },
+                { $sort: { count: -1 } },
+            ]),
+            AnalyticsEvent.aggregate([
+                { $match: { ...eventMatch, eventType: 'carousel_click' } },
+                { $group: { _id: { placement: '$placement', targetType: '$targetType' }, count: { $sum: 1 } } },
+                { $sort: { count: -1 } },
+                { $limit: 20 },
+            ]),
+            AnalyticsEvent.aggregate([
+                { $match: { ...eventMatch, eventType: 'restaurant_card_click' } },
+                { $group: { _id: { city: '$city', source: '$source' }, count: { $sum: 1 } } },
+                { $sort: { count: -1 } },
+                { $limit: 20 },
+            ]),
+            AnalyticsEvent.aggregate([
+                { $match: { ...eventMatch, eventType: 'pharmacy_consultation_start' } },
+                { $group: { _id: '$source', count: { $sum: 1 } } },
+                { $sort: { count: -1 } },
+                { $limit: 20 },
+            ]),
+            AnalyticsEvent.find(eventMatch)
+                .sort({ createdAt: -1 })
+                .limit(25)
+                .populate('user', 'firstName lastName email phoneNumber'),
+            NotificationLog.aggregate([
+                { $match: notificationMatch },
+                { $group: { _id: '$status', count: { $sum: 1 } } },
+                { $sort: { count: -1 } },
+            ]),
+            NotificationLog.find(notificationMatch)
+                .sort({ createdAt: -1 })
+                .limit(25)
+                .populate('vendor', 'businessName firstName lastName phoneNumber'),
+        ]);
+
+        const totals = Object.fromEntries(eventTotals.map((entry) => [entry._id, entry.count]));
+        const whatsapp = Object.fromEntries(whatsappTotals.map((entry) => [entry._id, entry.count]));
+
+        res.status(200).json({
+            range: { days, since },
+            totals: {
+                carouselClicks: totals.carousel_click || 0,
+                restaurantCardClicks: totals.restaurant_card_click || 0,
+                foodOrders: totals.food_order_created || 0,
+                pharmacyConsultationStarts: totals.pharmacy_consultation_start || 0,
+            },
+            breakdowns: {
+                carouselByPlacement,
+                restaurantByCity,
+                pharmacyBySource,
+                whatsapp,
+            },
+            recentEvents,
+            recentWhatsappLogs,
+        });
+    } catch (error) {
+        console.error('Error fetching engagement analytics:', error);
+        res.status(500).json({ message: 'Failed to fetch engagement analytics.' });
+    }
+});
 
 // @desc    Get customer and vendor commerce metrics
 // @route   GET /api/admin/customer-vendor-metrics
@@ -1249,6 +1411,47 @@ router.put('/delivery-fee-settings', protect, authorizeAdmin, async (req, res) =
     }
 });
 
+// @desc    Get pharmacist chat subscription settings
+// @route   GET /api/admin/pharmacist-subscription-settings
+// @access  Private (Admin only)
+router.get('/pharmacist-subscription-settings', protect, authorizeAdmin, async (req, res) => {
+    try {
+        const settings = await getPharmacySubscriptionSettings();
+        res.status(200).json(buildPharmacySubscriptionSettingsPayload(settings));
+    } catch (error) {
+        console.error('Error fetching pharmacist subscription settings:', error);
+        res.status(500).json({ message: 'Server error fetching pharmacist subscription settings.' });
+    }
+});
+
+// @desc    Update pharmacist chat subscription prices
+// @route   PUT /api/admin/pharmacist-subscription-settings
+// @access  Private (Admin only)
+router.put('/pharmacist-subscription-settings', protect, authorizeAdmin, async (req, res) => {
+    try {
+        const { plans } = req.body;
+
+        if (!Array.isArray(plans)) {
+            return res.status(400).json({ message: 'Plans must be an array.' });
+        }
+
+        const settings = await updatePharmacySubscriptionSettings({
+            plans,
+            adminId: req.user._id,
+        });
+
+        res.status(200).json(
+            buildPharmacySubscriptionSettingsPayload(
+                settings,
+                'Pharmacist subscription settings updated successfully.',
+            ),
+        );
+    } catch (error) {
+        console.error('Error updating pharmacist subscription settings:', error);
+        res.status(500).json({ message: 'Server error updating pharmacist subscription settings.' });
+    }
+});
+
 // @desc    Get all vendor requests (users with vendorStatus 'sent', 'received', 'reviewing')
 // @route   GET /api/admin/vendor-requests
 // @access  Private (Admin only)
@@ -1308,6 +1511,82 @@ router.put('/vendor-status/:userId', protect, authorizeAdmin, async (req, res) =
     } catch (error) {
         console.error('Error updating vendor status:', error);
         res.status(500).json({ message: 'Server error updating vendor status.' });
+    }
+});
+
+// @desc    Get all pharmacist approval requests
+// @route   GET /api/admin/pharmacist-requests
+// @access  Private (Admin only)
+router.get('/pharmacist-requests', protect, authorizeAdmin, async (req, res) => {
+    try {
+        const pharmacistRequests = await User.find({
+            pharmacistStatus: { $in: ['sent', 'received', 'reviewing'] }
+        }).select('-password -emailVerificationToken -deviceVerificationToken -passwordResetToken');
+
+        res.status(200).json(pharmacistRequests);
+    } catch (error) {
+        console.error('Error fetching pharmacist requests:', error);
+        res.status(500).json({ message: 'Server error fetching pharmacist requests.' });
+    }
+});
+
+// @desc    Update pharmacist approval status
+// @route   PUT /api/admin/pharmacist-status/:userId
+// @access  Private (Admin only)
+router.put('/pharmacist-status/:userId', protect, authorizeAdmin, async (req, res) => {
+    const { userId } = req.params;
+    const { status } = req.body;
+
+    if (!['approved', 'rejected', 'received', 'reviewing'].includes(status)) {
+        return res.status(400).json({
+            message: 'Invalid status provided. Must be approved, rejected, received, or reviewing.'
+        });
+    }
+
+    try {
+        const user = await User.findById(userId);
+        if (!user) {
+            return res.status(404).json({ message: 'User not found.' });
+        }
+
+        if (!user.isVendor || user.vendorStatus !== 'approved') {
+            return res.status(400).json({
+                message: 'User must be an approved vendor before pharmacist approval.'
+            });
+        }
+
+        user.pharmacistStatus = status;
+
+        if (status === 'approved') {
+            user.role = 'pharmacist';
+            user.pharmacistRejectionDate = undefined;
+        } else if (status === 'rejected') {
+            user.role = 'user';
+            user.pharmacistRejectionDate = Date.now();
+        }
+
+        user.notifications.push({
+            type: 'vendor_status_update',
+            message: status === 'approved'
+                ? 'Your pharmacist vendor approval is complete. Pharmacy tools are now available.'
+                : status === 'rejected'
+                ? 'Your pharmacist vendor approval request was not approved.'
+                : `Your pharmacist approval status is now ${status}.`,
+            relatedModel: 'User',
+            relatedId: user._id,
+        });
+
+        await user.save();
+
+        res.status(200).json({
+            message: `Pharmacist status for ${user.email} updated to ${status}.`,
+            userId: user._id,
+            pharmacistStatus: user.pharmacistStatus,
+            isPharmacist: user.role === 'pharmacist',
+        });
+    } catch (error) {
+        console.error('Error updating pharmacist status:', error);
+        res.status(500).json({ message: 'Server error updating pharmacist status.' });
     }
 });
 

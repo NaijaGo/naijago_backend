@@ -17,6 +17,7 @@ const connectDB = require('./config/db');
 const { notFound, errorHandler } = require('./middleware/errorMiddleware');
 const { initializeReferralProgramSettings } = require('./services/referralService');
 const { initializeDeliveryFeeSettings } = require('./services/deliveryFeeService');
+const { initializePharmacySubscriptionSettings } = require('./services/pharmacySubscriptionService');
 
 const app = express();
 app.set('trust proxy', true);
@@ -52,6 +53,7 @@ app.use('/api/referral', require('./routes/referralRoutes'));
 app.use('/api/carousels', require('./routes/carouselRoutes'));
 app.use('/api/companies', require('./routes/companyRoutes')); // ADDED
 app.use('/api/vendor', require('./routes/vendorRoutes'));
+app.use('/api/pharmacist', require('./routes/pharmacistRoutes'));
 app.use('/api/admin', require('./routes/adminRoutes'));
 app.use('/api/admin', require('./routes/adminCarouselRoutes'));
 app.use('/api/products', require('./routes/productRoutes'));
@@ -64,6 +66,8 @@ app.use('/api/chatbot', require('./routes/chatbotRoutes'));
 app.use('/api/disputes', require('./routes/disputesRoutes'));
 app.use('/api/riders', require('./routes/riderRoutes')); // KEEP THIS!
 app.use('/api/uploads', require('./routes/uploadsRoutes'));
+app.use('/api/analytics', require('./routes/analyticsRoutes'));
+app.use('/api/food-readiness-campaigns', require('./routes/foodReadinessCampaignRoutes'));
 
 // Add this near your other route middleware
 app.use('/api/companyadmin',  require('./routes/adminCompanyRoutes'));
@@ -1264,6 +1268,7 @@ const startServer = async () => {
   await connectDB();
   const referralSettingsState = await initializeReferralProgramSettings();
   const deliveryFeeSettingsState = await initializeDeliveryFeeSettings();
+  const pharmacySubscriptionState = await initializePharmacySubscriptionSettings();
 
   server.listen(PORT, '0.0.0.0', () => {
     console.log(colors.cyan.underline(`🚀 Server running on http://0.0.0.0:${PORT}`));
@@ -1283,6 +1288,13 @@ const startServer = async () => {
     console.log(
       colors.blue(
         `🚚 Delivery fee zones ready with ${deliveryFeeSettingsState.zoneCount} configured Abuja areas. Fallback: ₦${deliveryFeeSettingsState.minimumDeliveryFee} min, ₦${deliveryFeeSettingsState.fallbackRatePerKm}/km.`,
+      ),
+    );
+    console.log(
+      colors.blue(
+        `💊 Pharmacist chat plans ready: ${pharmacySubscriptionState.plans
+          .map((plan) => `${plan.planType}=₦${plan.price}`)
+          .join(', ')}.`,
       ),
     );
   });

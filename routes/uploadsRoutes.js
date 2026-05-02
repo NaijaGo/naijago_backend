@@ -60,6 +60,64 @@ router.post('/cloudinary/carousel', protect, authorizeRoles('admin'), async (req
   }
 });
 
+router.post('/cloudinary/vendor-logo', protect, authorizeRoles('vendor'), async (req, res) => {
+  try {
+    if (!req.files || Object.keys(req.files).length === 0) {
+      return res.status(400).json({ message: 'No logo image was uploaded.' });
+    }
+
+    const file = req.files.image;
+    if (!file?.mimetype?.startsWith('image/')) {
+      return res.status(400).json({ message: 'Only image files are allowed for store logos.' });
+    }
+
+    const result = await cloudinary.uploader.upload(file.tempFilePath, {
+      folder: `vendor-logos/${req.user._id}`,
+      resource_type: 'image',
+      transformation: [
+        { width: 640, height: 640, crop: 'limit' },
+        { quality: 'auto', fetch_format: 'auto' },
+      ],
+    });
+
+    if (fs.existsSync(file.tempFilePath)) fs.unlinkSync(file.tempFilePath);
+
+    res.json({ url: result.secure_url });
+  } catch (error) {
+    console.error('Vendor logo upload failed:', error);
+    res.status(500).json({ message: 'Failed to upload store logo.' });
+  }
+});
+
+router.post('/cloudinary/food-campaign', protect, authorizeRoles('admin'), async (req, res) => {
+  try {
+    if (!req.files || Object.keys(req.files).length === 0) {
+      return res.status(400).json({ message: 'No campaign image was uploaded.' });
+    }
+
+    const file = req.files.image;
+    if (!file?.mimetype?.startsWith('image/')) {
+      return res.status(400).json({ message: 'Only image files are allowed.' });
+    }
+
+    const result = await cloudinary.uploader.upload(file.tempFilePath, {
+      folder: 'food-readiness-campaigns',
+      resource_type: 'image',
+      transformation: [
+        { width: 1200, height: 600, crop: 'limit' },
+        { quality: 'auto', fetch_format: 'auto' },
+      ],
+    });
+
+    if (fs.existsSync(file.tempFilePath)) fs.unlinkSync(file.tempFilePath);
+
+    res.json({ url: result.secure_url });
+  } catch (error) {
+    console.error('Food campaign upload failed:', error);
+    res.status(500).json({ message: 'Failed to upload campaign image.' });
+  }
+});
+
 // @desc Update existing rider docs (Private)
 router.post('/rider-bundle', protect, async (req, res) => {
   try {

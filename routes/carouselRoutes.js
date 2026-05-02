@@ -11,6 +11,8 @@ const mapSlide = (slide) => ({
   subtitle: slide.subtitle || '',
   imageUrl: slide.imageUrl,
   linkUrl: slide.linkUrl || '',
+  actionType: slide.actionType || 'none',
+  actionValue: slide.actionValue || '',
   sortOrder: Number(slide.sortOrder || 0),
   isActive: Boolean(slide.isActive),
   updatedAt: slide.updatedAt || null,
@@ -33,6 +35,16 @@ const buildGroupedSlidesPayload = (slides) => {
   return grouped;
 };
 
+const fetchActiveSlidesByPlacement = async (placement) => {
+  if (!VALID_CAROUSEL_PLACEMENTS.includes(placement)) {
+    return null;
+  }
+
+  return CarouselSlide.find({ isActive: true, placement })
+    .sort({ sortOrder: 1, updatedAt: -1, createdAt: 1 })
+    .lean();
+};
+
 router.get('/home', async (req, res) => {
   try {
     const slides = await CarouselSlide.find({ isActive: true })
@@ -42,6 +54,24 @@ router.get('/home', async (req, res) => {
     res.status(200).json(buildGroupedSlidesPayload(slides));
   } catch (error) {
     console.error('Error fetching carousel slides:', error);
+    res.status(500).json({ message: 'Failed to fetch carousel slides.' });
+  }
+});
+
+router.get('/:placement', async (req, res) => {
+  const placement = String(req.params.placement || '').trim().toLowerCase();
+
+  try {
+    const slides = await fetchActiveSlidesByPlacement(placement);
+    if (!slides) {
+      return res.status(400).json({
+        message: 'Invalid carousel placement. Use "main" or "promo".',
+      });
+    }
+
+    res.status(200).json(slides.map(mapSlide));
+  } catch (error) {
+    console.error(`Error fetching ${placement} carousel slides:`, error);
     res.status(500).json({ message: 'Failed to fetch carousel slides.' });
   }
 });

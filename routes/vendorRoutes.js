@@ -7,6 +7,94 @@ const router = express.Router();
 
 // --- Vendor Routes ---
 
+const operatingDays = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
+const timePattern = /^([01]\d|2[0-3]):[0-5]\d$/;
+const phonePattern = /^(?:\+?234|0)[789]\d{9}$/;
+
+const defaultOperatingHours = () => operatingDays.map((day) => ({
+    day,
+    isOpen: true,
+    openTime: '09:00',
+    closeTime: '19:00',
+    lastOrderTime: '18:30',
+}));
+
+function toBoolean(value, fallback = false) {
+    if (value === true || value === 'true') return true;
+    if (value === false || value === 'false') return false;
+    return fallback;
+}
+
+function toNumber(value, fallback, min, max) {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return fallback;
+    return Math.min(Math.max(parsed, min), max);
+}
+
+function sanitizeText(value, maxLength = 160) {
+    if (typeof value !== 'string') return '';
+    return value.trim().slice(0, maxLength);
+}
+
+function sanitizeLocation(value) {
+    if (!value || typeof value !== 'object') return undefined;
+    const latitude = Number(value.latitude);
+    const longitude = Number(value.longitude);
+    if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+        return undefined;
+    }
+    return {
+        latitude,
+        longitude,
+        formattedAddress: sanitizeText(value.formattedAddress, 220),
+    };
+}
+
+function sanitizeOperatingHours(value) {
+    const sourceByDay = new Map();
+    if (Array.isArray(value)) {
+        value.forEach((entry) => {
+            if (entry && operatingDays.includes(entry.day)) {
+                sourceByDay.set(entry.day, entry);
+            }
+        });
+    }
+
+    return operatingDays.map((day) => {
+        const entry = sourceByDay.get(day) || {};
+        const openTime = timePattern.test(entry.openTime || '') ? entry.openTime : '09:00';
+        const closeTime = timePattern.test(entry.closeTime || '') ? entry.closeTime : '19:00';
+        const lastOrderTime = timePattern.test(entry.lastOrderTime || '') ? entry.lastOrderTime : closeTime;
+        return {
+            day,
+            isOpen: toBoolean(entry.isOpen, true),
+            openTime,
+            closeTime,
+            lastOrderTime,
+        };
+    });
+}
+
+function buildVendorProfile(user) {
+    return {
+        businessName: user.businessName || '',
+        businessCategories: user.businessCategories || [],
+        businessLogoUrl: user.businessLogoUrl || '',
+        businessWhatsAppNumber: user.businessWhatsAppNumber || user.alternatePhoneNumber || user.phoneNumber || '',
+        businessSupportPhone: user.businessSupportPhone || user.phoneNumber || '',
+        businessLocation: user.businessLocation || null,
+        deliveryRadiusKm: user.deliveryRadiusKm ?? 15,
+        prepTimeMinutes: user.prepTimeMinutes ?? 30,
+        isTemporarilyClosed: user.isTemporarilyClosed === true,
+        temporaryClosureReason: user.temporaryClosureReason || '',
+        operatingHours: user.operatingHours?.length ? user.operatingHours : defaultOperatingHours(),
+        vendorStatus: user.vendorStatus,
+        isVendor: user.isVendor,
+        pharmacistStatus: user.pharmacistStatus,
+        isPharmacist: user.role === 'pharmacist',
+    };
+}
+
 // @desc    Submit a vendor registration request
 // @route   POST /api/vendor/request
 // @access  Private (Authenticated User)
@@ -77,6 +165,80 @@ router.post('/request', protect, async (req, res) => {
     } catch (error) {
         console.error('Vendor request submission error:', error);
         res.status(500).json({ message: 'Server error during vendor request submission.' });
+    }
+});
+
+// @desc    Get the approved vendor's editable business profile
+// @route   GET /api/vendor/profile
+// @access  Private/Vendor
+router.get('/profile', protect, authorizeRoles('vendor'), async (req, res) => {
+    try {
+        const user = await User.findById(req.user.id).select(
+            'businessName businessCategories businessLogoUrl businessWhatsAppNumber businessSupportPhone businessLocation deliveryRadiusKm prepTimeMinutes isTemporarilyClosed temporaryClosureReason operatingHours vendorStatus isVendor pharmacistStatus role phoneNumber alternatePhoneNumber'
+        );
+
+        if (!user) {
+            return res.status(404).json({ message: 'User not found.' });
+        }
+
+        res.status(200).json(buildVendorProfile(user));
+    } catch (error) {
+        console.error('Error fetching vendor profile:', error);
+        res.status(500).json({ message: 'Server error fetching vendor profile.' });
+    }
+});
+
+// @desc    Update the approved vendor's business profile and default operating settings
+// @route   PUT /api/vendor/profile
+// @access  Private/Vendor
+router.put('/profile', protect, authorizeRoles('vendor'), async (req, res) => {
+    try {
+        const user = await User.findById(req.user.id);
+
+        if (!user) {
+            return res.status(404).json({ message: 'User not found.' });
+        }
+
+        const businessName = sanitizeText(req.body.businessName, 80);
+        if (!businessName) {
+            return res.status(400).json({ message: 'Business name is required.' });
+        }
+
+        const whatsappNumber = sanitizeText(req.body.businessWhatsAppNumber, 20);
+        const supportPhone = sanitizeText(req.body.businessSupportPhone, 20);
+
+        if (whatsappNumber && !phonePattern.test(whatsappNumber)) {
+            return res.status(400).json({ message: 'Please enter a valid Nigerian WhatsApp number.' });
+        }
+
+        if (supportPhone && !phonePattern.test(supportPhone)) {
+            return res.status(400).json({ message: 'Please enter a valid Nigerian support phone number.' });
+        }
+
+        user.businessName = businessName;
+        user.businessLogoUrl = sanitizeText(req.body.businessLogoUrl, 400);
+        user.businessWhatsAppNumber = whatsappNumber || undefined;
+        user.businessSupportPhone = supportPhone || undefined;
+        user.deliveryRadiusKm = toNumber(req.body.deliveryRadiusKm, user.deliveryRadiusKm ?? 15, 0, 100);
+        user.prepTimeMinutes = toNumber(req.body.prepTimeMinutes, user.prepTimeMinutes ?? 30, 0, 240);
+        user.isTemporarilyClosed = toBoolean(req.body.isTemporarilyClosed, false);
+        user.temporaryClosureReason = sanitizeText(req.body.temporaryClosureReason, 160);
+        user.operatingHours = sanitizeOperatingHours(req.body.operatingHours);
+
+        const businessLocation = sanitizeLocation(req.body.businessLocation);
+        if (businessLocation) {
+            user.businessLocation = businessLocation;
+        }
+
+        await user.save();
+
+        res.status(200).json({
+            message: 'Vendor profile updated.',
+            vendorProfile: buildVendorProfile(user),
+        });
+    } catch (error) {
+        console.error('Error updating vendor profile:', error);
+        res.status(500).json({ message: 'Server error updating vendor profile.' });
     }
 });
 

@@ -86,6 +86,58 @@ const UserSchema = new mongoose.Schema({
     type: [String],
     sparse: true,
   },
+  businessLogoUrl: {
+    type: String,
+    trim: true,
+    sparse: true,
+  },
+  businessWhatsAppNumber: {
+    type: String,
+    trim: true,
+    sparse: true,
+    match: [/^(?:\+?234|0)[789]\d{9}$/, 'Please enter a valid Nigerian WhatsApp number'],
+  },
+  businessSupportPhone: {
+    type: String,
+    trim: true,
+    sparse: true,
+    match: [/^(?:\+?234|0)[789]\d{9}$/, 'Please enter a valid Nigerian support phone number'],
+  },
+  deliveryRadiusKm: {
+    type: Number,
+    min: 0,
+    max: 100,
+    default: 15,
+  },
+  prepTimeMinutes: {
+    type: Number,
+    min: 0,
+    max: 240,
+    default: 30,
+  },
+  isTemporarilyClosed: {
+    type: Boolean,
+    default: false,
+  },
+  temporaryClosureReason: {
+    type: String,
+    trim: true,
+    maxlength: 160,
+  },
+  operatingHours: [
+    {
+      day: {
+        type: String,
+        enum: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'],
+        required: true,
+      },
+      isOpen: { type: Boolean, default: true },
+      openTime: { type: String, default: '09:00' },
+      closeTime: { type: String, default: '19:00' },
+      lastOrderTime: { type: String, default: '18:30' },
+      _id: false,
+    }
+  ],
   profilePicUrl: {
     type: String,
     sparse: true,
@@ -98,6 +150,17 @@ const UserSchema = new mongoose.Schema({
       formattedAddress: { type: String, required: false },
     },
     sparse: true,
+  },
+  pharmacistStatus: {
+    type: String,
+    enum: ['none', 'sent', 'received', 'reviewing', 'approved', 'rejected'],
+    default: 'none',
+  },
+  pharmacistRequestDate: {
+    type: Date,
+  },
+  pharmacistRejectionDate: {
+    type: Date,
   },
   // Vendor Dashboard Metrics (Initialize for future use)
   totalProducts: {
@@ -135,6 +198,31 @@ const UserSchema = new mongoose.Schema({
     default: 0.00,
     min: 0,
   },
+  pharmacySubscription: {
+    planType: {
+      type: String,
+      enum: ['none', 'one_time', 'weekly', 'monthly'],
+      default: 'none',
+    },
+    status: {
+      type: String,
+      enum: ['inactive', 'active'],
+      default: 'inactive',
+    },
+    expiresAt: {
+      type: Date,
+      default: null,
+    },
+    oneTimeCredits: {
+      type: Number,
+      min: 0,
+      default: 0,
+    },
+    purchasedAt: {
+      type: Date,
+      default: null,
+    },
+  },
   savedItems: [ // Wishlist/Saved Products
     {
       type: mongoose.Schema.Types.ObjectId,
@@ -149,6 +237,8 @@ const UserSchema = new mongoose.Schema({
       country: { type: String, required: true },
       phoneNumber: { type: String, trim: true },
       isDefault: { type: Boolean, default: false }, // Mark one as default
+      latitude: { type: Number },
+      longitude: { type: Number },
       _id: false // Do not create a separate _id for subdocuments unless needed
     }
   ],
@@ -245,6 +335,8 @@ const UserSchema = new mongoose.Schema({
     // Notification preferences
     notificationPreferences: {
         orderUpdates: { type: Boolean, default: true },
+        appOrderAlerts: { type: Boolean, default: true },
+        whatsappOrderAlerts: { type: Boolean, default: true },
         promotions: { type: Boolean, default: true },
         priceAlerts: { type: Boolean, default: true }
     },
@@ -277,6 +369,13 @@ UserSchema.virtual('isPharmacist').get(function() {
     // This function runs when the document is converted to JSON.
     // It returns true if the 'role' field is 'pharmacist', and false otherwise.
     return this.role === 'pharmacist';
+});
+
+UserSchema.pre('save', function(next) {
+  if (this.role === 'pharmacist') {
+    this.pharmacistStatus = 'approved';
+  }
+  next();
 });
 
 // 2. CRITICAL: Configure Mongoose to include virtuals when converting the document to JSON

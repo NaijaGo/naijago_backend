@@ -22,6 +22,12 @@ const router = express.Router();
 const resend = new Resend(process.env.RESEND_API_KEY);
 const BASE_URL = process.env.BASE_URL || 'http://localhost:5000';
 
+const parseCoordinate = (value) => {
+    if (value === undefined || value === null || value === '') return undefined;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
+};
+
 
 // Limit: max 4 resend attempts per email per hour
 const resendEmailLimiter = rateLimit({
@@ -818,6 +824,12 @@ router.put('/desist-vendor', protect, async (req, res) => {
         user.productsSold = 0;
         user.productsUnsold = 0;
         user.followersCount = 0;
+        if (user.role === 'pharmacist') {
+            user.role = 'user';
+        }
+        user.pharmacistStatus = 'none';
+        user.pharmacistRequestDate = undefined;
+        user.pharmacistRejectionDate = undefined;
         // Optionally, handle wallet balances:
         // user.vendorWalletBalance = 0; // Decide if balance should be reset or transferred
         // user.appWalletBalance = 0;   // Decide if balance should be reset or transferred
@@ -1328,7 +1340,7 @@ router.delete('/saved-items/:productId', protect, async (req, res) => {
 // @route   POST /api/auth/addresses
 // @access  Private
 router.post('/addresses', protect, async (req, res) => {
-    const { address, city, postalCode, country, isDefault, phoneNumber } = req.body;
+    const { address, city, postalCode, country, isDefault, phoneNumber, latitude, longitude } = req.body;
 
     if (!address || !city || !postalCode || !country) {
         return res.status(400).json({ message: 'All address fields are required.' });
@@ -1356,6 +1368,8 @@ router.post('/addresses', protect, async (req, res) => {
             postalCode,
             country,
             phoneNumber: typeof phoneNumber === 'string' ? phoneNumber.trim() : undefined,
+            latitude: parseCoordinate(latitude),
+            longitude: parseCoordinate(longitude),
             isDefault: req.body.isDefault
         });
         await user.save();
@@ -1372,7 +1386,7 @@ router.post('/addresses', protect, async (req, res) => {
 // @access  Private
 router.put('/addresses/:index', protect, async (req, res) => {
     const { index } = req.params; // Index of the address in the array
-    const { address, city, postalCode, country, isDefault, phoneNumber } = req.body;
+    const { address, city, postalCode, country, isDefault, phoneNumber, latitude, longitude } = req.body;
 
     try {
         const user = await User.findById(req.user._id);
@@ -1401,6 +1415,12 @@ router.put('/addresses/:index', protect, async (req, res) => {
                 typeof phoneNumber === 'string' && phoneNumber.trim().length > 0
                     ? phoneNumber.trim()
                     : undefined;
+        }
+        if (latitude !== undefined) {
+            targetAddress.latitude = parseCoordinate(latitude);
+        }
+        if (longitude !== undefined) {
+            targetAddress.longitude = parseCoordinate(longitude);
         }
         targetAddress.isDefault = isDefault !== undefined ? isDefault : targetAddress.isDefault;
 
@@ -1543,6 +1563,43 @@ router.put('/profile', protect, async (req, res) => {
     } catch (error) {
         console.error('Error updating profile:', error);
         res.status(500).json({ message: 'Server error updating profile.' });
+    }
+});
+
+router.put('/notification-preferences', protect, async (req, res) => {
+    try {
+        const allowed = [
+            'orderUpdates',
+            'appOrderAlerts',
+            'whatsappOrderAlerts',
+            'promotions',
+            'priceAlerts',
+        ];
+        const update = {};
+        for (const key of allowed) {
+            if (req.body[key] !== undefined) {
+                update[`notificationPreferences.${key}`] =
+                    req.body[key] === true || req.body[key] === 'true';
+            }
+        }
+
+        const user = await User.findByIdAndUpdate(
+            req.user._id,
+            { $set: update },
+            { new: true },
+        ).select('notificationPreferences');
+
+        if (!user) {
+            return res.status(404).json({ message: 'User not found.' });
+        }
+
+        res.status(200).json({
+            message: 'Notification preferences updated.',
+            notificationPreferences: user.notificationPreferences,
+        });
+    } catch (error) {
+        console.error('Error updating notification preferences:', error);
+        res.status(500).json({ message: 'Server error updating notification preferences.' });
     }
 });
 

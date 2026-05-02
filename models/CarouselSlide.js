@@ -30,6 +30,16 @@ const CarouselSlideSchema = new mongoose.Schema(
       trim: true,
       default: '',
     },
+    actionType: {
+      type: String,
+      enum: ['none', 'restaurant', 'pharmacy', 'category', 'product', 'external'],
+      default: 'none',
+    },
+    actionValue: {
+      type: String,
+      trim: true,
+      default: '',
+    },
     sortOrder: {
       type: Number,
       default: 0,

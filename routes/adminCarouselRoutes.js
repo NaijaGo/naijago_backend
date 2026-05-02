@@ -10,6 +10,8 @@ const normalizePlacement = (value) => String(value || '').trim().toLowerCase();
 const sanitizeSlidePayload = (body = {}) => {
   const placement = normalizePlacement(body.placement);
   const parsedSortOrder = Number.parseInt(body.sortOrder, 10);
+  const actionType = String(body.actionType || 'none').trim().toLowerCase();
+  const validActionTypes = ['none', 'restaurant', 'pharmacy', 'category', 'product', 'external'];
 
   return {
     placement,
@@ -17,6 +19,8 @@ const sanitizeSlidePayload = (body = {}) => {
     subtitle: String(body.subtitle || '').trim(),
     imageUrl: String(body.imageUrl || '').trim(),
     linkUrl: String(body.linkUrl || '').trim(),
+    actionType: validActionTypes.includes(actionType) ? actionType : 'none',
+    actionValue: String(body.actionValue || '').trim(),
     sortOrder: Number.isFinite(parsedSortOrder) ? parsedSortOrder : 0,
     isActive:
       typeof body.isActive === 'boolean'
@@ -47,6 +51,8 @@ const mapSlide = (slide) => ({
   subtitle: slide.subtitle || '',
   imageUrl: slide.imageUrl,
   linkUrl: slide.linkUrl || '',
+  actionType: slide.actionType || 'none',
+  actionValue: slide.actionValue || '',
   sortOrder: Number(slide.sortOrder || 0),
   isActive: Boolean(slide.isActive),
   createdAt: slide.createdAt || null,

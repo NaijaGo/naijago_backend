@@ -12,6 +12,8 @@ const axios = require("axios");
 const notificationService = require('../services/notificationService');
 const { grantReferralRewardForVerifiedUser } = require('../services/referralService');
 const { getDeliveryFeeSettings, buildDeliveryFeeQuote } = require('../services/deliveryFeeService');
+const { notifyVendorOfPaidShipment } = require('../services/vendorOrderNotificationService');
+const { trackAnalyticsEvent } = require('../services/analyticsService');
 
 // Category-based commission rates
 // const CATEGORY_COMMISSION_RATES = {
@@ -391,6 +393,122 @@ function getCommissionRateForCategory(category) {
     return 0.08;
 }
 
+function isMedicineProduct(product = {}) {
+    const category = String(product.category || '').toLowerCase();
+    return category.includes('medicine') ||
+        category.includes('pharmacy') ||
+        category.includes('drug') ||
+        Boolean(product.medicineAccess);
+}
+
+function isRestrictedMedicine(product = {}) {
+    return isMedicineProduct(product) && (
+        product.medicineAccess === 'prescription' ||
+        product.medicineAccess === 'pharmacist_approval' ||
+        product.medicineAccess === 'restricted' ||
+        product.requiresPrescription === true ||
+        product.requiresPharmacistApproval === true
+    );
+}
+
+function isRestaurantProduct(product = {}) {
+    const category = String(product.category || '').toLowerCase();
+    if (category.includes('restaurant equipment')) return false;
+    return category === 'restaurant' ||
+        category.startsWith('restaurant >') ||
+        category.includes('meal') ||
+        category.includes('fast food') ||
+        category.includes('local dishes') ||
+        category.includes('pastries') ||
+        category.includes('drinks') ||
+        category.includes('catering');
+}
+
+function minutesFromTime(value, fallback) {
+    const source = typeof value === 'string' && /^\d{2}:\d{2}$/.test(value)
+        ? value
+        : fallback;
+    const [hours, minutes] = source.split(':').map(Number);
+    return (hours * 60) + minutes;
+}
+
+function isWithinRestaurantOrderWindow(product = {}, date = new Date()) {
+    const start = minutesFromTime(product.orderStartTime, '09:00');
+    const end = minutesFromTime(product.orderEndTime, '19:00');
+    const now = (date.getHours() * 60) + date.getMinutes();
+
+    if (start === end) return true;
+    if (start < end) return now >= start && now <= end;
+    return now >= start || now <= end;
+}
+
+function currentDayKey(date = new Date()) {
+    return ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'][date.getDay()];
+}
+
+function isWithinVendorOperatingHours(vendor = {}, date = new Date()) {
+    if (vendor.isTemporarilyClosed) {
+        return {
+            open: false,
+            reason: vendor.temporaryClosureReason || 'Restaurant is temporarily closed.',
+        };
+    }
+
+    const day = currentDayKey(date);
+    const hours = Array.isArray(vendor.operatingHours)
+        ? vendor.operatingHours.find((entry) => entry.day === day)
+        : null;
+
+    if (!hours) {
+        return { open: true };
+    }
+
+    if (hours.isOpen === false) {
+        return { open: false, reason: 'Restaurant is closed today.' };
+    }
+
+    const start = minutesFromTime(hours.openTime, '09:00');
+    const end = minutesFromTime(hours.lastOrderTime || hours.closeTime, '19:00');
+    const now = (date.getHours() * 60) + date.getMinutes();
+    const within = start === end
+        ? true
+        : start < end
+        ? now >= start && now <= end
+        : now >= start || now <= end;
+
+    return within
+        ? { open: true }
+        : {
+            open: false,
+            reason: `Restaurant accepts store orders from ${hours.openTime || '09:00'} to ${hours.lastOrderTime || hours.closeTime || '19:00'}.`,
+        };
+}
+
+function formatRadius(value) {
+    const radius = Number(value || 15);
+    return Number.isFinite(radius) ? radius : 15;
+}
+
+function buildOrderItemFromProduct(item, product) {
+    return {
+        product: item.product,
+        name: item.name || product.name,
+        image: product.imageUrls?.[0],
+        quantity: item.quantity,
+        price: product.price,
+        selectedSize: item.selectedSize || null,
+        category: product.category || 'Uncategorized',
+        restaurantName: product.restaurantName || undefined,
+        foodInformation: product.foodInformation || undefined,
+        orderStartTime: product.orderStartTime || undefined,
+        orderEndTime: product.orderEndTime || undefined,
+        medicineAccess: product.medicineAccess || undefined,
+        isOverTheCounter: product.isOverTheCounter === true,
+        requiresPrescription: product.requiresPrescription === true,
+        requiresPharmacistApproval: product.requiresPharmacistApproval === true,
+    };
+}
+
 // 👇 START OF ADDITIONS 1: Distance Calculation Utility (KEEPING THIS)
 /**
  * Calculates the distance between two geographical coordinates using the Haversine formula.
@@ -467,12 +585,24 @@ router.post('/summary', protect, async (req, res) => {
         for (const item of cartItems) {
             // Fetch product, vendor, and category data
             const [product, vendorUser] = await Promise.all([
-                Product.findById(item.product, 'price imageUrls vendor category'),
+                Product.findById(item.product, 'name price imageUrls vendor category restaurantName foodInformation orderStartTime orderEndTime medicineAccess isOverTheCounter requiresPrescription requiresPharmacistApproval'),
                 User.findById(item.vendor, 'businessName businessLocation')
             ]);
             
             if (!product) {
                 return res.status(404).json({ message: `Product not found: ${item.name}` });
+            }
+
+            if (isRestrictedMedicine(product)) {
+                return res.status(400).json({
+                    message: `${product.name} requires pharmacist consultation before purchase.`
+                });
+            }
+
+            if (isRestaurantProduct(product) && !isWithinRestaurantOrderWindow(product)) {
+                return res.status(400).json({
+                    message: `${product.name} can only be ordered from ${product.orderStartTime || '09:00'} to ${product.orderEndTime || '19:00'}.`
+                });
             }
             
             const vendorId = product.vendor.toString(); 
@@ -504,13 +634,7 @@ router.post('/summary', protect, async (req, res) => {
             
             const vendorData = vendorCartMap.get(vendorId);
             vendorData.items.push({
-                product: item.product,
-                name: item.name,
-                image: product.imageUrls[0],
-                quantity: item.quantity,
-                price: product.price,
-                selectedSize: item.selectedSize || null,
-                category: productCategory, // Store category for reference
+                ...buildOrderItemFromProduct(item, product),
                 commissionRate: commissionRate, // Store individual commission rate
                 itemCommission: itemCommission, // Store calculated commission
             });
@@ -650,7 +774,9 @@ router.post('/', protect, async (req, res) => {
         // --- Step 1: Stock Check (Must check stock for ALL items across ALL shipments) ---
         for (const summary of shipmentSummaries) {
             for (const item of summary.items) {
-                const product = await Product.findById(item.product).session(session);
+                const product = await Product.findById(item.product)
+                    .populate('vendor', 'businessName businessLocation operatingHours isTemporarilyClosed temporaryClosureReason deliveryRadiusKm prepTimeMinutes')
+                    .session(session);
                 if (!product) {
                     await session.abortTransaction();
                     session.endSession();
@@ -661,6 +787,51 @@ router.post('/', protect, async (req, res) => {
                     session.endSession();
                     return res.status(400).json({ message: `Insufficient stock for ${product.name}. Available: ${product.stockQuantity}` });
                 }
+                if (isRestrictedMedicine(product)) {
+                    await session.abortTransaction();
+                    session.endSession();
+                    return res.status(400).json({
+                        message: `${product.name} requires pharmacist consultation before purchase.`
+                    });
+                }
+                if (isRestaurantProduct(product) && !isWithinRestaurantOrderWindow(product)) {
+                    await session.abortTransaction();
+                    session.endSession();
+                    return res.status(400).json({
+                        message: `${product.name} can only be ordered from ${product.orderStartTime || '09:00'} to ${product.orderEndTime || '19:00'}.`
+                    });
+                }
+                if (isRestaurantProduct(product)) {
+                    const vendorHours = isWithinVendorOperatingHours(product.vendor || {});
+                    if (!vendorHours.open) {
+                        await session.abortTransaction();
+                        session.endSession();
+                        return res.status(400).json({
+                            message: `${product.vendor?.businessName || product.restaurantName || 'This restaurant'} is not accepting orders now. ${vendorHours.reason}`
+                        });
+                    }
+
+                    if (userLocation?.latitude && userLocation?.longitude && product.vendor?.businessLocation) {
+                        const distance = calculateDistance(
+                            userLocation.latitude,
+                            userLocation.longitude,
+                            product.vendor.businessLocation.latitude,
+                            product.vendor.businessLocation.longitude
+                        );
+                        const radius = formatRadius(product.vendor.deliveryRadiusKm);
+                        if (distance > radius) {
+                            await session.abortTransaction();
+                            session.endSession();
+                            return res.status(400).json({
+                                message: `${product.vendor?.businessName || product.restaurantName || 'This restaurant'} only delivers within ${radius} km.`
+                            });
+                        }
+                    }
+                }
+
+                Object.assign(item, buildOrderItemFromProduct(item, product), {
+                    commissionRate: item.commissionRate,
+                });
             }
         }
         
@@ -699,6 +870,14 @@ router.post('/', protect, async (req, res) => {
                     selectedSize: item.selectedSize || null,
                     category: item.category, // Store category
                     commissionRate: item.commissionRate, // Store individual item commission rate
+                    restaurantName: item.restaurantName,
+                    foodInformation: item.foodInformation,
+                    orderStartTime: item.orderStartTime,
+                    orderEndTime: item.orderEndTime,
+                    medicineAccess: item.medicineAccess,
+                    isOverTheCounter: item.isOverTheCounter,
+                    requiresPrescription: item.requiresPrescription,
+                    requiresPharmacistApproval: item.requiresPharmacistApproval,
                 })),
                 subtotal: summary.subtotal,
                 platformFee: summary.platformFee,
@@ -718,6 +897,37 @@ router.post('/', protect, async (req, res) => {
 
         await session.commitTransaction();
         session.endSession();
+
+        const foodItems = shipmentSummaries.flatMap((summary) =>
+            (summary.items || []).filter((item) =>
+                isRestaurantProduct({ category: item.category }) || item.restaurantName
+            )
+        );
+
+        if (foodItems.length > 0) {
+            trackAnalyticsEvent({
+                eventType: 'food_order_created',
+                user: req.user._id,
+                source: 'checkout',
+                targetType: 'order',
+                targetId: createdMainOrder._id.toString(),
+                metadata: {
+                    orderId: createdMainOrder._id.toString(),
+                    foodItemCount: foodItems.reduce((sum, item) => sum + Number(item.quantity || 0), 0),
+                    foodSubtotal: foodItems.reduce((sum, item) => sum + (Number(item.price || 0) * Number(item.quantity || 0)), 0),
+                    vendorCount: new Set(
+                        shipmentSummaries
+                            .filter((summary) => (summary.items || []).some((item) =>
+                                isRestaurantProduct({ category: item.category }) || item.restaurantName
+                            ))
+                            .map((summary) => String(summary.vendor || ''))
+                    ).size,
+                    paymentMethod,
+                },
+            }).catch((error) => {
+                console.error('Food order analytics failed:', error.message);
+            });
+        }
 
         // Return the MainOrder (with populated shipment IDs)
         res.status(201).json(createdMainOrder);
@@ -845,6 +1055,89 @@ router.get('/vendor', protect, authorizeRoles('vendor', 'admin'), async (req, re
     } catch (error) {
         console.error('Error fetching vendor orders:', error);
         res.status(500).json({ message: 'Server Error' });
+    }
+});
+
+async function findOwnedShipmentForVendor(req, res) {
+    const shipment = await Shipment.findById(req.params.id);
+    if (!shipment) {
+        res.status(404).json({ message: 'Shipment not found.' });
+        return null;
+    }
+    if (!req.user.isAdmin && shipment.vendor.toString() !== req.user.id.toString()) {
+        res.status(403).json({ message: 'You can only update your own shipment.' });
+        return null;
+    }
+    if (['delivered', 'cancelled', 'rejected', 'returned'].includes(shipment.shipmentStatus)) {
+        res.status(400).json({ message: `Shipment is already ${shipment.shipmentStatus}.` });
+        return null;
+    }
+    return shipment;
+}
+
+// @desc    Vendor accepts a paid shipment
+// @route   PUT /api/orders/shipments/:id/accept
+// @access  Private/Vendor/Admin
+router.put('/shipments/:id/accept', protect, authorizeRoles('vendor', 'admin'), async (req, res) => {
+    try {
+        const shipment = await findOwnedShipmentForVendor(req, res);
+        if (!shipment) return;
+
+        shipment.shipmentStatus = 'accepted';
+        shipment.acceptedAt = new Date();
+        shipment.rejectionReason = undefined;
+        await shipment.save();
+
+        const io = req.app.get('io');
+        if (io) {
+            io.emit(`order_${shipment.mainOrder}`, {
+                type: 'shipment_accepted',
+                shipmentId: shipment._id,
+                status: shipment.shipmentStatus,
+                timestamp: Date.now(),
+            });
+        }
+
+        res.status(200).json({ message: 'Shipment accepted.', shipment });
+    } catch (error) {
+        console.error('Error accepting shipment:', error);
+        res.status(500).json({ message: 'Server error accepting shipment.' });
+    }
+});
+
+// @desc    Vendor rejects a shipment with a reason
+// @route   PUT /api/orders/shipments/:id/reject
+// @access  Private/Vendor/Admin
+router.put('/shipments/:id/reject', protect, authorizeRoles('vendor', 'admin'), async (req, res) => {
+    try {
+        const reason = String(req.body.reason || '').trim();
+        if (reason.length < 5) {
+            return res.status(400).json({ message: 'Please provide a clear rejection reason.' });
+        }
+
+        const shipment = await findOwnedShipmentForVendor(req, res);
+        if (!shipment) return;
+
+        shipment.shipmentStatus = 'rejected';
+        shipment.rejectedAt = new Date();
+        shipment.rejectionReason = reason.slice(0, 300);
+        await shipment.save();
+
+        const io = req.app.get('io');
+        if (io) {
+            io.emit(`order_${shipment.mainOrder}`, {
+                type: 'shipment_rejected',
+                shipmentId: shipment._id,
+                reason: shipment.rejectionReason,
+                status: shipment.shipmentStatus,
+                timestamp: Date.now(),
+            });
+        }
+
+        res.status(200).json({ message: 'Shipment rejected.', shipment });
+    } catch (error) {
+        console.error('Error rejecting shipment:', error);
+        res.status(500).json({ message: 'Server error rejecting shipment.' });
     }
 });
 
@@ -1009,79 +1302,13 @@ router.put('/:id/pay/wallet', protect, async (req, res) => {
             shipment.shipmentStatus = 'processing';
             await shipment.save({ session });
 
-            // Existing in-app notification to vendor
-            const itemSummary = shipment.items.map(item =>
-                `${item.quantity}x ${item.name} (₦${item.price.toFixed(2)} each)`
-            ).join(', ');
-            const message = `📦 New Order Received!
-Shipment #${shipment._id.toString().slice(-6)}
-Items: ${itemSummary}
-Subtotal: ₦${shipment.subtotal.toFixed(2)}
-Shipping: ₦${shipment.shippingPrice.toFixed(2)}
-Platform Fee: ₦${shipment.platformFee.toFixed(2)}
-Status: Ready for processing`;
-
-            await User.findByIdAndUpdate(
-                shipment.vendor,
-                {
-                    $push: {
-                        notifications: {
-                            $each: [{
-                                type: 'new_order',
-                                message: message,
-                                isRead: false,
-                                relatedModel: 'Shipment',
-                                relatedId: shipment._id,
-                                shipmentDetails: {
-                                    orderId: mainOrder._id,
-                                    items: shipment.items.map(item => ({
-                                        productName: item.name,
-                                        quantity: item.quantity,
-                                        price: item.price,
-                                        total: item.quantity * item.price
-                                    })),
-                                    subtotal: shipment.subtotal,
-                                    platformFee: shipment.platformFee,
-                                    shippingPrice: shipment.shippingPrice,
-                                    totalShipment: shipment.subtotal + shipment.shippingPrice,
-                                    status: 'processing'
-                                }
-                            }],
-                            $position: 0,
-                        },
-                    },
-                },
-                { new: true, session }
-            );
-
-            // ───────────────────────────────────────────────────────────────
-            //   NEW: OneSignal push notification to this vendor
-            // ───────────────────────────────────────────────────────────────
-            try {
-                const shortId = mainOrder._id.toString().slice(-8);
-                const itemCount = shipment.items.reduce((sum, i) => sum + i.quantity, 0);
-
-                await notificationService.sendToUser(
-                    shipment.vendor.toString(),
-                    {
-                        title: "🛒 New Paid Order Received!",
-                        message: `New paid order (#${shortId}) — ${itemCount} item(s) • ₦${shipment.subtotal.toFixed(0)}. Start preparing!`,
-                        data: {
-                            type: "new_paid_order_vendor",
-                            orderId: mainOrder._id.toString(),
-                            shipmentId: shipment._id.toString(),
-                            subtotal: shipment.subtotal,
-                            itemCount,
-                            paymentMethod: "Wallet",
-                            timestamp: Date.now()
-                        }
-                    }
-                );
-            } catch (pushErr) {
-                console.error(`Failed to send paid order push to vendor ${shipment.vendor}:`, pushErr);
-                // non-blocking
-            }
-            // ───────────────────────────────────────────────────────────────
+            await notifyVendorOfPaidShipment({
+                app: req.app,
+                order: mainOrder,
+                shipment,
+                paymentMethod: 'Wallet',
+                session,
+            });
 
             // Stock updates
             for (const item of shipment.items) {
@@ -1214,30 +1441,14 @@ router.put('/:id/pay', protect, async (req, res) => {
             shipment.shipmentStatus = 'processing';
             await shipment.save({ session });
             console.log(`[PAY ENDPOINT] Shipment ${shipment._id} → status set to 'processing'`);
-            // Vendor notification (existing logic - no change)
-            try {
-                const shortId = mainOrder._id.toString().slice(-8);
-                const itemCount = shipment.items.reduce((sum, i) => sum + i.quantity, 0);
-                await notificationService.sendToUser(
-                    shipment.vendor.toString(),
-                    {
-                        title: "🛒 New Paid Order!",
-                        message: `New paid order received (#${shortId}) — ${itemCount} item(s) • ₦${shipment.subtotal.toFixed(0)}. Start preparing!`,
-                        data: {
-                            type: "new_paid_order_vendor",
-                            orderId: mainOrder._id.toString(),
-                            shipmentId: shipment._id.toString(),
-                            subtotal: shipment.subtotal,
-                            itemCount,
-                            paymentMethod: "Flutterwave",
-                            timestamp: Date.now()
-                        }
-                    }
-                );
-                console.log(`[PAY ENDPOINT] Vendor notification sent for shipment ${shipment._id}`);
-            } catch (pushErr) {
-                console.error(`[PAY ENDPOINT] Failed to send paid-order push to vendor ${shipment.vendor}:`, pushErr.message);
-            }
+            await notifyVendorOfPaidShipment({
+                app: req.app,
+                order: mainOrder,
+                shipment,
+                paymentMethod: 'Flutterwave',
+                session,
+            });
+            console.log(`[PAY ENDPOINT] Vendor notification sent for shipment ${shipment._id}`);
             for (const item of shipment.items) {
                 const soldCount = item.quantity;
                 productUpdates.push(
@@ -1306,7 +1517,7 @@ router.put('/shipments/:id/deliver', protect, authorizeRoles('vendor', 'admin'),
         }
         
         // 2. Authorization: Vendor can only update their own shipments unless they are an admin
-        if (req.user.role === 'vendor' && shipment.vendor.toString() !== req.user.id.toString()) {
+        if (!req.user.isAdmin && shipment.vendor.toString() !== req.user.id.toString()) {
             await session.abortTransaction();
             session.endSession();
             return res.status(401).json({ message: 'Not authorized to update this shipment' });
@@ -1386,12 +1597,12 @@ router.put('/shipments/:id/deliver', protect, authorizeRoles('vendor', 'admin'),
 });
 
 
-router.put('/shipments/:id/status-update', protect, authorizeRoles('admin'), async (req, res) => {
+router.put('/shipments/:id/status-update', protect, authorizeRoles('vendor', 'admin'), async (req, res) => {
     const { status } = req.body; // Expects a status like 'out_for_delivery'
     const SHIPMENT_ID = req.params.id;
 
     // Validate the incoming status against the Shipment enum values, excluding 'delivered' and 'awaiting_payment'
-    const validStatuses = ['processing', 'ready_for_pickup', 'out_for_delivery', 'returned', 'cancelled'];
+    const validStatuses = ['accepted', 'ready_for_pickup', 'out_for_delivery', 'returned', 'cancelled'];
     
     if (!validStatuses.includes(status)) {
         return res.status(400).json({ 
@@ -1405,10 +1616,18 @@ router.put('/shipments/:id/status-update', protect, authorizeRoles('admin'), asy
         if (!shipment) {
             return res.status(404).json({ message: 'Shipment not found' });
         }
+
+        if (!req.user.isAdmin && shipment.vendor.toString() !== req.user.id.toString()) {
+            return res.status(403).json({ message: 'You can only update your own shipment.' });
+        }
         
         // Prevent accidental updates if already delivered
-        if (shipment.shipmentStatus === 'delivered') {
-            return res.status(400).json({ message: 'Cannot update status of an already delivered shipment.' });
+        if (['delivered', 'rejected', 'returned'].includes(shipment.shipmentStatus)) {
+            return res.status(400).json({ message: `Cannot update a shipment that is already ${shipment.shipmentStatus}.` });
+        }
+
+        if (req.user.isVendor && status === 'cancelled') {
+            return res.status(400).json({ message: 'Use reject with reason if you cannot fulfil this shipment.' });
         }
 
         // Update the status
@@ -1895,6 +2114,14 @@ router.post('/webhooks/flutterwave', async (req, res) => {
     for (const shipment of shipments) {
       shipment.shipmentStatus = 'processing';
       await shipment.save({ session });
+
+      await notifyVendorOfPaidShipment({
+        app: req.app,
+        order,
+        shipment,
+        paymentMethod: 'Flutterwave',
+        session,
+      });
 
       for (const item of shipment.items) {
         productUpdates.push(
