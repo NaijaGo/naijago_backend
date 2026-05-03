@@ -604,10 +604,16 @@ router.get('/myproducts', protect, async (req, res) => {
 // @desc    Get all new arrival products (for homepage)
 router.get('/newarrivals', async (req, res) => {
     try {
-        const newArrivalsProducts = await Product.find({ isActive: true })
+        // Fetch extra products to allow filtering out restaurant products
+        let newArrivalsProducts = await Product.find({ isActive: true })
             .sort({ createdAt: -1 }) // Sort by creation date, newest first
-            .limit(10) // Limit to a reasonable number of products
+            .limit(30) 
             .populate('vendor', vendorPopulateFields);
+            
+        // Filter out food/restaurant items from new arrivals
+        newArrivalsProducts = newArrivalsProducts
+            .filter(p => !isRestaurantCategory(p.category))
+            .slice(0, 10);
         
         res.status(200).json(newArrivalsProducts);
     } catch (error) {

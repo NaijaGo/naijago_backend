@@ -292,7 +292,7 @@ const { trackAnalyticsEvent } = require('../services/analyticsService');
 const CATEGORY_COMMISSION_RATES = {
     // Core Marketplace
     'Groceries': 0.05,
-    'Food & Beverage': 0.05,
+    'Food & Beverage': 0.15,
 
     'Phones & Tablets': 0.06,
     'Computing': 0.06,
@@ -350,6 +350,22 @@ function getCommissionRateForCategory(category) {
     const subCategory = normalizedCategory.includes('>')
         ? normalizedCategory.split('>')[1].trim()
         : '';
+
+    // THIS IS ONLY FOR FOOD (15% platform fee)
+    const lowerCat = normalizedCategory.toLowerCase();
+    if (!lowerCat.includes('restaurant equipment') && (
+        lowerCat === 'restaurant' ||
+        lowerCat.startsWith('restaurant >') ||
+        lowerCat.includes('meal') ||
+        lowerCat.includes('fast food') ||
+        lowerCat.includes('local dishes') ||
+        lowerCat.includes('pastries') ||
+        lowerCat.includes('drinks') ||
+        lowerCat.includes('catering') ||
+        mainCategory === 'Food & Beverage'
+    )) {
+        return 0.15;
+    }
 
     // Exact match first
     if (CATEGORY_COMMISSION_RATES[normalizedCategory]) {
