@@ -15,6 +15,105 @@ const { getDeliveryFeeSettings, buildDeliveryFeeQuote } = require('../services/d
 const { notifyVendorOfPaidShipment } = require('../services/vendorOrderNotificationService');
 const { trackAnalyticsEvent } = require('../services/analyticsService');
 
+const parsePagination = (query, defaults = {}) => {
+    const maxLimit = defaults.maxLimit || 200;
+    const defaultLimit = defaults.defaultLimit || 50;
+    const page = Math.max(parseInt(query.page, 10) || 1, 1);
+    const requestedLimit = parseInt(query.limit, 10) || defaultLimit;
+    const limit = Math.min(Math.max(requestedLimit, 1), maxLimit);
+    return { page, limit, skip: (page - 1) * limit };
+};
+
+function getActiveNaijaGoSubscription(user) {
+    const subscription = user?.naijagoSubscription;
+    if (!subscription || subscription.status !== 'active') return null;
+
+    const expiresAt = subscription.expiresAt ? new Date(subscription.expiresAt) : null;
+    if (expiresAt && expiresAt.getTime() <= Date.now()) return null;
+    if ((subscription.deliveriesRemaining || 0) <= 0) return null;
+
+    return subscription;
+}
+
+function isWithinSubscriptionHours(subscription) {
+    const validHours = subscription?.validHours || {};
+    const start = validHours.start || '09:00';
+    const end = validHours.end || '18:00';
+    const [startHour, startMinute] = start.split(':').map(Number);
+    const [endHour, endMinute] = end.split(':').map(Number);
+    const now = new Date();
+    const currentMinutes = now.getHours() * 60 + now.getMinutes();
+    const startMinutes = startHour * 60 + startMinute;
+    const endMinutes = endHour * 60 + endMinute;
+    return currentMinutes >= startMinutes && currentMinutes <= endMinutes;
+}
+
+function normalizeZone(value) {
+    return String(value || '').trim().toLowerCase();
+}
+
+function getDeliveryZoneName(zone) {
+    if (!zone) return '';
+    return zone.zoneKey || zone.zoneName || '';
+}
+
+function buildSubscriptionDeliveryDiscount({ user, totalSubtotal, totalShippingPrice, matchedDeliveryZone, shippingAddress }) {
+    const subscription = getActiveNaijaGoSubscription(user);
+    if (!subscription) {
+        return { eligible: false, discount: 0, reason: 'No active subscription.' };
+    }
+
+    if (Number(totalSubtotal || 0) < Number(subscription.minimumOrderValue || 0)) {
+        return { eligible: false, discount: 0, reason: 'Minimum order value not met.' };
+    }
+
+    if (!isWithinSubscriptionHours(subscription)) {
+        return { eligible: false, discount: 0, reason: 'Outside subscription delivery hours.' };
+    }
+
+    const deliveryZone = normalizeZone(getDeliveryZoneName(matchedDeliveryZone));
+    const subscriptionZone = normalizeZone(subscription.zone);
+    if (subscription.deliveryScope === 'same_zone' && subscriptionZone && deliveryZone && subscriptionZone !== deliveryZone) {
+        return { eligible: false, discount: 0, reason: 'Delivery is outside your subscription zone.' };
+    }
+
+    const subscriptionCity = normalizeZone(subscription.city);
+    const destinationCity = normalizeZone(shippingAddress?.city);
+    if (subscription.deliveryScope === 'city_errands' && subscriptionCity && destinationCity && subscriptionCity !== destinationCity) {
+        return { eligible: false, discount: 0, reason: 'Delivery is outside your subscription city.' };
+    }
+
+    const discount = Math.max(0, Number(totalShippingPrice || 0));
+    if (discount <= 0) {
+        return { eligible: false, discount: 0, reason: 'No delivery fee to waive.' };
+    }
+
+    return {
+        eligible: true,
+        discount: parseFloat(discount.toFixed(2)),
+        reason: 'Subscription free delivery applied.',
+        planId: subscription.planId,
+        planName: subscription.planName,
+        deliveriesRemaining: subscription.deliveriesRemaining,
+    };
+}
+
+async function consumeSubscriptionDeliveryIfNeeded({ buyer, mainOrder, session }) {
+    if (!mainOrder.subscriptionFreeDeliveryApplied || mainOrder.subscriptionDeliveryConsumed) {
+        return buyer;
+    }
+
+    const subscription = getActiveNaijaGoSubscription(buyer);
+    if (!subscription) {
+        throw new Error('Subscription delivery benefit is no longer available.');
+    }
+
+    subscription.deliveriesRemaining = Math.max(0, (subscription.deliveriesRemaining || 0) - 1);
+    mainOrder.subscriptionDeliveryConsumed = true;
+    await buyer.save({ session });
+    return buyer;
+}
+
 // Category-based commission rates
 // const CATEGORY_COMMISSION_RATES = {
 //     // HIGH COMMISSION CATEGORIES (15%) - Luxury/High-margin items
@@ -553,6 +652,7 @@ function calculateDistance(lat1, lon1, lat2, lon2) {
 // @access  Private/Admin
 router.get('/', protect, async (req, res) => {
   try {
+      const { limit, skip } = parsePagination(req.query, { defaultLimit: 100, maxLimit: 200 });
       // Find MainOrder documents and populate the linked shipments
       const orders = await MainOrder.find({}) 
         .populate('user', 'firstName lastName email phoneNumber') 
@@ -564,7 +664,10 @@ router.get('/', protect, async (req, res) => {
             }
         })
         .populate('rider', 'fullName phoneNumber plateNumber') // Populate rider info
-        .sort({ createdAt: -1 });
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean();
 
       res.status(200).json(orders);
   } catch (error) {
@@ -664,6 +767,7 @@ router.post('/summary', protect, async (req, res) => {
         // 2. Calculate fees for each shipment
         const shipmentSummaries = [];
         let totalShippingPrice = 0;
+        let originalShippingPrice = 0;
 
         for (const data of vendorCartMap.values()) {
             const vendorLocation = data.vendorLocation;
@@ -685,6 +789,7 @@ router.post('/summary', protect, async (req, res) => {
             matchedDeliveryZone = matchedDeliveryZone || deliveryFeeQuote.zone;
             
             totalShippingPrice += shippingPrice;
+            originalShippingPrice += shippingPrice;
 
             shipmentSummaries.push({
                 vendorId: data.vendorId,
@@ -692,6 +797,9 @@ router.post('/summary', protect, async (req, res) => {
                 vendorLocation: vendorLocation, 
                 subtotal: parseFloat(data.subtotal.toFixed(2)),
                 shippingPrice: shippingPrice,
+                originalShippingPrice: shippingPrice,
+                subscriptionDeliveryDiscount: 0,
+                subscriptionFreeDeliveryApplied: false,
                 deliveryFeeSource: deliveryFeeQuote.source,
                 deliveryFeeZone: deliveryFeeQuote.zone
                     ? {
@@ -713,7 +821,26 @@ router.post('/summary', protect, async (req, res) => {
                 }
             });
         }
-        
+
+        const buyer = await User.findById(req.user._id).select('naijagoSubscription');
+        const subscriptionDiscount = buildSubscriptionDeliveryDiscount({
+            user: buyer,
+            totalSubtotal,
+            totalShippingPrice,
+            matchedDeliveryZone,
+            shippingAddress,
+        });
+
+        if (subscriptionDiscount.eligible) {
+            totalShippingPrice = 0;
+            shipmentSummaries.forEach((summary) => {
+                summary.subscriptionDeliveryDiscount = summary.originalShippingPrice;
+                summary.subscriptionFreeDeliveryApplied = true;
+                summary.shippingPrice = 0;
+                summary.totalShipmentCost = parseFloat(summary.subtotal.toFixed(2));
+            });
+        }
+
         const totalPrice = totalSubtotal + totalShippingPrice + (req.body.taxPrice || 0.0);
 
         // 3. Prepare commission breakdown for response
@@ -727,6 +854,12 @@ router.post('/summary', protect, async (req, res) => {
         res.json({
             totalSubtotal: parseFloat(totalSubtotal.toFixed(2)),
             totalShippingPrice: parseFloat(totalShippingPrice.toFixed(2)),
+            originalShippingPrice: parseFloat(originalShippingPrice.toFixed(2)),
+            subscriptionDeliveryDiscount: subscriptionDiscount.eligible
+                ? parseFloat(subscriptionDiscount.discount.toFixed(2))
+                : 0,
+            subscriptionFreeDeliveryApplied: subscriptionDiscount.eligible,
+            subscriptionPlanId: subscriptionDiscount.planId || '',
             totalPlatformFees: parseFloat(totalPlatformFees.toFixed(2)),
             totalPrice: parseFloat(totalPrice.toFixed(2)),
             taxPrice: req.body.taxPrice || 0.0,
@@ -742,6 +875,16 @@ router.post('/summary', protect, async (req, res) => {
                         amount: matchedDeliveryZone.amount,
                     }
                     : null,
+                subscription: {
+                    eligible: subscriptionDiscount.eligible,
+                    reason: subscriptionDiscount.reason,
+                    planId: subscriptionDiscount.planId || '',
+                    planName: subscriptionDiscount.planName || '',
+                    deliveriesRemaining: subscriptionDiscount.deliveriesRemaining || 0,
+                    discount: subscriptionDiscount.eligible
+                        ? parseFloat(subscriptionDiscount.discount.toFixed(2))
+                        : 0,
+                },
             },
             userLocation, 
             shippingAddress,
@@ -775,6 +918,10 @@ router.post('/', protect, async (req, res) => {
         taxPrice,
         userLocation,
         shipmentSummaries, // The calculated breakdown array is VITAL
+        originalShippingPrice,
+        subscriptionDeliveryDiscount,
+        subscriptionFreeDeliveryApplied,
+        subscriptionPlanId,
     } = req.body;
 
     const session = await mongoose.startSession();
@@ -785,6 +932,21 @@ router.post('/', protect, async (req, res) => {
             await session.abortTransaction();
             session.endSession();
             return res.status(400).json({ message: 'No shipment summaries provided. Please calculate summary first.' });
+        }
+
+        const requestedSubscriptionDiscount = Number(subscriptionDeliveryDiscount || 0);
+        if (subscriptionFreeDeliveryApplied === true || requestedSubscriptionDiscount > 0) {
+            const buyerForSubscription = await User.findById(req.user._id)
+                .select('naijagoSubscription')
+                .session(session);
+            const activeSubscription = getActiveNaijaGoSubscription(buyerForSubscription);
+            if (!activeSubscription) {
+                await session.abortTransaction();
+                session.endSession();
+                return res.status(400).json({
+                    message: 'Subscription free delivery is no longer available. Please refresh checkout summary.',
+                });
+            }
         }
 
         // --- Step 1: Stock Check (Must check stock for ALL items across ALL shipments) ---
@@ -859,6 +1021,10 @@ router.post('/', protect, async (req, res) => {
             totalSubtotal,
             totalPlatformFees,
             totalShippingPrice,
+            originalShippingPrice: originalShippingPrice || totalShippingPrice || 0,
+            subscriptionDeliveryDiscount: subscriptionDeliveryDiscount || 0,
+            subscriptionFreeDeliveryApplied: subscriptionFreeDeliveryApplied === true,
+            subscriptionPlanId: subscriptionPlanId || '',
             totalTaxPrice: taxPrice || 0.0,
             totalPrice,
             paymentMethod,
@@ -898,6 +1064,9 @@ router.post('/', protect, async (req, res) => {
                 subtotal: summary.subtotal,
                 platformFee: summary.platformFee,
                 shippingPrice: summary.shippingPrice,
+                originalShippingPrice: summary.originalShippingPrice || summary.shippingPrice || 0,
+                subscriptionDeliveryDiscount: summary.subscriptionDeliveryDiscount || 0,
+                subscriptionFreeDeliveryApplied: summary.subscriptionFreeDeliveryApplied === true,
                 commissionRate: summary.commissionRate, // Store average commission rate for this shipment
                 shipmentStatus: 'processing',
                 isDelivered: false,
@@ -1276,12 +1445,10 @@ router.put('/:id/pay/wallet', protect, async (req, res) => {
             });
         }
        
-        // 4. Debit the buyer's wallet
-        const updatedBuyer = await User.findByIdAndUpdate(
-            req.user.id,
-            { $inc: { userWalletBalance: -orderTotal } },
-            { new: true, session }
-        );
+        // 4. Debit the buyer's wallet and consume subscription delivery if used
+        buyer.userWalletBalance = Number(((buyer.userWalletBalance || 0) - orderTotal).toFixed(2));
+        await consumeSubscriptionDeliveryIfNeeded({ buyer, mainOrder, session });
+        const updatedBuyer = await buyer.save({ session });
        
         // 5. Update MainOrder payment status
         mainOrder.isPaid = true;
@@ -1387,6 +1554,12 @@ router.put('/:id/pay', protect, async (req, res) => {
             session.endSession();
             return res.status(401).json({ message: 'Not authorized to modify this order' });
         }
+        const buyer = await User.findById(req.user.id).session(session);
+        if (!buyer) {
+            await session.abortTransaction();
+            session.endSession();
+            return res.status(404).json({ message: 'Buyer user account not found.' });
+        }
         const { transaction_id } = req.body;
         if (!transaction_id) {
             console.error(`[PAY ENDPOINT] Missing transaction_id - Order: ${mainOrder._id}`);
@@ -1448,6 +1621,7 @@ router.put('/:id/pay', protect, async (req, res) => {
             verifiedAt: new Date(),
             verificationMethod: 'direct_verify'
         };
+        await consumeSubscriptionDeliveryIfNeeded({ buyer, mainOrder, session });
         console.log(`[PAY ENDPOINT] Updated paymentResult for order ${mainOrder._id}:`, JSON.stringify(mainOrder.paymentResult, null, 2));
         // Update shipments & stock
         const shipments = await Shipment.find({ mainOrder: mainOrder._id }).session(session);
@@ -1614,11 +1788,12 @@ router.put('/shipments/:id/deliver', protect, authorizeRoles('vendor', 'admin'),
 
 
 router.put('/shipments/:id/status-update', protect, authorizeRoles('vendor', 'admin'), async (req, res) => {
-    const { status } = req.body; // Expects a status like 'out_for_delivery'
+    const { status } = req.body;
     const SHIPMENT_ID = req.params.id;
 
-    // Validate the incoming status against the Shipment enum values, excluding 'delivered' and 'awaiting_payment'
-    const validStatuses = ['accepted', 'ready_for_pickup', 'out_for_delivery', 'returned', 'cancelled'];
+    const vendorStatuses = ['accepted', 'ready_for_pickup'];
+    const adminStatuses = ['accepted', 'ready_for_pickup', 'out_for_delivery', 'returned', 'cancelled'];
+    const validStatuses = req.user?.isAdmin ? adminStatuses : vendorStatuses;
     
     if (!validStatuses.includes(status)) {
         return res.status(400).json({ 
@@ -1646,9 +1821,41 @@ router.put('/shipments/:id/status-update', protect, authorizeRoles('vendor', 'ad
             return res.status(400).json({ message: 'Use reject with reason if you cannot fulfil this shipment.' });
         }
 
+        if (req.user.isVendor && ['out_for_delivery', 'delivered'].includes(status)) {
+            return res.status(400).json({
+                message: 'Rider pickup and delivery statuses are updated through rider OTP verification.'
+            });
+        }
+
         // Update the status
         shipment.shipmentStatus = status;
         await shipment.save();
+
+        if (status === 'ready_for_pickup') {
+            const siblingShipments = await Shipment.find({
+                mainOrder: shipment.mainOrder,
+                shipmentStatus: { $nin: ['rejected', 'cancelled', 'returned'] }
+            }).select('shipmentStatus');
+            const allFulfillableShipmentsReady = siblingShipments.length > 0 &&
+                siblingShipments.every((item) => item.shipmentStatus === 'ready_for_pickup');
+
+            await MainOrder.findByIdAndUpdate(shipment.mainOrder, {
+                shipmentStatus: allFulfillableShipmentsReady ? 'ready_for_pickup' : 'processing',
+                mainOrderStatus: 'processing'
+            });
+
+            const io = req.app.get('io');
+            if (io) {
+                io.emit('admin_notification', {
+                    type: 'shipment_ready_for_pickup',
+                    message: `Shipment ${shipment._id} is ready for rider pickup`,
+                    shipmentId: shipment._id,
+                    orderId: shipment.mainOrder,
+                    vendorId: shipment.vendor,
+                    timestamp: Date.now()
+                });
+            }
+        }
 
         res.json({ message: `Shipment ${SHIPMENT_ID} status updated to ${status}.`, shipment });
 
@@ -2049,6 +2256,7 @@ router.get('/:id', protect, async (req, res) => {
 // @access  Private/Admin
 router.get('/admin', protect, authorizeRoles('admin'), async (req, res) => {
     try {
+        const { limit, skip } = parsePagination(req.query, { defaultLimit: 100, maxLimit: 300 });
         const orders = await MainOrder.find({})
             .populate('user', 'firstName lastName email phoneNumber')
             .populate('rider', 'fullName phoneNumber plateNumber')
@@ -2059,7 +2267,10 @@ router.get('/admin', protect, authorizeRoles('admin'), async (req, res) => {
                     { path: 'items.product', select: 'name imageUrls price stockQuantity' }
                 ]
             })
-            .sort({ createdAt: -1 });
+            .sort({ createdAt: -1 })
+            .skip(skip)
+            .limit(limit)
+            .lean();
 
         res.json(orders);
     } catch (error) {

@@ -785,78 +785,89 @@ router.get('/admin/pending-withdrawals', protect, authorizeRoles('admin'), async
             query['withdrawalHistory.status'] = status;
         }
 
-        // Get rider withdrawals
-        let riderWithdrawals = [];
-        if (!userType || userType === 'rider') {
-            const riders = await Rider.find({
-                'withdrawalHistory.status': status !== 'all' ? status : { $exists: true }
-            }).select('fullName email phoneNumber plateNumber withdrawalHistory');
-            
-            riders.forEach(rider => {
-                rider.withdrawalHistory.forEach(withdrawal => {
-                    if (status === 'all' || withdrawal.status === status) {
-                        riderWithdrawals.push({
-                            ...withdrawal.toObject(),
-                            userType: 'rider',
-                            userId: rider._id,
-                            userName: rider.fullName,
-                            userEmail: rider.email,
-                            userPhone: rider.phoneNumber,
-                            plateNumber: rider.plateNumber
-                        });
-                    }
-                });
-            });
-        }
+        const withdrawalStatusMatch = (path) =>
+            status === 'all'
+                ? { [`${path}.status`]: { $exists: true } }
+                : { [`${path}.status`]: status };
 
-        // Get vendor withdrawals
-        let vendorWithdrawals = [];
-        if (!userType || userType === 'vendor') {
-            const vendors = await User.find({
-                role: 'vendor',
-                'vendorWithdrawals.status': status !== 'all' ? status : { $exists: true }
-            }).select('firstName lastName email phoneNumber businessName vendorWithdrawals');
-            
-            vendors.forEach(vendor => {
-                (vendor.vendorWithdrawals || []).forEach(withdrawal => {
-                    if (status === 'all' || withdrawal.status === status) {
-                        vendorWithdrawals.push({
-                            ...withdrawal.toObject(),
-                            userType: 'vendor',
-                            userId: vendor._id,
-                            userName: `${vendor.firstName} ${vendor.lastName}`,
-                            businessName: vendor.businessName,
-                            userEmail: vendor.email,
-                            userPhone: vendor.phoneNumber
-                        });
+        const riderWithdrawalsPromise = (!userType || userType === 'rider')
+            ? Rider.aggregate([
+                { $unwind: '$withdrawalHistory' },
+                { $match: withdrawalStatusMatch('withdrawalHistory') },
+                {
+                    $replaceRoot: {
+                        newRoot: {
+                            $mergeObjects: [
+                                '$withdrawalHistory',
+                                {
+                                    userType: 'rider',
+                                    userId: '$_id',
+                                    userName: '$fullName',
+                                    userEmail: '$email',
+                                    userPhone: '$phoneNumber',
+                                    plateNumber: '$plateNumber'
+                                }
+                            ]
+                        }
                     }
-                });
-            });
-        }
+                }
+            ])
+            : Promise.resolve([]);
 
-        // Get user withdrawals
-        let userWithdrawals = [];
-        if (!userType || userType === 'user') {
-            const users = await User.find({
-                role: 'user',
-                'userWithdrawals.status': status !== 'all' ? status : { $exists: true }
-            }).select('firstName lastName email phoneNumber userWithdrawals');
-            
-            users.forEach(user => {
-                (user.userWithdrawals || []).forEach(withdrawal => {
-                    if (status === 'all' || withdrawal.status === status) {
-                        userWithdrawals.push({
-                            ...withdrawal.toObject(),
-                            userType: 'user',
-                            userId: user._id,
-                            userName: `${user.firstName} ${user.lastName}`,
-                            userEmail: user.email,
-                            userPhone: user.phoneNumber
-                        });
+        const vendorWithdrawalsPromise = (!userType || userType === 'vendor')
+            ? User.aggregate([
+                { $match: { role: 'vendor' } },
+                { $unwind: '$vendorWithdrawals' },
+                { $match: withdrawalStatusMatch('vendorWithdrawals') },
+                {
+                    $replaceRoot: {
+                        newRoot: {
+                            $mergeObjects: [
+                                '$vendorWithdrawals',
+                                {
+                                    userType: 'vendor',
+                                    userId: '$_id',
+                                    userName: { $trim: { input: { $concat: [{ $ifNull: ['$firstName', ''] }, ' ', { $ifNull: ['$lastName', ''] }] } } },
+                                    businessName: '$businessName',
+                                    userEmail: '$email',
+                                    userPhone: '$phoneNumber'
+                                }
+                            ]
+                        }
                     }
-                });
-            });
-        }
+                }
+            ])
+            : Promise.resolve([]);
+
+        const userWithdrawalsPromise = (!userType || userType === 'user')
+            ? User.aggregate([
+                { $match: { role: 'user' } },
+                { $unwind: '$userWithdrawals' },
+                { $match: withdrawalStatusMatch('userWithdrawals') },
+                {
+                    $replaceRoot: {
+                        newRoot: {
+                            $mergeObjects: [
+                                '$userWithdrawals',
+                                {
+                                    userType: 'user',
+                                    userId: '$_id',
+                                    userName: { $trim: { input: { $concat: [{ $ifNull: ['$firstName', ''] }, ' ', { $ifNull: ['$lastName', ''] }] } } },
+                                    userEmail: '$email',
+                                    userPhone: '$phoneNumber'
+                                }
+                            ]
+                        }
+                    }
+                }
+            ])
+            : Promise.resolve([]);
+
+        const [riderWithdrawals, vendorWithdrawals, userWithdrawals] = await Promise.all([
+            riderWithdrawalsPromise,
+            vendorWithdrawalsPromise,
+            userWithdrawalsPromise
+        ]);
 
         // Combine all withdrawals
         const allWithdrawals = [...riderWithdrawals, ...vendorWithdrawals, ...userWithdrawals]

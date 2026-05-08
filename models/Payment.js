@@ -39,6 +39,9 @@ const PaymentSchema = new mongoose.Schema({
   },
 });
 
+PaymentSchema.index({ userId: 1, createdAt: -1 });
+PaymentSchema.index({ status: 1, createdAt: -1 });
+
 const Payment = mongoose.model('Payment', PaymentSchema);
 
 module.exports = Payment;

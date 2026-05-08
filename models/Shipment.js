@@ -63,6 +63,9 @@ const ShipmentSchema = new mongoose.Schema({
     subtotal: { type: Number, required: true, default: 0.0 },
     platformFee: { type: Number, required: true, default: 0.0 }, // Commission for this sub-order
     shippingPrice: { type: Number, required: true, default: 0.0 }, // Cost for THIS shipment
+    originalShippingPrice: { type: Number, default: 0.0 },
+    subscriptionDeliveryDiscount: { type: Number, default: 0.0 },
+    subscriptionFreeDeliveryApplied: { type: Boolean, default: false },
 
     // --- RIDER & LOGISTICS UPDATES ---
     rider: { 
@@ -100,6 +103,13 @@ const ShipmentSchema = new mongoose.Schema({
 // ⬇️ ADD THIS: Index for better query performance
 ShipmentSchema.index({ company: 1, mainOrder: 1 });
 ShipmentSchema.index({ deliveredAt: 1, company: 1 });
+ShipmentSchema.index({ mainOrder: 1, shipmentStatus: 1 });
+ShipmentSchema.index({ vendor: 1, createdAt: -1 });
+ShipmentSchema.index({ vendor: 1, shipmentStatus: 1, createdAt: -1 });
+ShipmentSchema.index({ vendor: 1, vendorPaidAt: 1 });
+ShipmentSchema.index({ rider: 1, shipmentStatus: 1, createdAt: -1 });
+ShipmentSchema.index({ isClaimed: 1, shipmentStatus: 1, createdAt: -1 });
+ShipmentSchema.index({ isDelivered: 1, deliveredAt: -1 });
 
 const Shipment = mongoose.model('Shipment', ShipmentSchema);
 module.exports = Shipment;

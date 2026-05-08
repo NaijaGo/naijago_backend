@@ -10,6 +10,17 @@ const router = express.Router();
 const operatingDays = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
 const timePattern = /^([01]\d|2[0-3]):[0-5]\d$/;
 const phonePattern = /^(?:\+?234|0)[789]\d{9}$/;
+const validIdTypes = ['national_id', 'voters_card', 'drivers_license', 'international_passport'];
+const vendorAgreementKeys = [
+    'respondQuickly',
+    'prepareOrdersOnTime',
+    'keepProductsUpdated',
+    'maintainAccuratePricing',
+    'packageItemsProperly',
+    'treatCustomersProfessionally',
+    'followNaijaGoPolicies',
+    'avoidFakeOrProhibitedProducts',
+];
 
 const defaultOperatingHours = () => operatingDays.map((day) => ({
     day,
@@ -36,6 +47,14 @@ function sanitizeText(value, maxLength = 160) {
     return value.trim().slice(0, maxLength);
 }
 
+function sanitizeStringArray(value, maxItems = 8, maxLength = 400) {
+    if (!Array.isArray(value)) return [];
+    return value
+        .map((item) => sanitizeText(item, maxLength))
+        .filter(Boolean)
+        .slice(0, maxItems);
+}
+
 function sanitizeLocation(value) {
     if (!value || typeof value !== 'object') return undefined;
     const latitude = Number(value.latitude);
@@ -48,6 +67,28 @@ function sanitizeLocation(value) {
         longitude,
         formattedAddress: sanitizeText(value.formattedAddress, 220),
     };
+}
+
+function sanitizeSampleProducts(value) {
+    if (!Array.isArray(value)) return [];
+    return value
+        .map((item) => {
+            const price = Number(item?.price);
+            return {
+                description: sanitizeText(item?.description, 600),
+                price: Number.isFinite(price) ? price : 0,
+                photoUrls: sanitizeStringArray(item?.photoUrls, 8, 400),
+            };
+        })
+        .filter((item) => item.description && item.price > 0 && item.photoUrls.length > 0)
+        .slice(0, 10);
+}
+
+function sanitizeVendorAgreements(value) {
+    const source = value && typeof value === 'object' ? value : {};
+    return Object.fromEntries(
+        vendorAgreementKeys.map((key) => [key, source[key] === true])
+    );
 }
 
 function sanitizeOperatingHours(value) {
@@ -80,9 +121,20 @@ function buildVendorProfile(user) {
         businessName: user.businessName || '',
         businessCategories: user.businessCategories || [],
         businessLogoUrl: user.businessLogoUrl || '',
+        vendorContactEmail: user.vendorContactEmail || user.email || '',
         businessWhatsAppNumber: user.businessWhatsAppNumber || user.alternatePhoneNumber || user.phoneNumber || '',
         businessSupportPhone: user.businessSupportPhone || user.phoneNumber || '',
         businessLocation: user.businessLocation || null,
+        validIdentification: user.validIdentification || null,
+        shopPhotoUrls: user.shopPhotoUrls || [],
+        sampleProducts: user.sampleProducts || [],
+        socialMediaPage: user.socialMediaPage || '',
+        cacCertificateUrl: user.cacCertificateUrl || '',
+        cacNumber: user.cacNumber || '',
+        bankAccountDetails: user.bankAccountDetails || null,
+        deliveryAvailable: user.deliveryAvailable === true,
+        emergencyContactNumber: user.emergencyContactNumber || '',
+        prohibitedProductsAcknowledged: user.prohibitedProductsAcknowledged === true,
         deliveryRadiusKm: user.deliveryRadiusKm ?? 15,
         prepTimeMinutes: user.prepTimeMinutes ?? 30,
         isTemporarilyClosed: user.isTemporarilyClosed === true,
@@ -108,13 +160,75 @@ router.post('/request', protect, async (req, res) => {
         businessCategories,
         termsAccepted,
         businessLocation,
-        alternatePhoneNumber
+        alternatePhoneNumber,
+        activePhoneNumber,
+        whatsappNumber,
+        vendorContactEmail,
+        validIdentification,
+        shopPhotoUrls,
+        sampleProducts,
+        socialMediaPage,
+        cacCertificateUrl,
+        cacNumber,
+        bankAccountDetails,
+        operatingHours,
+        deliveryAvailable,
+        emergencyContactNumber,
+        vendorAgreements,
+        prohibitedProductsAcknowledged
     } = req.body;
     const userId = req.user.id; // User ID from the authenticated token
 
-    // UPDATED: Added a check for businessLocation
-    if (!firstName || !lastName || !gender || !businessName || !businessCategories || businessCategories.length === 0 || !termsAccepted || !businessLocation) {
+    const sanitizedBusinessLocation = sanitizeLocation(businessLocation);
+    const sanitizedShopPhotoUrls = sanitizeStringArray(shopPhotoUrls, 12, 400);
+    const sanitizedSampleProducts = sanitizeSampleProducts(sampleProducts);
+    const idType = sanitizeText(validIdentification?.idType, 40);
+    const idDocumentUrl = sanitizeText(validIdentification?.documentUrl, 400);
+    const sanitizedBankAccount = {
+        accountName: sanitizeText(bankAccountDetails?.accountName, 100),
+        bankName: sanitizeText(bankAccountDetails?.bankName, 80),
+        accountNumber: sanitizeText(bankAccountDetails?.accountNumber, 10),
+    };
+    const sanitizedAgreements = sanitizeVendorAgreements(vendorAgreements);
+    const hasAcceptedAllAgreements = vendorAgreementKeys.every((key) => sanitizedAgreements[key] === true);
+    const phone = sanitizeText(activePhoneNumber || alternatePhoneNumber, 20);
+    const whatsapp = sanitizeText(whatsappNumber, 20);
+    const emergencyPhone = sanitizeText(emergencyContactNumber, 20);
+
+    if (!firstName || !lastName || !gender || !businessName || !businessCategories || businessCategories.length === 0 || !termsAccepted || !sanitizedBusinessLocation) {
         return res.status(400).json({ message: 'Please fill all required fields and accept terms.' });
+    }
+
+    if (!phonePattern.test(phone)) {
+        return res.status(400).json({ message: 'Please enter a valid active Nigerian phone number.' });
+    }
+
+    if (!phonePattern.test(whatsapp)) {
+        return res.status(400).json({ message: 'Please enter a valid active WhatsApp number.' });
+    }
+
+    if (!validIdTypes.includes(idType) || !idDocumentUrl) {
+        return res.status(400).json({ message: 'Please upload a valid means of identification.' });
+    }
+
+    if (sanitizedShopPhotoUrls.length === 0) {
+        return res.status(400).json({ message: 'Please upload at least one clear shop picture.' });
+    }
+
+    if (sanitizedSampleProducts.length === 0) {
+        return res.status(400).json({ message: 'Please add at least one product with photo, price, and description.' });
+    }
+
+    if (!sanitizedBankAccount.accountName || !sanitizedBankAccount.bankName || !/^\d{10}$/.test(sanitizedBankAccount.accountNumber)) {
+        return res.status(400).json({ message: 'Please provide valid bank account details.' });
+    }
+
+    if (!phonePattern.test(emergencyPhone)) {
+        return res.status(400).json({ message: 'Please enter a valid emergency contact number.' });
+    }
+
+    if (!hasAcceptedAllAgreements || prohibitedProductsAcknowledged !== true) {
+        return res.status(400).json({ message: 'Please accept all vendor obligations and prohibited product rules.' });
     }
 
     try {
@@ -146,13 +260,29 @@ router.post('/request', protect, async (req, res) => {
         user.firstName = firstName;
         user.lastName = lastName;
         user.gender = gender;
-        user.businessName = businessName;
-        user.businessCategories = businessCategories;
-        user.businessLocation = businessLocation; // NEW: Save the business location data
-        user.alternatePhoneNumber =
-            typeof alternatePhoneNumber === 'string' && alternatePhoneNumber.trim()
-                ? alternatePhoneNumber.trim()
-                : user.alternatePhoneNumber;
+        user.businessName = sanitizeText(businessName, 100);
+        user.businessCategories = sanitizeStringArray(businessCategories, 12, 80);
+        user.businessLocation = sanitizedBusinessLocation;
+        user.alternatePhoneNumber = phone;
+        user.businessSupportPhone = phone;
+        user.businessWhatsAppNumber = whatsapp;
+        user.vendorContactEmail = sanitizeText(vendorContactEmail, 120) || undefined;
+        user.validIdentification = {
+            idType,
+            idNumber: sanitizeText(validIdentification?.idNumber, 80),
+            documentUrl: idDocumentUrl,
+        };
+        user.shopPhotoUrls = sanitizedShopPhotoUrls;
+        user.sampleProducts = sanitizedSampleProducts;
+        user.socialMediaPage = sanitizeText(socialMediaPage, 240);
+        user.cacCertificateUrl = sanitizeText(cacCertificateUrl, 400);
+        user.cacNumber = sanitizeText(cacNumber, 80);
+        user.bankAccountDetails = sanitizedBankAccount;
+        user.operatingHours = sanitizeOperatingHours(operatingHours);
+        user.deliveryAvailable = deliveryAvailable === true;
+        user.emergencyContactNumber = emergencyPhone;
+        user.vendorAgreements = sanitizedAgreements;
+        user.prohibitedProductsAcknowledged = true;
         // user.profilePicUrl = profilePicUrl; // Will be implemented when image upload is ready
         user.vendorStatus = 'sent'; // Initial status: request sent
         user.vendorRequestDate = Date.now(); // Record the request date
@@ -174,7 +304,7 @@ router.post('/request', protect, async (req, res) => {
 router.get('/profile', protect, authorizeRoles('vendor'), async (req, res) => {
     try {
         const user = await User.findById(req.user.id).select(
-            'businessName businessCategories businessLogoUrl businessWhatsAppNumber businessSupportPhone businessLocation deliveryRadiusKm prepTimeMinutes isTemporarilyClosed temporaryClosureReason operatingHours vendorStatus isVendor pharmacistStatus role phoneNumber alternatePhoneNumber'
+            'businessName businessCategories businessLogoUrl businessWhatsAppNumber vendorContactEmail businessSupportPhone businessLocation validIdentification shopPhotoUrls sampleProducts socialMediaPage cacCertificateUrl cacNumber bankAccountDetails deliveryAvailable emergencyContactNumber prohibitedProductsAcknowledged deliveryRadiusKm prepTimeMinutes isTemporarilyClosed temporaryClosureReason operatingHours vendorStatus isVendor pharmacistStatus role phoneNumber alternatePhoneNumber email'
         );
 
         if (!user) {

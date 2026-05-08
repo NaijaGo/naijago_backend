@@ -9,7 +9,7 @@ const NotificationLogSchema = new mongoose.Schema(
     },
     channel: {
       type: String,
-      enum: ['app_socket', 'push', 'whatsapp'],
+      enum: ['app_socket', 'push', 'whatsapp', 'email'],
       required: true,
       index: true,
     },
@@ -56,5 +56,11 @@ const NotificationLogSchema = new mongoose.Schema(
   },
   { timestamps: true },
 );
+
+NotificationLogSchema.index({ createdAt: -1 });
+NotificationLogSchema.index({ channel: 1, createdAt: -1 });
+NotificationLogSchema.index({ status: 1, createdAt: -1 });
+NotificationLogSchema.index({ eventType: 1, createdAt: -1 });
+NotificationLogSchema.index({ channel: 1, status: 1, eventType: 1, createdAt: -1 });
 
 module.exports = mongoose.model('NotificationLog', NotificationLogSchema);

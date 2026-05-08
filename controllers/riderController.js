@@ -2,6 +2,7 @@
 const Rider = require('../models/Rider');
 const Shipment = require('../models/Shipment');
 const MainOrder = require('../models/MainOrder');
+const User = require('../models/User');
 const mongoose = require('mongoose');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
@@ -10,6 +11,36 @@ const { sendVerificationEmail } = require('../utils/emailHelper');
 // Helper to create JWT
 const generateToken = (id) => {
   return jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: '30d' });
+};
+
+const pushUserNotification = async ({
+  userId,
+  type = 'general',
+  message,
+  relatedId,
+  relatedModel = 'MainOrder',
+}) => {
+  if (!userId || !message) return null;
+
+  try {
+    return await User.findByIdAndUpdate(
+      userId,
+      {
+        $push: {
+          notifications: {
+            type,
+            message,
+            relatedId,
+            relatedModel,
+          },
+        },
+      },
+      { new: true }
+    ).select('notifications');
+  } catch (error) {
+    console.error('Failed to push user notification:', error.message);
+    return null;
+  }
 };
 
 /**
@@ -164,7 +195,7 @@ exports.verifyRiderEmail = async (req, res) => {
  * @desc Login rider
  */
 exports.loginRider = async (req, res) => {
-  const { email, password } = req.body;
+  const { email, password, oneSignalPlayerId } = req.body;
   
   try {
     // Validate input
@@ -227,6 +258,10 @@ exports.loginRider = async (req, res) => {
 
     // Update last active timestamp
     rider.lastActive = Date.now();
+    rider.oneSignalUserId = rider._id.toString();
+    if (oneSignalPlayerId && oneSignalPlayerId.trim() !== '') {
+      rider.oneSignalPlayerId = oneSignalPlayerId.trim();
+    }
     await rider.save();
 
     res.json({
@@ -487,18 +522,21 @@ exports.getAvailableOrders = async (req, res) => {
       });
     }
 
-    // Find paid MainOrders that are not delivered/completed and not claimed
+    // Find paid MainOrders that are ready for rider pickup and not claimed.
+    // Vendor apps move shipments to ready_for_pickup; riders should not see
+    // orders that vendors are still processing.
     const availableOrders = await MainOrder.find({
       isPaid: true,
       mainOrderStatus: { $nin: ['delivered', 'completed', 'cancelled'] },
+      shipmentStatus: 'ready_for_pickup',
       isClaimed: false,
-      rider: { $exists: false }
+      $or: [{ rider: null }, { rider: { $exists: false } }]
     })
     .populate('user', 'firstName lastName phoneNumber')
     .populate({
       path: 'shipments',
       match: { 
-        shipmentStatus: { $in: ['processing', 'ready_for_pickup'] },
+        shipmentStatus: 'ready_for_pickup',
         isClaimed: false 
       },
       populate: [
@@ -658,7 +696,7 @@ exports.claimOrder = async (req, res) => {
     mainOrder.claimedAt = Date.now();
     mainOrder.pickupOTP = pickupOTP;
     mainOrder.deliveryOTP = deliveryOTP;
-    mainOrder.shipmentStatus = 'out_for_delivery';
+    mainOrder.shipmentStatus = 'ready_for_pickup';
 
     // Update all shipments
     const shipmentUpdates = [];
@@ -667,7 +705,7 @@ exports.claimOrder = async (req, res) => {
         shipment.rider = riderId;
         shipment.isClaimed = true;
         shipment.claimedAt = Date.now();
-        shipment.shipmentStatus = 'out_for_delivery';
+        shipment.shipmentStatus = 'ready_for_pickup';
         shipment.pickupOTP = pickupOTP;
         shipment.deliveryOTP = deliveryOTP;
         shipmentUpdates.push(shipment.save({ session }));
@@ -688,28 +726,60 @@ exports.claimOrder = async (req, res) => {
     await session.commitTransaction();
     session.endSession();
 
+    const vendorIds = [
+      ...new Set(
+        mainOrder.shipments
+          .map((shipment) => shipment.vendor?.toString())
+          .filter(Boolean)
+      ),
+    ];
+
+    await Promise.all([
+      pushUserNotification({
+        userId: mainOrder.user,
+        type: 'order_update',
+        message: `Delivery OTP for order ${mainOrder._id}: ${deliveryOTP}. Share this code only after receiving your order.`,
+        relatedId: mainOrder._id,
+      }),
+      ...vendorIds.map((vendorId) =>
+        pushUserNotification({
+          userId: vendorId,
+          type: 'order_update',
+          message: `Pickup OTP for order ${mainOrder._id}: ${pickupOTP}. Share this code with the rider at pickup.`,
+          relatedId: mainOrder._id,
+        })
+      ),
+    ]);
+
     // Send notification to vendor(s)
     const io = req.app.get('io');
     if (io) {
       mainOrder.shipments.forEach(shipment => {
-        io.emit(`vendor_${shipment.vendor}`, {
+        const payload = {
           type: 'order_claimed',
-          message: `Order ${mainOrder._id} has been claimed by rider ${rider.fullName}`,
+          message: `Order ${mainOrder._id} has been claimed by rider ${rider.fullName}. Pickup OTP: ${pickupOTP}`,
           orderId: mainOrder._id,
           shipmentId: shipment._id,
           riderName: rider.fullName,
           riderPhone: rider.phoneNumber,
           pickupOTP: pickupOTP
+        };
+        io.emit(`vendor_${shipment.vendor}`, payload);
+        req.app.get('notifyVendor')?.(shipment.vendor.toString(), {
+          title: 'Rider assigned',
+          message: payload.message,
+          data: payload
         });
       });
 
       // Notify customer
       io.emit(`user_${mainOrder.user}`, {
         type: 'order_claimed',
-        message: `Your order has been picked up by rider ${rider.fullName}`,
+        message: `A rider has been assigned to your order. Delivery OTP: ${deliveryOTP}`,
         orderId: mainOrder._id,
         riderName: rider.fullName,
-        riderPhone: rider.phoneNumber
+        riderPhone: rider.phoneNumber,
+        deliveryOTP
       });
     }
 
@@ -784,7 +854,7 @@ exports.verifyPickupOTP = async (req, res) => {
     }
 
     // Check if already picked up
-    if (mainOrder.shipmentStatus === 'out_for_delivery') {
+    if (mainOrder.shipmentStatus === 'out_for_delivery' || mainOrder.pickedUpAt) {
       return res.status(400).json({
         success: false,
         message: 'Order already picked up'
@@ -805,6 +875,28 @@ exports.verifyPickupOTP = async (req, res) => {
     mainOrder.pickedUpAt = Date.now();
     await mainOrder.save();
 
+    const shipments = await Shipment.find({ mainOrder: orderId });
+    const vendorIds = [
+      ...new Set(shipments.map((shipment) => shipment.vendor?.toString()).filter(Boolean)),
+    ];
+
+    await Promise.all([
+      pushUserNotification({
+        userId: mainOrder.user,
+        type: 'order_shipped',
+        message: `Your order ${mainOrder._id} has been picked up and is on the way.`,
+        relatedId: mainOrder._id,
+      }),
+      ...vendorIds.map((vendorId) =>
+        pushUserNotification({
+          userId: vendorId,
+          type: 'order_shipped',
+          message: `Order ${mainOrder._id} has been picked up by rider ${req.rider.fullName}.`,
+          relatedId: mainOrder._id,
+        })
+      ),
+    ]);
+
     // Send notification
     const io = req.app.get('io');
     if (io) {
@@ -813,6 +905,22 @@ exports.verifyPickupOTP = async (req, res) => {
         message: `Your order has been picked up and is on the way`,
         orderId: mainOrder._id,
         riderName: req.rider.fullName
+      });
+
+      shipments.forEach(shipment => {
+        const payload = {
+          type: 'order_picked_up',
+          message: `Order ${mainOrder._id} has been picked up by rider ${req.rider.fullName}`,
+          orderId: mainOrder._id,
+          shipmentId: shipment._id,
+          riderName: req.rider.fullName
+        };
+        io.emit(`vendor_${shipment.vendor}`, payload);
+        req.app.get('notifyVendor')?.(shipment.vendor.toString(), {
+          title: 'Order picked up',
+          message: payload.message,
+          data: payload
+        });
       });
     }
 
@@ -948,6 +1056,30 @@ exports.verifyDeliveryOTP = async (req, res) => {
     await session.commitTransaction();
     session.endSession();
 
+    const deliveredShipments = await Shipment.find({ mainOrder: orderId });
+    const vendorIds = [
+      ...new Set(
+        deliveredShipments.map((shipment) => shipment.vendor?.toString()).filter(Boolean)
+      ),
+    ];
+
+    await Promise.all([
+      pushUserNotification({
+        userId: mainOrder.user,
+        type: 'order_delivered',
+        message: `Your order ${mainOrder._id} has been delivered successfully.`,
+        relatedId: mainOrder._id,
+      }),
+      ...vendorIds.map((vendorId) =>
+        pushUserNotification({
+          userId: vendorId,
+          type: 'order_delivered',
+          message: `Order ${mainOrder._id} has been delivered to the customer.`,
+          relatedId: mainOrder._id,
+        })
+      ),
+    ]);
+
     // Notify admin that order is ready for completion/payout
     const io = req.app.get('io');
     if (io) {
@@ -969,13 +1101,18 @@ exports.verifyDeliveryOTP = async (req, res) => {
       });
 
       // Notify vendor(s)
-      const shipments = await Shipment.find({ mainOrder: orderId });
-      shipments.forEach(shipment => {
-        io.emit(`vendor_${shipment.vendor}`, {
+      deliveredShipments.forEach(shipment => {
+        const payload = {
           type: 'order_delivered',
           message: `Order ${mainOrder._id} has been delivered to customer`,
           orderId: mainOrder._id,
           shipmentId: shipment._id
+        };
+        io.emit(`vendor_${shipment.vendor}`, payload);
+        req.app.get('notifyVendor')?.(shipment.vendor.toString(), {
+          title: 'Order delivered',
+          message: payload.message,
+          data: payload
         });
       });
     }

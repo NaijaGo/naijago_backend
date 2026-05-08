@@ -152,5 +152,10 @@ companyRiderSchema.post('save', async function(doc) {
   }
 });
 
+companyRiderSchema.index({ company: 1, status: 1 });
+companyRiderSchema.index({ company: 1, isActive: 1 });
+companyRiderSchema.index({ status: 1, createdAt: -1 });
+companyRiderSchema.index({ isAvailable: 1, isActive: 1, status: 1 });
+
 const CompanyRider = mongoose.model('CompanyRider', companyRiderSchema);
 module.exports = CompanyRider;

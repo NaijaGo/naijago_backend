@@ -97,6 +97,13 @@ const UserSchema = new mongoose.Schema({
     sparse: true,
     match: [/^(?:\+?234|0)[789]\d{9}$/, 'Please enter a valid Nigerian WhatsApp number'],
   },
+  vendorContactEmail: {
+    type: String,
+    trim: true,
+    lowercase: true,
+    sparse: true,
+    match: [/.+@.+\..+/, 'Please enter a valid vendor email address'],
+  },
   businessSupportPhone: {
     type: String,
     trim: true,
@@ -151,9 +158,56 @@ const UserSchema = new mongoose.Schema({
     },
     sparse: true,
   },
+  validIdentification: {
+    idType: {
+      type: String,
+      enum: ['national_id', 'voters_card', 'drivers_license', 'international_passport', null],
+      default: null,
+    },
+    idNumber: { type: String, trim: true },
+    documentUrl: { type: String, trim: true },
+  },
+  shopPhotoUrls: [{ type: String, trim: true }],
+  sampleProducts: [
+    {
+      description: { type: String, trim: true },
+      price: { type: Number, min: 0 },
+      photoUrls: [{ type: String, trim: true }],
+      _id: false,
+    }
+  ],
+  socialMediaPage: { type: String, trim: true },
+  cacCertificateUrl: { type: String, trim: true },
+  cacNumber: { type: String, trim: true },
+  bankAccountDetails: {
+    accountName: { type: String, trim: true },
+    bankName: { type: String, trim: true },
+    accountNumber: {
+      type: String,
+      trim: true,
+      match: [/^\d{10}$/, 'Please enter a valid 10 digit account number'],
+    },
+  },
+  deliveryAvailable: { type: Boolean, default: false },
+  emergencyContactNumber: {
+    type: String,
+    trim: true,
+    match: [/^(?:\+?234|0)[789]\d{9}$/, 'Please enter a valid Nigerian emergency contact number'],
+  },
+  vendorAgreements: {
+    respondQuickly: { type: Boolean, default: false },
+    prepareOrdersOnTime: { type: Boolean, default: false },
+    keepProductsUpdated: { type: Boolean, default: false },
+    maintainAccuratePricing: { type: Boolean, default: false },
+    packageItemsProperly: { type: Boolean, default: false },
+    treatCustomersProfessionally: { type: Boolean, default: false },
+    followNaijaGoPolicies: { type: Boolean, default: false },
+    avoidFakeOrProhibitedProducts: { type: Boolean, default: false },
+  },
+  prohibitedProductsAcknowledged: { type: Boolean, default: false },
   pharmacistStatus: {
     type: String,
-    enum: ['none', 'sent', 'received', 'reviewing', 'approved', 'rejected'],
+    enum: ['none', 'sent', 'received', 'reviewing', 'approved', 'rejected', 'suspended'],
     default: 'none',
   },
   pharmacistRequestDate: {
@@ -223,6 +277,80 @@ const UserSchema = new mongoose.Schema({
       default: null,
     },
   },
+  naijagoSubscription: {
+    planId: {
+      type: String,
+      enum: ['none', 'student', 'standard', 'premium'],
+      default: 'none',
+    },
+    planName: {
+      type: String,
+      default: '',
+    },
+    status: {
+      type: String,
+      enum: ['inactive', 'payment_pending', 'active', 'expired', 'cancelled'],
+      default: 'inactive',
+    },
+    price: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    monthlyDeliveryLimit: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    deliveriesRemaining: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    minimumOrderValue: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    deliveryScope: {
+      type: String,
+      default: '',
+    },
+    validHours: {
+      start: { type: String, default: '09:00' },
+      end: { type: String, default: '18:00' },
+    },
+    preferences: {
+      type: [String],
+      default: [],
+    },
+    zone: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    city: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    activatedAt: {
+      type: Date,
+      default: null,
+    },
+    expiresAt: {
+      type: Date,
+      default: null,
+    },
+    lastResetAt: {
+      type: Date,
+      default: null,
+    },
+    paymentReference: {
+      type: String,
+      default: '',
+    },
+  },
   savedItems: [ // Wishlist/Saved Products
     {
       type: mongoose.Schema.Types.ObjectId,
@@ -281,6 +409,7 @@ const UserSchema = new mongoose.Schema({
           'referral_reward',
           'vendor_status_update',
           'general',
+          'admin_message',
           'order_update',
           'delivery_payout',
           'new_order',           // ← ADDED THIS LINE
@@ -396,6 +525,20 @@ UserSchema.pre('save', async function(next) {
 UserSchema.methods.matchPassword = async function(enteredPassword) {
   return await bcrypt.compare(enteredPassword, this.password);
 };
+
+UserSchema.index({ createdAt: -1 });
+UserSchema.index({ role: 1, createdAt: -1 });
+UserSchema.index({ isAdmin: 1, isVendor: 1, role: 1, createdAt: -1 });
+UserSchema.index({ isVendor: 1, vendorStatus: 1, createdAt: -1 });
+UserSchema.index({ vendorStatus: 1, createdAt: -1 });
+UserSchema.index({ pharmacistStatus: 1, createdAt: -1 });
+UserSchema.index({ businessName: 1 });
+UserSchema.index({ 'naijagoSubscription.status': 1, 'naijagoSubscription.expiresAt': 1 });
+UserSchema.index({ referredBy: 1, createdAt: -1 });
+UserSchema.index({ oneSignalUserId: 1 }, { sparse: true });
+UserSchema.index({ oneSignalPlayerId: 1 }, { sparse: true });
+UserSchema.index({ 'vendorWithdrawals.status': 1, 'vendorWithdrawals.createdAt': -1 });
+UserSchema.index({ 'userWithdrawals.status': 1, 'userWithdrawals.createdAt': -1 });
 
 // Create the User model from the schema
 const User = mongoose.model('User', UserSchema);

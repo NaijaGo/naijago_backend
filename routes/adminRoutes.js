@@ -8,7 +8,11 @@ const Product = require('../models/Product');
 const MainOrder = require('../models/MainOrder');
 const Shipment = require('../models/Shipment');
 const NotificationLog = require('../models/NotificationLog');
+const AdminScheduledNotification = require('../models/AdminScheduledNotification');
+const AdminNotificationTemplate = require('../models/AdminNotificationTemplate');
+const MarketingContactList = require('../models/MarketingContactList');
 const AnalyticsEvent = require('../models/AnalyticsEvent');
+const CompanyRider = require('../models/CompanyRider');
 const { protect } = require('../middleware/authMiddleware'); // Import the protect middleware
 const {
     getReferralProgramSettings,
@@ -22,6 +26,16 @@ const {
     getPharmacySubscriptionSettings,
     updatePharmacySubscriptionSettings,
 } = require('../services/pharmacySubscriptionService');
+const { sendVerificationEmail } = require('../utils/emailHelper');
+const { sendMarketingCampaign } = require('../services/marketingCampaignService');
+const {
+    ADMIN_NOTIFICATION_SEGMENTS: SERVICE_NOTIFICATION_SEGMENTS,
+    exportRecipients,
+    normalizeRecipientIds,
+    recipientCounts,
+    resolveNotificationSegment: resolveAdminNotificationSegment,
+    sendAdminInAppNotification,
+} = require('../services/adminNotificationService');
 
 const router = express.Router();
 const REFERRAL_SETTINGS_KEY = 'referral_program';
@@ -39,6 +53,33 @@ const CUSTOMER_LOOKUP_MATCH = {
     'userDoc.isAdmin': { $ne: true },
     'userDoc.isVendor': { $ne: true },
     'userDoc.role': { $ne: 'admin' },
+};
+const CUSTOMER_CONTACT_FILTER = {
+    isAdmin: { $ne: true },
+    isVendor: { $ne: true },
+    role: { $ne: 'admin' },
+    $or: [
+        { vendorStatus: { $exists: false } },
+        { vendorStatus: null },
+        { vendorStatus: 'none' },
+    ],
+};
+const VENDOR_CONTACT_FILTER = {
+    role: { $ne: 'admin' },
+    $or: [
+        { isVendor: true },
+        { vendorStatus: { $nin: [null, 'none'] } },
+        { businessName: { $exists: true, $ne: '' } },
+    ],
+};
+
+const parsePagination = (query, defaults = {}) => {
+    const maxLimit = defaults.maxLimit || 500;
+    const defaultLimit = defaults.defaultLimit || 100;
+    const page = Math.max(parseInt(query.page, 10) || 1, 1);
+    const requestedLimit = parseInt(query.limit, 10) || defaultLimit;
+    const limit = Math.min(Math.max(requestedLimit, 1), maxLimit);
+    return { page, limit, skip: (page - 1) * limit };
 };
 
 const buildReferralSettingsPayload = (settings, message) => ({
@@ -73,6 +114,226 @@ const buildPharmacySubscriptionSettingsPayload = (settings, message) => ({
     createdAt: settings.createdAt,
     history: settings.history,
 });
+
+const normalizeUserContact = (user, type) => ({
+    id: user._id,
+    type,
+    name: `${user.firstName || ''} ${user.lastName || ''}`.trim() || user.businessName || user.email || 'Unnamed contact',
+    firstName: user.firstName || '',
+    lastName: user.lastName || '',
+    email: user.email || '',
+    phoneNumber: user.phoneNumber || '',
+    status: type === 'vendor' ? (user.vendorStatus || 'none') : (user.role || 'user'),
+    businessName: user.businessName || '',
+    businessCategories: user.businessCategories || [],
+    businessWhatsAppNumber: user.businessWhatsAppNumber || '',
+    businessSupportPhone: user.businessSupportPhone || '',
+    createdAt: user.createdAt,
+    updatedAt: user.updatedAt,
+});
+
+const normalizeRiderContact = (rider, source = 'individual') => ({
+    id: rider._id,
+    type: 'rider',
+    source,
+    name: rider.fullName || rider.email || 'Unnamed rider',
+    email: rider.email || '',
+    phoneNumber: rider.phoneNumber || '',
+    status: rider.status || 'pending',
+    plateNumber: rider.plateNumber || '',
+    vehicleType: rider.vehicleType || '',
+    isActive: rider.isActive === true,
+    isAvailable: rider.isAvailable === true,
+    walletBalance: rider.walletBalance || 0,
+    totalEarnings: rider.totalEarnings || rider.stats?.totalEarnings || 0,
+    totalWithdrawn: rider.totalWithdrawn || 0,
+    activeDeliveries: rider.activeDeliveries || rider.stats?.activeDeliveries || 0,
+    completedDeliveries: rider.completedDeliveries || rider.stats?.completedDeliveries || 0,
+    rating: rider.rating || rider.stats?.averageRating || 0,
+    cancellationRate: rider.cancellationRate || 0,
+    companyName: rider.company?.companyName || rider.company?.name || '',
+    createdAt: rider.createdAt || rider.joinedAt,
+    updatedAt: rider.updatedAt || rider.lastActivity,
+});
+
+const buildVendorOperationPayload = ({
+    vendor,
+    productStats,
+    salesStats,
+    payoutDue,
+}) => ({
+    id: vendor._id,
+    name: `${vendor.firstName || ''} ${vendor.lastName || ''}`.trim() || vendor.businessName || vendor.email || 'Unnamed vendor',
+    firstName: vendor.firstName || '',
+    lastName: vendor.lastName || '',
+    email: vendor.email || '',
+    phoneNumber: vendor.phoneNumber || '',
+    status: vendor.vendorStatus || 'none',
+    isVendor: vendor.isVendor === true,
+    businessName: vendor.businessName || '',
+    businessCategories: vendor.businessCategories || [],
+    businessWhatsAppNumber: vendor.businessWhatsAppNumber || '',
+    businessSupportPhone: vendor.businessSupportPhone || '',
+    isTemporarilyClosed: vendor.isTemporarilyClosed === true,
+    temporaryClosureReason: vendor.temporaryClosureReason || '',
+    vendorWalletBalance: vendor.vendorWalletBalance || 0,
+    appWalletBalance: vendor.appWalletBalance || 0,
+    modelTotalProducts: vendor.totalProducts || 0,
+    modelProductsSold: vendor.productsSold || 0,
+    modelProductsUnsold: vendor.productsUnsold || 0,
+    followersCount: vendor.followersCount || 0,
+    totalProducts: productStats?.totalProducts || 0,
+    activeProducts: productStats?.activeProducts || 0,
+    totalSalesAmount: salesStats?.totalSalesAmount || 0,
+    totalPlatformFees: salesStats?.totalPlatformFees || 0,
+    paidShipments: salesStats?.paidShipments || 0,
+    paidOrders: salesStats?.paidOrders || 0,
+    payoutDueAmount: payoutDue?.amount || 0,
+    payoutDueShipments: payoutDue?.shipmentCount || 0,
+    lastSaleAt: salesStats?.lastSaleAt || null,
+    lastProductActivityAt: productStats?.lastProductActivityAt || null,
+    createdAt: vendor.createdAt,
+    updatedAt: vendor.updatedAt,
+});
+
+const USER_NOTIFICATION_TYPES = new Set([
+    'product_sold',
+    'payment_received',
+    'wallet_deposit',
+    'wallet_withdrawal',
+    'referral_reward',
+    'vendor_status_update',
+    'general',
+    'admin_message',
+    'order_update',
+    'delivery_payout',
+    'new_order',
+    'order_shipped',
+    'order_delivered',
+]);
+
+const RIDER_NOTIFICATION_TYPES = new Set([
+    'product_sold',
+    'payment_received',
+    'wallet_deposit',
+    'wallet_withdrawal',
+    'vendor_status_update',
+    'general',
+    'admin_message',
+    'order_update',
+    'delivery_payout',
+]);
+
+const normalizeNotificationType = (type, allowedTypes) => {
+    const normalized = String(type || 'admin_message').trim().toLowerCase();
+    return allowedTypes.has(normalized) ? normalized : 'admin_message';
+};
+
+const ADMIN_NOTIFICATION_SEGMENTS = new Set([
+    'all_customers',
+    'customers_with_orders',
+    'customers_without_orders',
+    'active_subscribers',
+    'all_vendors',
+    'approved_vendors',
+    'pending_vendors',
+    'suspended_vendors',
+    'all_riders',
+    'approved_riders',
+    'pending_riders',
+    'suspended_riders',
+    'all',
+]);
+
+const resolveNotificationSegment = async (segment, recipientIds = []) => {
+    const normalizedSegment = ADMIN_NOTIFICATION_SEGMENTS.has(segment)
+        ? segment
+        : 'all_customers';
+    const explicitIds = recipientIds.filter(Boolean);
+    const result = {
+        segment: normalizedSegment,
+        customers: [],
+        vendors: [],
+        riders: [],
+    };
+
+    const applyIds = (query) => {
+        if (!explicitIds.length) return query;
+        return { ...query, _id: { $in: explicitIds } };
+    };
+
+    if (normalizedSegment === 'all' || normalizedSegment === 'all_customers') {
+        result.customers = await User.find(applyIds({ ...CUSTOMER_CONTACT_FILTER }))
+            .select('_id')
+            .lean();
+    }
+
+    if (normalizedSegment === 'customers_with_orders') {
+        const purchasingCustomerIds = await MainOrder.distinct('user', { isPaid: true });
+        result.customers = await User.find(
+            applyIds({ ...CUSTOMER_CONTACT_FILTER, _id: { $in: purchasingCustomerIds } }),
+        ).select('_id').lean();
+    }
+
+    if (normalizedSegment === 'customers_without_orders') {
+        const purchasingCustomerIds = await MainOrder.distinct('user', { isPaid: true });
+        result.customers = await User.find(
+            applyIds({ ...CUSTOMER_CONTACT_FILTER, _id: { $nin: purchasingCustomerIds } }),
+        ).select('_id').lean();
+    }
+
+    if (normalizedSegment === 'active_subscribers') {
+        result.customers = await User.find(
+            applyIds({
+                ...CUSTOMER_CONTACT_FILTER,
+                'naijagoSubscription.status': 'active',
+                'naijagoSubscription.expiresAt': { $gt: new Date() },
+            }),
+        ).select('_id').lean();
+    }
+
+    if (normalizedSegment === 'all' || normalizedSegment === 'all_vendors') {
+        result.vendors = await User.find(applyIds({ ...VENDOR_CONTACT_FILTER }))
+            .select('_id')
+            .lean();
+    }
+
+    if (normalizedSegment === 'approved_vendors') {
+        result.vendors = await User.find(
+            applyIds({ ...VENDOR_CONTACT_FILTER, vendorStatus: 'approved' }),
+        ).select('_id').lean();
+    }
+
+    if (normalizedSegment === 'pending_vendors') {
+        result.vendors = await User.find(
+            applyIds({ vendorStatus: { $in: ['sent', 'received', 'reviewing'] } }),
+        ).select('_id').lean();
+    }
+
+    if (normalizedSegment === 'suspended_vendors') {
+        result.vendors = await User.find(
+            applyIds({ ...VENDOR_CONTACT_FILTER, vendorStatus: 'suspended' }),
+        ).select('_id').lean();
+    }
+
+    if (normalizedSegment === 'all' || normalizedSegment === 'all_riders') {
+        result.riders = await Rider.find(applyIds({})).select('_id').lean();
+    }
+
+    if (normalizedSegment === 'approved_riders') {
+        result.riders = await Rider.find(applyIds({ status: 'approved' })).select('_id').lean();
+    }
+
+    if (normalizedSegment === 'pending_riders') {
+        result.riders = await Rider.find(applyIds({ status: 'pending' })).select('_id').lean();
+    }
+
+    if (normalizedSegment === 'suspended_riders') {
+        result.riders = await Rider.find(applyIds({ status: 'suspended' })).select('_id').lean();
+    }
+
+    return result;
+};
 
 const toRoundedNumber = (value, digits = 2) => {
     const numericValue = Number(value || 0);
@@ -639,11 +900,14 @@ const authorizeAdmin = (req, res, next) => {
 
 router.get('/product-moderation', protect, authorizeAdmin, async (req, res) => {
     try {
+        const { limit, skip } = parsePagination(req.query, { defaultLimit: 100, maxLimit: 300 });
         const status = req.query.status || 'pending';
         const products = await Product.find({ moderationStatus: status })
             .populate('vendor', 'businessName phoneNumber businessLocation')
             .sort({ updatedAt: -1, createdAt: -1 })
-            .limit(100);
+            .skip(skip)
+            .limit(limit)
+            .lean();
         res.status(200).json(products);
     } catch (error) {
         console.error('Error fetching product moderation queue:', error);
@@ -681,25 +945,922 @@ router.put('/product-moderation/:productId', protect, authorizeAdmin, async (req
     }
 });
 
+router.get('/contacts/customers', protect, authorizeAdmin, async (req, res) => {
+    try {
+        const { page, limit, skip } = parsePagination(req.query, { defaultLimit: 500, maxLimit: 5000 });
+        const search = String(req.query.search || '').trim();
+        const query = { ...CUSTOMER_CONTACT_FILTER };
+        if (search) {
+            query.$and = [
+                {
+                    $or: [
+                        { firstName: { $regex: search, $options: 'i' } },
+                        { lastName: { $regex: search, $options: 'i' } },
+                        { email: { $regex: search, $options: 'i' } },
+                        { phoneNumber: { $regex: search, $options: 'i' } },
+                    ],
+                },
+            ];
+        }
+
+        const [customers, total] = await Promise.all([
+            User.find(query)
+                .select('firstName lastName email phoneNumber role createdAt updatedAt')
+                .sort({ createdAt: -1 })
+                .skip(skip)
+                .limit(limit)
+                .lean(),
+            User.countDocuments(query),
+        ]);
+
+        res.status(200).json({
+            type: 'customers',
+            count: total,
+            pagination: { page, limit, total, pages: Math.ceil(total / limit) },
+            contacts: customers.map((user) => normalizeUserContact(user, 'customer')),
+        });
+    } catch (error) {
+        console.error('Error fetching customer contacts:', error);
+        res.status(500).json({ message: 'Failed to fetch customer contacts.' });
+    }
+});
+
+router.get('/contacts/vendors', protect, authorizeAdmin, async (req, res) => {
+    try {
+        const { page, limit, skip } = parsePagination(req.query, { defaultLimit: 500, maxLimit: 5000 });
+        const status = String(req.query.status || 'all').trim().toLowerCase();
+        const search = String(req.query.search || '').trim();
+        const query = { ...VENDOR_CONTACT_FILTER };
+
+        if (status !== 'all') {
+            query.vendorStatus = status;
+        }
+
+        if (search) {
+            query.$and = [
+                {
+                    $or: [
+                        { firstName: { $regex: search, $options: 'i' } },
+                        { lastName: { $regex: search, $options: 'i' } },
+                        { email: { $regex: search, $options: 'i' } },
+                        { phoneNumber: { $regex: search, $options: 'i' } },
+                        { businessName: { $regex: search, $options: 'i' } },
+                    ],
+                },
+            ];
+        }
+
+        const [vendors, total] = await Promise.all([
+            User.find(query)
+                .select('firstName lastName email phoneNumber vendorStatus isVendor businessName businessCategories businessWhatsAppNumber businessSupportPhone createdAt updatedAt')
+                .sort({ vendorStatus: 1, createdAt: -1 })
+                .skip(skip)
+                .limit(limit)
+                .lean(),
+            User.countDocuments(query),
+        ]);
+
+        res.status(200).json({
+            type: 'vendors',
+            count: total,
+            pagination: { page, limit, total, pages: Math.ceil(total / limit) },
+            contacts: vendors.map((user) => normalizeUserContact(user, 'vendor')),
+        });
+    } catch (error) {
+        console.error('Error fetching vendor contacts:', error);
+        res.status(500).json({ message: 'Failed to fetch vendor contacts.' });
+    }
+});
+
+router.get('/vendors/operations', protect, authorizeAdmin, async (req, res) => {
+    try {
+        const { page, limit, skip } = parsePagination(req.query, { defaultLimit: 200, maxLimit: 1000 });
+        const status = String(req.query.status || 'all').trim().toLowerCase();
+        const search = String(req.query.search || '').trim();
+        const query = { ...VENDOR_CONTACT_FILTER };
+
+        if (status !== 'all') {
+            query.vendorStatus = status;
+        }
+
+        if (search) {
+            query.$and = [
+                {
+                    $or: [
+                        { firstName: { $regex: search, $options: 'i' } },
+                        { lastName: { $regex: search, $options: 'i' } },
+                        { email: { $regex: search, $options: 'i' } },
+                        { phoneNumber: { $regex: search, $options: 'i' } },
+                        { businessName: { $regex: search, $options: 'i' } },
+                    ],
+                },
+            ];
+        }
+
+        const [
+            vendors,
+            total,
+            productStats,
+            salesStats,
+            payoutDueStats,
+        ] = await Promise.all([
+            User.find(query)
+                .select('firstName lastName email phoneNumber vendorStatus isVendor businessName businessCategories businessWhatsAppNumber businessSupportPhone isTemporarilyClosed temporaryClosureReason vendorWalletBalance appWalletBalance totalProducts productsSold productsUnsold followersCount createdAt updatedAt')
+                .sort({ vendorStatus: 1, createdAt: -1 })
+                .skip(skip)
+                .limit(limit)
+                .lean(),
+            User.countDocuments(query),
+            getVendorProductStats(),
+            getVendorSalesSummary(buildAnalyticsRange('all')),
+            Shipment.aggregate([
+                {
+                    $match: {
+                        $or: [
+                            { vendorPaidAt: { $exists: false } },
+                            { vendorPaidAt: null },
+                        ],
+                    },
+                },
+                {
+                    $lookup: {
+                        from: MainOrder.collection.name,
+                        localField: 'mainOrder',
+                        foreignField: '_id',
+                        as: 'mainOrder',
+                    },
+                },
+                { $unwind: '$mainOrder' },
+                {
+                    $match: {
+                        'mainOrder.isPaid': true,
+                        'mainOrder.mainOrderStatus': { $in: ['delivered', 'completed'] },
+                    },
+                },
+                {
+                    $group: {
+                        _id: '$vendor',
+                        shipmentCount: { $sum: 1 },
+                        amount: {
+                            $sum: {
+                                $cond: [
+                                    {
+                                        $gt: [
+                                            {
+                                                $subtract: [
+                                                    { $ifNull: ['$subtotal', 0] },
+                                                    { $ifNull: ['$platformFee', 0] },
+                                                ],
+                                            },
+                                            0,
+                                        ],
+                                    },
+                                    {
+                                        $subtract: [
+                                            { $ifNull: ['$subtotal', 0] },
+                                            { $ifNull: ['$platformFee', 0] },
+                                        ],
+                                    },
+                                    0,
+                                ],
+                            },
+                        },
+                    },
+                },
+            ]),
+        ]);
+
+        const productStatsByVendor = new Map(
+            productStats.map((entry) => [entry.vendorId, entry]),
+        );
+        const salesStatsByVendor = new Map(
+            salesStats.map((entry) => [entry.vendorId, entry]),
+        );
+        const payoutDueByVendor = new Map(
+            payoutDueStats.map((entry) => [
+                String(entry._id || ''),
+                {
+                    shipmentCount: Number(entry.shipmentCount || 0),
+                    amount: toRoundedNumber(entry.amount || 0),
+                },
+            ]),
+        );
+
+        const operations = vendors.map((vendor) => {
+            const vendorId = String(vendor._id || '');
+            return buildVendorOperationPayload({
+                vendor,
+                productStats: productStatsByVendor.get(vendorId),
+                salesStats: salesStatsByVendor.get(vendorId),
+                payoutDue: payoutDueByVendor.get(vendorId),
+            });
+        });
+
+        res.status(200).json({
+            count: total,
+            pagination: { page, limit, total, pages: Math.ceil(total / limit) },
+            vendors: operations,
+            totals: {
+                vendors: total,
+                approved: operations.filter((vendor) => vendor.status === 'approved').length,
+                suspended: operations.filter((vendor) => vendor.status === 'suspended').length,
+                activeProducts: operations.reduce((sum, vendor) => sum + Number(vendor.activeProducts || 0), 0),
+                totalSalesAmount: toRoundedNumber(
+                    operations.reduce((sum, vendor) => sum + Number(vendor.totalSalesAmount || 0), 0),
+                ),
+                payoutDueAmount: toRoundedNumber(
+                    operations.reduce((sum, vendor) => sum + Number(vendor.payoutDueAmount || 0), 0),
+                ),
+            },
+        });
+    } catch (error) {
+        console.error('Error fetching vendor operations:', error);
+        res.status(500).json({ message: 'Failed to fetch vendor operations.' });
+    }
+});
+
+router.get('/contacts/riders', protect, authorizeAdmin, async (req, res) => {
+    try {
+        const { page, limit, skip } = parsePagination(req.query, { defaultLimit: 500, maxLimit: 5000 });
+        const status = String(req.query.status || 'all').trim().toLowerCase();
+        const source = String(req.query.source || 'all').trim().toLowerCase();
+        const search = String(req.query.search || '').trim();
+        const riderQuery = {};
+        const companyRiderQuery = {};
+
+        if (status !== 'all') {
+            riderQuery.status = status;
+            companyRiderQuery.status = status;
+        }
+
+        if (search) {
+            const searchClause = {
+                $or: [
+                    { fullName: { $regex: search, $options: 'i' } },
+                    { email: { $regex: search, $options: 'i' } },
+                    { phoneNumber: { $regex: search, $options: 'i' } },
+                    { plateNumber: { $regex: search, $options: 'i' } },
+                ],
+            };
+            riderQuery.$and = [searchClause];
+            companyRiderQuery.$and = [searchClause];
+        }
+
+        const combinedSourceFetchLimit = source === 'all' ? skip + limit : limit;
+        const [individualRiders, companyRiders, individualTotal, companyTotal] = await Promise.all([
+            source === 'company'
+                ? []
+                : Rider.find(riderQuery)
+                    .select('fullName email phoneNumber status plateNumber vehicleType isActive isAvailable walletBalance totalEarnings totalWithdrawn activeDeliveries completedDeliveries cancellationRate rating createdAt updatedAt')
+                    .sort({ status: 1, createdAt: -1 })
+                    .skip(source === 'all' ? 0 : skip)
+                    .limit(combinedSourceFetchLimit)
+                    .lean(),
+            source === 'individual'
+                ? []
+                : CompanyRider.find(companyRiderQuery)
+                    .populate('company', 'companyName name')
+                    .select('fullName email phoneNumber status plateNumber vehicleType isActive isAvailable stats joinedAt lastActivity createdAt updatedAt company')
+                    .sort({ status: 1, createdAt: -1 })
+                    .skip(source === 'all' ? 0 : skip)
+                    .limit(combinedSourceFetchLimit)
+                    .lean(),
+            source === 'company' ? Promise.resolve(0) : Rider.countDocuments(riderQuery),
+            source === 'individual' ? Promise.resolve(0) : CompanyRider.countDocuments(companyRiderQuery),
+        ]);
+
+        const contacts = [
+            ...individualRiders.map((rider) => normalizeRiderContact(rider, 'individual')),
+            ...companyRiders.map((rider) => normalizeRiderContact(rider, 'company')),
+        ].sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0))
+            .slice(source === 'all' ? skip : 0, source === 'all' ? skip + limit : limit);
+        const total = individualTotal + companyTotal;
+
+        res.status(200).json({
+            type: 'riders',
+            count: total,
+            pagination: { page, limit, total, pages: Math.ceil(total / limit) },
+            contacts,
+        });
+    } catch (error) {
+        console.error('Error fetching rider contacts:', error);
+        res.status(500).json({ message: 'Failed to fetch rider contacts.' });
+    }
+});
+
 router.get('/notification-logs', protect, authorizeAdmin, async (req, res) => {
     try {
+        const { page, limit, skip } = parsePagination(req.query, { defaultLimit: 100, maxLimit: 200 });
         const filter = {};
         if (req.query.channel) filter.channel = req.query.channel;
         if (req.query.status) filter.status = req.query.status;
+        if (req.query.eventType) filter.eventType = req.query.eventType;
         if (req.query.vendorId) filter.vendor = req.query.vendorId;
         if (req.query.shipmentId) filter.shipment = req.query.shipmentId;
         if (req.query.orderId) filter.order = req.query.orderId;
 
-        const limit = Math.min(Number(req.query.limit) || 100, 200);
-        const logs = await NotificationLog.find(filter)
-            .populate('vendor', 'businessName firstName lastName phoneNumber')
-            .sort({ createdAt: -1 })
-            .limit(limit);
+        const [logs, total] = await Promise.all([
+            NotificationLog.find(filter)
+                .populate('vendor', 'businessName firstName lastName phoneNumber')
+                .sort({ createdAt: -1 })
+                .skip(skip)
+                .limit(limit)
+                .lean(),
+            NotificationLog.countDocuments(filter),
+        ]);
 
-        res.status(200).json(logs);
+        res.status(200).json({
+            count: total,
+            pagination: { page, limit, total, pages: Math.ceil(total / limit) },
+            logs,
+        });
     } catch (error) {
         console.error('Error fetching notification logs:', error);
         res.status(500).json({ message: 'Failed to fetch notification logs.' });
+    }
+});
+
+router.get('/notification-stats', protect, authorizeAdmin, async (req, res) => {
+    try {
+        const days = Math.min(Math.max(Number(req.query.days) || 30, 1), 365);
+        const since = new Date(Date.now() - days * DAY_IN_MS);
+        const logMatch = { createdAt: { $gte: since } };
+        const [logStats, scheduledStats, customerReadStats, riderReadStats] = await Promise.all([
+            NotificationLog.aggregate([
+                { $match: logMatch },
+                {
+                    $group: {
+                        _id: {
+                            channel: '$channel',
+                            status: '$status',
+                            eventType: '$eventType',
+                        },
+                        count: { $sum: 1 },
+                    },
+                },
+            ]),
+            AdminScheduledNotification.aggregate([
+                {
+                    $group: {
+                        _id: '$status',
+                        count: { $sum: 1 },
+                    },
+                },
+            ]),
+            User.aggregate([
+                { $unwind: '$notifications' },
+                { $match: { 'notifications.createdAt': { $gte: since } } },
+                {
+                    $group: {
+                        _id: {
+                            read: '$notifications.read',
+                            type: {
+                                $cond: [
+                                    { $eq: ['$isVendor', true] },
+                                    'vendor',
+                                    'customer',
+                                ],
+                            },
+                        },
+                        count: { $sum: 1 },
+                    },
+                },
+            ]),
+            Rider.aggregate([
+                { $unwind: '$notifications' },
+                { $match: { 'notifications.createdAt': { $gte: since } } },
+                {
+                    $group: {
+                        _id: { read: '$notifications.read', type: 'rider' },
+                        count: { $sum: 1 },
+                    },
+                },
+            ]),
+        ]);
+
+        const delivery = {
+            sent: 0,
+            failed: 0,
+            skipped: 0,
+            byChannel: {},
+            byEventType: {},
+        };
+
+        logStats.forEach((entry) => {
+            const status = entry._id.status || 'unknown';
+            const channel = entry._id.channel || 'unknown';
+            const eventType = entry._id.eventType || 'unknown';
+            delivery[status] = (delivery[status] || 0) + entry.count;
+            delivery.byChannel[channel] = delivery.byChannel[channel] || {
+                sent: 0,
+                failed: 0,
+                skipped: 0,
+            };
+            delivery.byChannel[channel][status] =
+                (delivery.byChannel[channel][status] || 0) + entry.count;
+            delivery.byEventType[eventType] =
+                (delivery.byEventType[eventType] || 0) + entry.count;
+        });
+
+        const scheduled = {
+            scheduled: 0,
+            sending: 0,
+            sent: 0,
+            cancelled: 0,
+            failed: 0,
+        };
+        scheduledStats.forEach((entry) => {
+            scheduled[entry._id || 'scheduled'] = entry.count;
+        });
+
+        const readStats = {
+            customers: { read: 0, unread: 0 },
+            vendors: { read: 0, unread: 0 },
+            riders: { read: 0, unread: 0 },
+        };
+        [...customerReadStats, ...riderReadStats].forEach((entry) => {
+            const type = `${entry._id.type}s`;
+            const bucket = entry._id.read === true ? 'read' : 'unread';
+            if (readStats[type]) readStats[type][bucket] += entry.count;
+        });
+
+        res.status(200).json({
+            days,
+            since,
+            delivery,
+            scheduled,
+            readStats,
+        });
+    } catch (error) {
+        console.error('Error loading notification stats:', error);
+        res.status(500).json({ message: 'Failed to load notification stats.' });
+    }
+});
+
+router.post('/notifications/preview', protect, authorizeAdmin, async (req, res) => {
+    try {
+        const segment = String(req.body.segment || req.body.audience || '').trim().toLowerCase();
+        const recipientIds = normalizeRecipientIds(req.body.recipientIds);
+
+        if (!SERVICE_NOTIFICATION_SEGMENTS.has(segment)) {
+            return res.status(400).json({ message: 'Invalid notification segment.' });
+        }
+
+        const recipients = await resolveAdminNotificationSegment(segment, recipientIds);
+        const results = recipientCounts(recipients);
+
+        res.status(200).json({
+            segment,
+            results,
+            total: results.total,
+            message: `This will send to ${results.customers} customers / ${results.vendors} vendors / ${results.riders} riders.`,
+        });
+    } catch (error) {
+        console.error('Error previewing admin notification:', error);
+        res.status(500).json({ message: 'Failed to preview recipients.' });
+    }
+});
+
+router.post('/notifications/send', protect, authorizeAdmin, async (req, res) => {
+    try {
+        const segment = String(req.body.segment || req.body.audience || '').trim().toLowerCase();
+        const title = String(req.body.title || '').trim();
+        const message = String(req.body.message || '').trim();
+        const recipientIds = normalizeRecipientIds(req.body.recipientIds);
+
+        if (!SERVICE_NOTIFICATION_SEGMENTS.has(segment)) {
+            return res.status(400).json({
+                message: 'Invalid notification segment.',
+            });
+        }
+
+        if (!title || !message) {
+            return res.status(400).json({
+                message: 'Notification title and message are required.',
+            });
+        }
+
+        const result = await sendAdminInAppNotification({
+            app: req.app,
+            adminUserId: req.user._id,
+            segment,
+            title,
+            message,
+            type: req.body.type,
+            recipientIds,
+        });
+
+        res.status(200).json(result);
+    } catch (error) {
+        console.error('Error sending admin notification:', error);
+        res.status(error.statusCode || 500).json({
+            message: error.statusCode ? error.message : 'Failed to send notification.',
+        });
+    }
+});
+
+router.post('/notifications/schedule', protect, authorizeAdmin, async (req, res) => {
+    try {
+        const segment = String(req.body.segment || req.body.audience || '').trim().toLowerCase();
+        const title = String(req.body.title || '').trim();
+        const message = String(req.body.message || '').trim();
+        const recipientIds = normalizeRecipientIds(req.body.recipientIds);
+        const scheduledFor = new Date(req.body.scheduledFor);
+
+        if (!SERVICE_NOTIFICATION_SEGMENTS.has(segment)) {
+            return res.status(400).json({ message: 'Invalid notification segment.' });
+        }
+
+        if (!title || !message) {
+            return res.status(400).json({
+                message: 'Notification title and message are required.',
+            });
+        }
+
+        if (Number.isNaN(scheduledFor.getTime()) || scheduledFor <= new Date()) {
+            return res.status(400).json({
+                message: 'Choose a valid future date and time.',
+            });
+        }
+
+        const recipients = await resolveAdminNotificationSegment(segment, recipientIds);
+        const preview = recipientCounts(recipients);
+        const scheduled = await AdminScheduledNotification.create({
+            segment,
+            recipientIds,
+            title,
+            message,
+            type: req.body.type || 'admin_message',
+            scheduledFor,
+            createdBy: req.user._id,
+            preview,
+        });
+
+        res.status(201).json({
+            message: 'Notification scheduled successfully.',
+            scheduled,
+            preview,
+        });
+    } catch (error) {
+        console.error('Error scheduling admin notification:', error);
+        res.status(500).json({ message: 'Failed to schedule notification.' });
+    }
+});
+
+router.get('/notifications/scheduled', protect, authorizeAdmin, async (req, res) => {
+    try {
+        const status = String(req.query.status || '').trim();
+        const filter = status ? { status } : {};
+        const scheduled = await AdminScheduledNotification.find(filter)
+            .populate('createdBy', 'firstName lastName email')
+            .sort({ scheduledFor: -1 })
+            .limit(100)
+            .lean();
+
+        res.status(200).json({ count: scheduled.length, scheduled });
+    } catch (error) {
+        console.error('Error loading scheduled notifications:', error);
+        res.status(500).json({ message: 'Failed to load scheduled notifications.' });
+    }
+});
+
+router.put('/notifications/scheduled/:id/cancel', protect, authorizeAdmin, async (req, res) => {
+    try {
+        const scheduled = await AdminScheduledNotification.findOneAndUpdate(
+            { _id: req.params.id, status: 'scheduled' },
+            { status: 'cancelled', cancelledAt: new Date() },
+            { new: true },
+        );
+
+        if (!scheduled) {
+            return res.status(404).json({
+                message: 'Scheduled notification not found or cannot be cancelled.',
+            });
+        }
+
+        res.status(200).json({ message: 'Scheduled notification cancelled.', scheduled });
+    } catch (error) {
+        console.error('Error cancelling scheduled notification:', error);
+        res.status(500).json({ message: 'Failed to cancel scheduled notification.' });
+    }
+});
+
+router.get('/notifications/templates', protect, authorizeAdmin, async (req, res) => {
+    try {
+        const filter = {};
+        const category = String(req.query.category || '').trim();
+        const search = String(req.query.search || '').trim();
+
+        if (category && category !== 'all') filter.category = category;
+        if (search) {
+            filter.$or = [
+                { name: { $regex: search, $options: 'i' } },
+                { title: { $regex: search, $options: 'i' } },
+                { message: { $regex: search, $options: 'i' } },
+            ];
+        }
+
+        const templates = await AdminNotificationTemplate.find(filter)
+            .populate('createdBy', 'firstName lastName email')
+            .populate('updatedBy', 'firstName lastName email')
+            .sort({ updatedAt: -1 })
+            .limit(200)
+            .lean();
+
+        res.status(200).json({ count: templates.length, templates });
+    } catch (error) {
+        console.error('Error loading notification templates:', error);
+        res.status(500).json({ message: 'Failed to load notification templates.' });
+    }
+});
+
+router.post('/notifications/templates', protect, authorizeAdmin, async (req, res) => {
+    try {
+        const name = String(req.body.name || '').trim();
+        const category = String(req.body.category || 'general').trim();
+        const segment = String(req.body.segment || 'all_customers').trim().toLowerCase();
+        const title = String(req.body.title || '').trim();
+        const message = String(req.body.message || '').trim();
+
+        if (!name || !title || !message) {
+            return res.status(400).json({
+                message: 'Template name, title, and message are required.',
+            });
+        }
+
+        if (!SERVICE_NOTIFICATION_SEGMENTS.has(segment)) {
+            return res.status(400).json({ message: 'Invalid notification segment.' });
+        }
+
+        const template = await AdminNotificationTemplate.create({
+            name,
+            category,
+            segment,
+            title,
+            message,
+            type: req.body.type || 'admin_message',
+            createdBy: req.user._id,
+            updatedBy: req.user._id,
+        });
+
+        res.status(201).json({
+            message: 'Notification template saved.',
+            template,
+        });
+    } catch (error) {
+        console.error('Error creating notification template:', error);
+        res.status(500).json({ message: 'Failed to save notification template.' });
+    }
+});
+
+router.put('/notifications/templates/:id', protect, authorizeAdmin, async (req, res) => {
+    try {
+        const updates = {};
+        const allowedFields = ['name', 'category', 'segment', 'title', 'message', 'type'];
+
+        allowedFields.forEach((field) => {
+            if (req.body[field] !== undefined) {
+                updates[field] = String(req.body[field] || '').trim();
+            }
+        });
+
+        if (updates.segment) {
+            updates.segment = updates.segment.toLowerCase();
+            if (!SERVICE_NOTIFICATION_SEGMENTS.has(updates.segment)) {
+                return res.status(400).json({ message: 'Invalid notification segment.' });
+            }
+        }
+
+        if (updates.name === '' || updates.title === '' || updates.message === '') {
+            return res.status(400).json({
+                message: 'Template name, title, and message cannot be empty.',
+            });
+        }
+
+        updates.updatedBy = req.user._id;
+
+        const template = await AdminNotificationTemplate.findByIdAndUpdate(
+            req.params.id,
+            updates,
+            { new: true, runValidators: true },
+        );
+
+        if (!template) {
+            return res.status(404).json({ message: 'Notification template not found.' });
+        }
+
+        res.status(200).json({
+            message: 'Notification template updated.',
+            template,
+        });
+    } catch (error) {
+        console.error('Error updating notification template:', error);
+        res.status(500).json({ message: 'Failed to update notification template.' });
+    }
+});
+
+router.put('/notifications/templates/:id/use', protect, authorizeAdmin, async (req, res) => {
+    try {
+        const template = await AdminNotificationTemplate.findByIdAndUpdate(
+            req.params.id,
+            { lastUsedAt: new Date(), updatedBy: req.user._id },
+            { new: true },
+        );
+
+        if (!template) {
+            return res.status(404).json({ message: 'Notification template not found.' });
+        }
+
+        res.status(200).json({ message: 'Template marked as used.', template });
+    } catch (error) {
+        console.error('Error marking notification template used:', error);
+        res.status(500).json({ message: 'Failed to update template usage.' });
+    }
+});
+
+router.delete('/notifications/templates/:id', protect, authorizeAdmin, async (req, res) => {
+    try {
+        const template = await AdminNotificationTemplate.findByIdAndDelete(req.params.id);
+
+        if (!template) {
+            return res.status(404).json({ message: 'Notification template not found.' });
+        }
+
+        res.status(200).json({ message: 'Notification template deleted.' });
+    } catch (error) {
+        console.error('Error deleting notification template:', error);
+        res.status(500).json({ message: 'Failed to delete notification template.' });
+    }
+});
+
+router.post('/notifications/export-segment', protect, authorizeAdmin, async (req, res) => {
+    try {
+        const segment = String(req.body.segment || req.body.audience || '').trim().toLowerCase();
+        const recipientIds = normalizeRecipientIds(req.body.recipientIds);
+
+        if (!SERVICE_NOTIFICATION_SEGMENTS.has(segment)) {
+            return res.status(400).json({ message: 'Invalid notification segment.' });
+        }
+
+        const recipients = await resolveAdminNotificationSegment(segment, recipientIds);
+        const contacts = exportRecipients(recipients);
+
+        res.status(200).json({
+            segment,
+            contacts,
+            count: contacts.length,
+            results: recipientCounts(recipients),
+        });
+    } catch (error) {
+        console.error('Error exporting notification segment:', error);
+        res.status(500).json({ message: 'Failed to export segment.' });
+    }
+});
+
+router.get('/marketing-lists', protect, authorizeAdmin, async (req, res) => {
+    try {
+        const { page, limit, skip } = parsePagination(req.query, { defaultLimit: 100, maxLimit: 500 });
+        const [lists, total] = await Promise.all([
+            MarketingContactList.find({})
+                .populate('importedBy', 'firstName lastName email')
+                .sort({ createdAt: -1 })
+                .skip(skip)
+                .limit(limit)
+                .lean(),
+            MarketingContactList.countDocuments({}),
+        ]);
+
+        res.status(200).json({
+            count: total,
+            pagination: { page, limit, total, pages: Math.ceil(total / limit) },
+            lists,
+        });
+    } catch (error) {
+        console.error('Error loading marketing lists:', error);
+        res.status(500).json({ message: 'Failed to load marketing lists.' });
+    }
+});
+
+router.get('/marketing-lists/:id', protect, authorizeAdmin, async (req, res) => {
+    try {
+        const list = await MarketingContactList.findById(req.params.id)
+            .populate('importedBy', 'firstName lastName email')
+            .lean();
+
+        if (!list) {
+            return res.status(404).json({ message: 'Marketing list not found.' });
+        }
+
+        res.status(200).json({ list });
+    } catch (error) {
+        console.error('Error loading marketing list:', error);
+        res.status(500).json({ message: 'Failed to load marketing list.' });
+    }
+});
+
+router.post('/marketing-lists/import', protect, authorizeAdmin, async (req, res) => {
+    try {
+        const name = String(req.body.name || '').trim();
+        const audience = ['customers', 'vendors', 'riders', 'mixed'].includes(req.body.audience)
+            ? req.body.audience
+            : 'mixed';
+        const contacts = Array.isArray(req.body.contacts) ? req.body.contacts : [];
+
+        if (!name) {
+            return res.status(400).json({ message: 'List name is required.' });
+        }
+
+        const seen = new Set();
+        const normalizedContacts = contacts
+            .map((contact) => ({
+                name: String(contact.name || '').trim(),
+                email: String(contact.email || '').trim().toLowerCase(),
+                phoneNumber: String(contact.phoneNumber || contact.phone || '').trim(),
+                type: ['customer', 'vendor', 'rider', 'other'].includes(contact.type)
+                    ? contact.type
+                    : 'other',
+                source: String(contact.source || 'admin_import').trim(),
+            }))
+            .filter((contact) => contact.email || contact.phoneNumber)
+            .filter((contact) => {
+                const key = `${contact.email}|${contact.phoneNumber}`;
+                if (seen.has(key)) return false;
+                seen.add(key);
+                return true;
+            });
+
+        if (!normalizedContacts.length) {
+            return res.status(400).json({
+                message: 'Import at least one contact with an email or phone number.',
+            });
+        }
+
+        const list = await MarketingContactList.create({
+            name,
+            audience,
+            contacts: normalizedContacts,
+            contactCount: normalizedContacts.length,
+            importedBy: req.user._id,
+        });
+
+        res.status(201).json({
+            message: 'Marketing contact list imported.',
+            list,
+        });
+    } catch (error) {
+        console.error('Error importing marketing list:', error);
+        res.status(500).json({ message: 'Failed to import marketing list.' });
+    }
+});
+
+router.delete('/marketing-lists/:id', protect, authorizeAdmin, async (req, res) => {
+    try {
+        const list = await MarketingContactList.findByIdAndDelete(req.params.id);
+
+        if (!list) {
+            return res.status(404).json({ message: 'Marketing list not found.' });
+        }
+
+        res.status(200).json({ message: 'Marketing list deleted.' });
+    } catch (error) {
+        console.error('Error deleting marketing list:', error);
+        res.status(500).json({ message: 'Failed to delete marketing list.' });
+    }
+});
+
+router.post('/marketing-campaigns/send', protect, authorizeAdmin, async (req, res) => {
+    try {
+        const listId = String(req.body.listId || '').trim();
+        const title = String(req.body.title || '').trim();
+        const message = String(req.body.message || '').trim();
+        const channels = Array.isArray(req.body.channels) ? req.body.channels : [];
+
+        if (!listId) {
+            return res.status(400).json({ message: 'Marketing list is required.' });
+        }
+
+        const list = await MarketingContactList.findById(listId).lean();
+        if (!list) {
+            return res.status(404).json({ message: 'Marketing list not found.' });
+        }
+
+        const result = await sendMarketingCampaign({
+            list,
+            title,
+            message,
+            channels,
+            sentBy: req.user._id,
+        });
+
+        res.status(200).json({
+            message: 'Marketing campaign processed.',
+            campaign: result,
+        });
+    } catch (error) {
+        console.error('Error sending marketing campaign:', error);
+        res.status(error.statusCode || 500).json({
+            message: error.statusCode ? error.message : 'Failed to send marketing campaign.',
+        });
     }
 });
 
@@ -1457,10 +2618,16 @@ router.put('/pharmacist-subscription-settings', protect, authorizeAdmin, async (
 // @access  Private (Admin only)
 router.get('/vendor-requests', protect, authorizeAdmin, async (req, res) => {
     try {
+        const { limit, skip } = parsePagination(req.query, { defaultLimit: 100, maxLimit: 300 });
         // Find users who have submitted a vendor request and are not yet approved/rejected
         const vendorRequests = await User.find({
             vendorStatus: { $in: ['sent', 'received', 'reviewing'] }
-        }).select('-password -emailVerificationToken -deviceVerificationToken -passwordResetToken'); // Exclude sensitive fields
+        })
+            .select('-password -emailVerificationToken -deviceVerificationToken -passwordResetToken')
+            .sort({ vendorRequestDate: -1, createdAt: -1 })
+            .skip(skip)
+            .limit(limit)
+            .lean(); // Exclude sensitive fields
 
         res.status(200).json(vendorRequests);
     } catch (error) {
@@ -1469,16 +2636,17 @@ router.get('/vendor-requests', protect, authorizeAdmin, async (req, res) => {
     }
 });
 
-// @desc    Update a user's vendor status (approve/reject)
+// @desc    Update a user's vendor status
 // @route   PUT /api/admin/vendor-status/:userId
 // @access  Private (Admin only)
 router.put('/vendor-status/:userId', protect, authorizeAdmin, async (req, res) => {
     const { userId } = req.params;
-    const { status } = req.body; // Expected status: 'approved' or 'rejected'
+    const { status } = req.body;
 
-    // Validate the status input
-    if (!['approved', 'rejected'].includes(status)) {
-        return res.status(400).json({ message: 'Invalid status provided. Must be "approved" or "rejected".' });
+    if (!['received', 'reviewing', 'approved', 'rejected', 'suspended'].includes(status)) {
+        return res.status(400).json({
+            message: 'Invalid status provided. Must be received, reviewing, approved, rejected, or suspended.',
+        });
     }
 
     try {
@@ -1487,16 +2655,37 @@ router.put('/vendor-status/:userId', protect, authorizeAdmin, async (req, res) =
             return res.status(404).json({ message: 'User not found.' });
         }
 
-        // Update the vendor status
         user.vendorStatus = status;
 
         if (status === 'approved') {
-            user.isVendor = true; // Mark as a vendor
-            user.vendorRejectionDate = undefined; // Clear any previous rejection date
+            user.isVendor = true;
+            user.vendorRejectionDate = undefined;
+            user.isTemporarilyClosed = false;
+            user.temporaryClosureReason = undefined;
         } else if (status === 'rejected') {
-            user.isVendor = false; // Ensure not marked as a vendor
-            user.vendorRejectionDate = Date.now(); // Record rejection date for cooldown
+            user.isVendor = false;
+            user.vendorRejectionDate = Date.now();
+        } else if (status === 'suspended') {
+            user.isVendor = false;
+            user.isTemporarilyClosed = true;
+            user.temporaryClosureReason = String(req.body.reason || '').trim()
+                || 'Vendor account suspended by admin.';
+        } else {
+            user.isVendor = false;
         }
+
+        user.notifications.push({
+            type: 'vendor_status_update',
+            message: status === 'approved'
+                ? 'Your vendor registration has been approved. Vendor tools are now available.'
+                : status === 'suspended'
+                ? 'Your vendor account has been suspended by admin.'
+                : status === 'rejected'
+                ? 'Your vendor registration was not approved.'
+                : `Your vendor registration status is now ${status}.`,
+            relatedModel: 'User',
+            relatedId: user._id,
+        });
 
         await user.save();
 
@@ -1519,9 +2708,15 @@ router.put('/vendor-status/:userId', protect, authorizeAdmin, async (req, res) =
 // @access  Private (Admin only)
 router.get('/pharmacist-requests', protect, authorizeAdmin, async (req, res) => {
     try {
+        const { limit, skip } = parsePagination(req.query, { defaultLimit: 100, maxLimit: 300 });
         const pharmacistRequests = await User.find({
             pharmacistStatus: { $in: ['sent', 'received', 'reviewing'] }
-        }).select('-password -emailVerificationToken -deviceVerificationToken -passwordResetToken');
+        })
+            .select('-password -emailVerificationToken -deviceVerificationToken -passwordResetToken')
+            .sort({ pharmacistRequestDate: -1, createdAt: -1 })
+            .skip(skip)
+            .limit(limit)
+            .lean();
 
         res.status(200).json(pharmacistRequests);
     } catch (error) {
@@ -1595,9 +2790,14 @@ router.put('/pharmacist-status/:userId', protect, authorizeAdmin, async (req, re
 // @access  Private (Admin only)
 router.get('/disputes', protect, authorizeAdmin, async (req, res) => {
     try {
+        const { limit, skip } = parsePagination(req.query, { defaultLimit: 100, maxLimit: 300 });
         const disputes = await Dispute.find({})
             .populate('user', 'firstName lastName email')
-            .populate('order', 'totalPrice _id');
+            .populate('order', 'totalPrice _id')
+            .sort({ createdAt: -1 })
+            .skip(skip)
+            .limit(limit)
+            .lean();
         res.status(200).json(disputes);
     } catch (error) {
         console.error('Error fetching disputes:', error);
@@ -1683,15 +2883,17 @@ router.get('/riders/pending', protect, authorizeAdmin, async (req, res) => {
     }
 });
 
-// @desc    Update rider status (approve/reject)
+// @desc    Update individual rider status
 // @route   PUT /api/admin/riders/:riderId/status
 // @access  Private (Admin only)
 router.put('/riders/:riderId/status', protect, authorizeAdmin, async (req, res) => {
     const { riderId } = req.params;
-    const { status } = req.body; 
+    const { status, reason } = req.body;
 
-    if (!['approved', 'rejected'].includes(status)) {
-        return res.status(400).json({ message: 'Invalid status. Use "approved" or "rejected".' });
+    if (!['pending', 'approved', 'rejected', 'suspended'].includes(status)) {
+        return res.status(400).json({
+            message: 'Invalid status. Use pending, approved, rejected, or suspended.',
+        });
     }
 
     try {
@@ -1702,11 +2904,25 @@ router.put('/riders/:riderId/status', protect, authorizeAdmin, async (req, res) 
         
         if (status === 'approved') {
             rider.isVerified = true;
+            rider.isActive = true;
             rider.rejectionReason = undefined; 
         } else if (status === 'rejected') {
             rider.isVerified = false;
-            // SETTING YOUR DEFAULT REASON HERE
-            rider.rejectionReason = "Photo was blurry or the documents are invalid. Please re-upload clear documents.";
+            rider.isActive = false;
+            rider.rejectionReason =
+                String(reason || '').trim()
+                || "Photo was blurry or the documents are invalid. Please re-upload clear documents.";
+            rider.rejectionDate = Date.now();
+        } else if (status === 'suspended') {
+            rider.isActive = false;
+            rider.isAvailable = false;
+            rider.rejectionReason =
+                String(reason || '').trim()
+                || 'Rider account suspended by admin.';
+        } else if (status === 'pending') {
+            rider.isVerified = false;
+            rider.isActive = false;
+            rider.isAvailable = false;
         }
 
         await rider.save();
@@ -1724,6 +2940,47 @@ router.put('/riders/:riderId/status', protect, authorizeAdmin, async (req, res) 
     } catch (error) {
         console.error('Admin status update error:', error);
         res.status(500).json({ message: 'Server error updating rider status.' });
+    }
+});
+
+// @desc    Update company rider operational status
+// @route   PUT /api/admin/company-riders/:riderId/status
+// @access  Private (Admin only)
+router.put('/company-riders/:riderId/status', protect, authorizeAdmin, async (req, res) => {
+    const { riderId } = req.params;
+    const { status } = req.body;
+
+    if (!['active', 'inactive', 'suspended', 'pending_verification'].includes(status)) {
+        return res.status(400).json({
+            message: 'Invalid status. Use active, inactive, suspended, or pending_verification.',
+        });
+    }
+
+    try {
+        const rider = await CompanyRider.findById(riderId);
+        if (!rider) {
+            return res.status(404).json({ message: 'Company rider not found.' });
+        }
+
+        rider.status = status;
+        rider.isActive = status === 'active';
+        if (status !== 'active') {
+            rider.isAvailable = false;
+        }
+        rider.notes.push({
+            content: `Admin changed rider status to ${status}.`,
+            addedBy: 'admin',
+        });
+
+        await rider.save();
+
+        res.status(200).json({
+            message: `Company rider ${rider.fullName} status updated to ${status}.`,
+            status: rider.status,
+        });
+    } catch (error) {
+        console.error('Admin company rider status update error:', error);
+        res.status(500).json({ message: 'Server error updating company rider status.' });
     }
 });
 module.exports = router;

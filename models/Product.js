@@ -209,6 +209,14 @@ productSchema.virtual('availableSizes').get(function () {
 productSchema.set('toJSON', { virtuals: true });
 productSchema.set('toObject', { virtuals: true });
 
+productSchema.index({ vendor: 1, createdAt: -1 });
+productSchema.index({ vendor: 1, isActive: 1, createdAt: -1 });
+productSchema.index({ isActive: 1, category: 1, createdAt: -1 });
+productSchema.index({ isActive: 1, is_flashsale: 1, createdAt: -1 });
+productSchema.index({ moderationStatus: 1, createdAt: -1 });
+productSchema.index({ salesCount: -1, createdAt: -1 });
+productSchema.index({ name: 'text', description: 'text', category: 'text', restaurantName: 'text' });
+
 const Product = mongoose.model('Product', productSchema);
 
 module.exports = Product;

@@ -1,6 +1,7 @@
 // routes/riderRoutes.js
 const express = require('express');
 const router = express.Router();
+const Rider = require('../models/Rider');
 const { 
   // Authentication
   registerRider, 
@@ -194,6 +195,75 @@ router.get('/earnings', getEarnings);
  * @access  Private (Rider only)
  */
 router.get('/dashboard', getDashboardStats);
+
+/**
+ * @route   GET /api/riders/notifications
+ * @desc    Get rider in-app notifications
+ * @access  Private (Rider only)
+ */
+router.get('/notifications', async (req, res) => {
+  try {
+    const rider = await Rider.findById(req.rider._id).select('notifications');
+    if (!rider) {
+      return res.status(404).json({ success: false, message: 'Rider not found' });
+    }
+
+    const notifications = [...(rider.notifications || [])].sort(
+      (a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)
+    );
+
+    res.json({ success: true, notifications });
+  } catch (error) {
+    console.error('Get rider notifications error:', error);
+    res.status(500).json({ success: false, message: 'Unable to load notifications' });
+  }
+});
+
+/**
+ * @route   PUT /api/riders/notifications/mark-read/:notificationId
+ * @desc    Mark a rider notification as read
+ * @access  Private (Rider only)
+ */
+router.put('/notifications/mark-read/:notificationId', async (req, res) => {
+  try {
+    const rider = await Rider.findOneAndUpdate(
+      {
+        _id: req.rider._id,
+        'notifications._id': req.params.notificationId,
+      },
+      { $set: { 'notifications.$.read': true } },
+      { new: true }
+    ).select('notifications');
+
+    if (!rider) {
+      return res.status(404).json({ success: false, message: 'Notification not found' });
+    }
+
+    res.json({ success: true, message: 'Notification marked as read' });
+  } catch (error) {
+    console.error('Mark rider notification read error:', error);
+    res.status(500).json({ success: false, message: 'Unable to update notification' });
+  }
+});
+
+/**
+ * @route   PUT /api/riders/notifications/mark-read
+ * @desc    Mark all rider notifications as read
+ * @access  Private (Rider only)
+ */
+router.put('/notifications/mark-read', async (req, res) => {
+  try {
+    await Rider.updateOne(
+      { _id: req.rider._id },
+      { $set: { 'notifications.$[].read': true } }
+    );
+
+    res.json({ success: true, message: 'Notifications marked as read' });
+  } catch (error) {
+    console.error('Mark all rider notifications read error:', error);
+    res.status(500).json({ success: false, message: 'Unable to update notifications' });
+  }
+});
 
 /**
  * @route   POST /api/riders/withdraw

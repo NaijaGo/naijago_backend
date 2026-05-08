@@ -18,6 +18,7 @@ const { notFound, errorHandler } = require('./middleware/errorMiddleware');
 const { initializeReferralProgramSettings } = require('./services/referralService');
 const { initializeDeliveryFeeSettings } = require('./services/deliveryFeeService');
 const { initializePharmacySubscriptionSettings } = require('./services/pharmacySubscriptionService');
+const { startScheduledNotificationRunner } = require('./services/scheduledNotificationRunner');
 
 const app = express();
 app.set('trust proxy', true);
@@ -60,11 +61,13 @@ app.use('/api/products', require('./routes/productRoutes'));
 app.use('/api/orders', require('./routes/orderRoutes'));
 app.use('/api/reviews', require('./routes/reviewsRoutes'));
 app.use('/api/wallet', require('./routes/walletRoutes'));
+app.use('/api/subscriptions', require('./routes/subscriptionRoutes'));
 app.use('/api/returns', require('./routes/returnsRoutes'));
 app.use('/api/chat', require('./routes/chatRoutes'));
 app.use('/api/chatbot', require('./routes/chatbotRoutes'));
 app.use('/api/disputes', require('./routes/disputesRoutes'));
 app.use('/api/riders', require('./routes/riderRoutes')); // KEEP THIS!
+app.use('/api/mapbox', require('./routes/mapboxRoutes'));
 app.use('/api/uploads', require('./routes/uploadsRoutes'));
 app.use('/api/analytics', require('./routes/analyticsRoutes'));
 app.use('/api/food-readiness-campaigns', require('./routes/foodReadinessCampaignRoutes'));
@@ -1297,6 +1300,12 @@ const startServer = async () => {
           .join(', ')}.`,
       ),
     );
+    if (process.env.DISABLE_IN_PROCESS_SCHEDULED_NOTIFICATIONS !== 'true') {
+      startScheduledNotificationRunner(app);
+      console.log(colors.green('⏰ Scheduled notification runner active.'));
+    } else {
+      console.log(colors.yellow('⏰ In-process scheduled notification runner disabled; use worker:scheduled-notifications.'));
+    }
   });
 };
 

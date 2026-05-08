@@ -42,6 +42,15 @@ const multiUpload = upload.fields([
 
 const vendorPopulateFields = 'businessName businessLocation phoneNumber businessLogoUrl businessWhatsAppNumber businessSupportPhone deliveryRadiusKm prepTimeMinutes isTemporarilyClosed temporaryClosureReason operatingHours';
 
+const parsePagination = (query, defaults = {}) => {
+    const maxLimit = defaults.maxLimit || 100;
+    const defaultLimit = defaults.defaultLimit || 50;
+    const page = Math.max(parseInt(query.page, 10) || 1, 1);
+    const requestedLimit = parseInt(query.limit, 10) || defaultLimit;
+    const limit = Math.min(Math.max(requestedLimit, 1), maxLimit);
+    return { page, limit, skip: (page - 1) * limit };
+};
+
 const isMedicineCategory = (category = '') => {
     const normalized = String(category).toLowerCase();
     return normalized.includes('medicine') ||
@@ -584,6 +593,7 @@ router.put(
 // @desc    Get all products for the logged-in vendor
 router.get('/myproducts', protect, async (req, res) => {
     try {
+        const { limit, skip } = parsePagination(req.query, { defaultLimit: 100, maxLimit: 300 });
         // Ensure the user is a vendor
         const user = await User.findById(req.user._id);
         if (!user || !user.isVendor || user.vendorStatus !== 'approved') {
@@ -592,7 +602,11 @@ router.get('/myproducts', protect, async (req, res) => {
 
         // Find products where the 'vendor' field matches the authenticated user's ID
         const products = await Product.find({ vendor: req.user._id })
-            .populate('vendor', vendorPopulateFields);
+            .populate('vendor', vendorPopulateFields)
+            .sort({ createdAt: -1 })
+            .skip(skip)
+            .limit(limit)
+            .lean();
 
         res.status(200).json(products);
     } catch (error) {
@@ -625,8 +639,13 @@ router.get('/newarrivals', async (req, res) => {
 // @desc    Get all products on flash sale (for homepage)
 router.get('/flashsales', async (req, res) => {
     try {
+        const { limit } = parsePagination(req.query, { defaultLimit: 30, maxLimit: 100 });
         // Find all products that are active and marked as a flash sale
-        const flashSalesProducts = await Product.find({ isActive: true, is_flashsale: true }).populate('vendor', vendorPopulateFields);
+        const flashSalesProducts = await Product.find({ isActive: true, is_flashsale: true })
+            .sort({ createdAt: -1 })
+            .limit(limit)
+            .populate('vendor', vendorPopulateFields)
+            .lean();
         
         res.status(200).json(flashSalesProducts);
     } catch (error) {
@@ -638,7 +657,13 @@ router.get('/flashsales', async (req, res) => {
 // @desc    Get products by a specific vendor (publicly viewable vendor stores)
 router.get('/vendor/:vendorId', async (req, res) => {
     try {
-        const products = await Product.find({ vendor: req.params.vendorId, isActive: true }).populate('vendor', `firstName lastName ${vendorPopulateFields}`);
+        const { limit, skip } = parsePagination(req.query, { defaultLimit: 100, maxLimit: 300 });
+        const products = await Product.find({ vendor: req.params.vendorId, isActive: true })
+            .populate('vendor', `firstName lastName ${vendorPopulateFields}`)
+            .sort({ createdAt: -1 })
+            .skip(skip)
+            .limit(limit)
+            .lean();
         if (products.length === 0) {
             return res.status(404).json({ message: 'No products found for this vendor.' });
         }
@@ -692,6 +717,7 @@ router.get('/search', async (req, res) => {
 // @access  Public
 router.get('/restaurants', async (req, res) => {
     try {
+        const { limit } = parsePagination(req.query, { defaultLimit: 100, maxLimit: 300 });
         const lat = req.query.lat !== undefined ? Number(req.query.lat) : null;
         const lng = req.query.lng !== undefined ? Number(req.query.lng) : null;
         const radiusKm = req.query.radiusKm !== undefined ? Number(req.query.radiusKm) : 15;
@@ -712,7 +738,11 @@ router.get('/restaurants', async (req, res) => {
             if (Number.isFinite(maxPrice)) filter.price.$lte = maxPrice;
         }
 
-        let products = await Product.find(filter).populate('vendor', vendorPopulateFields);
+        let products = await Product.find(filter)
+            .sort(sort === 'popular' ? { salesCount: -1, createdAt: -1 } : { createdAt: -1 })
+            .limit(limit * 2)
+            .populate('vendor', vendorPopulateFields)
+            .lean();
 
         products = products.filter((product) => matchesRestaurantMeal(product, mealType));
 
@@ -728,7 +758,7 @@ router.get('/restaurants', async (req, res) => {
             } else if (sort === 'price_high') {
                 products.sort((a, b) => (b.price || 0) - (a.price || 0));
             }
-            return res.status(200).json(products);
+            return res.status(200).json(products.slice(0, limit));
         }
 
         const withDistances = products.map((product) => {
@@ -764,7 +794,7 @@ router.get('/restaurants', async (req, res) => {
             })
             .map((entry) => entry.product);
 
-        res.status(200).json(nearby.length > 0 ? nearby : products);
+        res.status(200).json((nearby.length > 0 ? nearby : products).slice(0, limit));
     } catch (error) {
         console.error('Error fetching restaurant products:', error);
         res.status(500).json({ message: 'Server error fetching restaurant products.' });
@@ -791,6 +821,7 @@ router.get('/:id', async (req, res) => {
 // @desc    Get all products (for homepage, public access)
 router.get('/', async (req, res) => {
   try {
+    const { limit } = parsePagination(req.query, { defaultLimit: 100, maxLimit: 300 });
     const { category } = req.query;
     const lat = req.query.lat !== undefined ? Number(req.query.lat) : null;
     const lng = req.query.lng !== undefined ? Number(req.query.lng) : null;
@@ -801,7 +832,11 @@ router.get('/', async (req, res) => {
       Object.assign(filter, buildCategoryFilter(category));
     }
 
-    const products = await Product.find(filter).populate('vendor', vendorPopulateFields);
+    const products = await Product.find(filter)
+      .sort({ createdAt: -1 })
+      .limit(limit * 2)
+      .populate('vendor', vendorPopulateFields)
+      .lean();
     const canSortByCustomerLocation = Number.isFinite(lat) && Number.isFinite(lng);
     const sortedProducts = canSortByCustomerLocation
       ? products
@@ -833,7 +868,7 @@ router.get('/', async (req, res) => {
 
     console.log(`Backend: Fetched ${products.length} products${category ? ` for category "${category}"` : ''}.`);
     
-    res.status(200).json(sortedProducts);
+    res.status(200).json(sortedProducts.slice(0, limit));
   } catch (error) {
     console.error('Error fetching products:', error);
     res.status(500).json({ message: 'Server error fetching products.' });
@@ -845,6 +880,7 @@ router.get('/', async (req, res) => {
 // =============================================================
 router.get('/size/:type', async (req, res) => {
     try {
+        const { limit, skip } = parsePagination(req.query, { defaultLimit: 100, maxLimit: 300 });
         const { type } = req.params;
         const { category } = req.query;
         
@@ -858,7 +894,11 @@ router.get('/size/:type', async (req, res) => {
         }
         
         const products = await Product.find(filter)
-            .populate('vendor', vendorPopulateFields);
+            .populate('vendor', vendorPopulateFields)
+            .sort({ createdAt: -1 })
+            .skip(skip)
+            .limit(limit)
+            .lean();
         
         res.status(200).json({
             count: products.length,

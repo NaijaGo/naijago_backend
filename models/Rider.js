@@ -109,6 +109,16 @@ const riderSchema = new mongoose.Schema({
     type: Boolean,
     default: false
   },
+
+  oneSignalUserId: {
+    type: String,
+    sparse: true,
+  },
+
+  oneSignalPlayerId: {
+    type: String,
+    sparse: true,
+  },
   
   // Email Verification
   emailVerificationToken: { 
@@ -237,6 +247,7 @@ const riderSchema = new mongoose.Schema({
         'wallet_withdrawal',
         'vendor_status_update',
         'general',
+        'admin_message',
         'order_update',
         'delivery_payout'           // ← include it here too
       ],
@@ -378,6 +389,9 @@ riderSchema.index({ isAvailable: 1 });
 riderSchema.index({ 'currentLocation': '2dsphere' });
 riderSchema.index({ createdAt: -1 });
 riderSchema.index({ walletBalance: -1 });
+riderSchema.index({ status: 1, createdAt: -1 });
+riderSchema.index({ isAvailable: 1, isActive: 1, status: 1 });
+riderSchema.index({ 'withdrawalHistory.status': 1, 'withdrawalHistory.createdAt': -1 });
 
 // Password Hashing Middleware
 riderSchema.pre('save', async function (next) {

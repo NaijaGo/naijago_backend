@@ -89,6 +89,49 @@ router.post('/cloudinary/vendor-logo', protect, authorizeRoles('vendor'), async 
   }
 });
 
+router.post('/cloudinary/vendor-onboarding', protect, async (req, res) => {
+  try {
+    if (!req.files || Object.keys(req.files).length === 0) {
+      return res.status(400).json({ message: 'No onboarding file was uploaded.' });
+    }
+
+    const file = req.files.file || req.files.image || Object.values(req.files)[0];
+    const allowedMimeTypes = new Set([
+      'image/jpeg',
+      'image/png',
+      'image/webp',
+      'application/pdf',
+    ]);
+
+    if (!file?.mimetype || !allowedMimeTypes.has(file.mimetype)) {
+      return res.status(400).json({ message: 'Only JPG, PNG, WEBP, or PDF files are allowed.' });
+    }
+
+    const purpose = String(req.body?.purpose || 'document')
+      .toLowerCase()
+      .replace(/[^a-z0-9_-]/g, '-')
+      .slice(0, 40);
+
+    const result = await cloudinary.uploader.upload(file.tempFilePath, {
+      folder: `vendor-onboarding/${req.user._id}/${purpose || 'document'}`,
+      resource_type: 'auto',
+      transformation: file.mimetype.startsWith('image/')
+        ? [
+            { width: 1600, height: 1600, crop: 'limit' },
+            { quality: 'auto', fetch_format: 'auto' },
+          ]
+        : undefined,
+    });
+
+    if (fs.existsSync(file.tempFilePath)) fs.unlinkSync(file.tempFilePath);
+
+    res.json({ url: result.secure_url });
+  } catch (error) {
+    console.error('Vendor onboarding upload failed:', error);
+    res.status(500).json({ message: 'Failed to upload onboarding file.' });
+  }
+});
+
 router.post('/cloudinary/food-campaign', protect, authorizeRoles('admin'), async (req, res) => {
   try {
     if (!req.files || Object.keys(req.files).length === 0) {

@@ -54,6 +54,11 @@ const MainOrderSchema = new mongoose.Schema({
     totalSubtotal: { type: Number, required: true, default: 0.0 },
     totalPlatformFees: { type: Number, required: true, default: 0.0 },
     totalShippingPrice: { type: Number, required: true, default: 0.0 }, // Sum of all shipment shippingPrices
+    originalShippingPrice: { type: Number, default: 0.0 },
+    subscriptionDeliveryDiscount: { type: Number, default: 0.0 },
+    subscriptionFreeDeliveryApplied: { type: Boolean, default: false },
+    subscriptionDeliveryConsumed: { type: Boolean, default: false },
+    subscriptionPlanId: { type: String, default: '' },
     totalTaxPrice: { type: Number, default: 0.0 },
     totalPrice: { type: Number, required: true, default: 0.0 }, // The amount the user paid
     
@@ -121,6 +126,13 @@ MainOrderSchema.methods.calculateCompanySettlement = function() {
 // ⬇️ ADD THIS: Index for better query performance
 MainOrderSchema.index({ company: 1, companySettlementStatus: 1 });
 MainOrderSchema.index({ createdAt: -1, company: 1 });
+MainOrderSchema.index({ createdAt: -1 });
+MainOrderSchema.index({ user: 1, createdAt: -1 });
+MainOrderSchema.index({ rider: 1, createdAt: -1 });
+MainOrderSchema.index({ isPaid: 1, mainOrderStatus: 1, createdAt: -1 });
+MainOrderSchema.index({ isPaid: 1, shipmentStatus: 1, isClaimed: 1, rider: 1, createdAt: -1 });
+MainOrderSchema.index({ subscriptionFreeDeliveryApplied: 1, createdAt: -1 });
+MainOrderSchema.index({ vendorPaidAt: 1, createdAt: -1 });
 
 const MainOrder = mongoose.model('MainOrder', MainOrderSchema);
 module.exports = MainOrder;
