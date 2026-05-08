@@ -31,19 +31,27 @@ const getDefaultDeliveryLocation = (user) => {
   return { latitude, longitude };
 };
 
-const findBestPharmacistForUser = async (user) => {
+const findBestPharmacistForUser = async (user, app) => {
+  const onlinePharmacists = app?.get?.('onlinePharmacists');
+  const onlinePharmacistIds = onlinePharmacists
+    ? Array.from(onlinePharmacists.keys())
+    : [];
+
   const pharmacists = await User.find({
     role: 'pharmacist',
     pharmacistStatus: 'approved',
     vendorStatus: 'approved',
     isVendor: true,
+    ...(onlinePharmacistIds.length > 0
+      ? { _id: { $in: onlinePharmacistIds } }
+      : { isAvailable: true }),
   }).select('businessName businessLocation isAvailable lastActive').lean();
 
   if (!pharmacists.length) return null;
 
   const userLocation = getDefaultDeliveryLocation(user);
   if (!userLocation) {
-    return pharmacists.find((pharmacist) => pharmacist.isAvailable) || pharmacists[0];
+    return pharmacists[0];
   }
 
   return pharmacists
@@ -60,9 +68,6 @@ const findBestPharmacistForUser = async (user) => {
       };
     })
     .sort((a, b) => {
-      if (a.pharmacist.isAvailable !== b.pharmacist.isAvailable) {
-        return a.pharmacist.isAvailable ? -1 : 1;
-      }
       return a.distanceKm - b.distanceKm;
     })[0]?.pharmacist || null;
 };
@@ -100,7 +105,7 @@ exports.startChat = async (req, res) => {
       });
     }
 
-    const assignedPharmacist = await findBestPharmacistForUser(user);
+    const assignedPharmacist = await findBestPharmacistForUser(user, req.app);
 
     const chat = await ChatSession.create({
       user: req.user._id,

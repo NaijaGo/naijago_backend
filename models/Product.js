@@ -112,6 +112,11 @@ const productSchema = mongoose.Schema(
       type: String,
       trim: true,
     },
+    foodCategory: {
+      type: String,
+      trim: true,
+      index: true,
+    },
     orderStartTime: {
       type: String,
       default: '09:00',

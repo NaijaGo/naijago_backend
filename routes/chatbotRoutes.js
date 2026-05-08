@@ -1,15 +1,10 @@
-//routes/chatbotRoutes.js
-
 const express = require("express");
 const router = express.Router();
-const { getAIResponse } = require("../utils/aiChatService");
 
 router.post("/", async (req, res) => {
-  const { message } = req.body;
-  if (!message) return res.status(400).json({ error: "Message is required" });
-
-  const reply = await getAIResponse(message);
-  res.json({ reply });
+  res.status(410).json({
+    message: "AI chatbot has been removed. Please use pharmacist consultation chat.",
+  });
 });
 
 module.exports = router;

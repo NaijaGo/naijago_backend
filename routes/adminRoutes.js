@@ -168,6 +168,8 @@ const buildVendorOperationPayload = ({
     lastName: vendor.lastName || '',
     email: vendor.email || '',
     phoneNumber: vendor.phoneNumber || '',
+    role: vendor.role || 'user',
+    pharmacistStatus: vendor.pharmacistStatus || 'none',
     status: vendor.vendorStatus || 'none',
     isVendor: vendor.isVendor === true,
     businessName: vendor.businessName || '',
@@ -1065,7 +1067,7 @@ router.get('/vendors/operations', protect, authorizeAdmin, async (req, res) => {
             payoutDueStats,
         ] = await Promise.all([
             User.find(query)
-                .select('firstName lastName email phoneNumber vendorStatus isVendor businessName businessCategories businessWhatsAppNumber businessSupportPhone isTemporarilyClosed temporaryClosureReason vendorWalletBalance appWalletBalance totalProducts productsSold productsUnsold followersCount createdAt updatedAt')
+                .select('firstName lastName email phoneNumber role pharmacistStatus vendorStatus isVendor businessName businessCategories businessWhatsAppNumber businessSupportPhone isTemporarilyClosed temporaryClosureReason vendorWalletBalance appWalletBalance totalProducts productsSold productsUnsold followersCount createdAt updatedAt')
                 .sort({ vendorStatus: 1, createdAt: -1 })
                 .skip(skip)
                 .limit(limit)

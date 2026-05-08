@@ -337,14 +337,34 @@ exports.getRiderProfile = async (req, res) => {
  */
 exports.updateRiderProfile = async (req, res) => {
   try {
-    const { fullName, phoneNumber, vehicleType, vehicleBrand, vehicleColor } = req.body;
+    const {
+      fullName,
+      phoneNumber,
+      homeAddress,
+      state,
+      city,
+      deliveryZone,
+      vehicleType,
+      vehicleBrand,
+      vehicleColor,
+      licenseNumber,
+      idType,
+      idNumber
+    } = req.body;
     
     const updateData = {};
     if (fullName) updateData.fullName = fullName;
     if (phoneNumber) updateData.phoneNumber = phoneNumber;
+    if (homeAddress) updateData.homeAddress = homeAddress;
+    if (state) updateData.state = state;
+    if (city) updateData.city = city;
+    if (deliveryZone) updateData.deliveryZone = deliveryZone;
     if (vehicleType) updateData.vehicleType = vehicleType;
     if (vehicleBrand) updateData.vehicleBrand = vehicleBrand;
     if (vehicleColor) updateData.vehicleColor = vehicleColor;
+    if (licenseNumber) updateData.licenseNumber = licenseNumber;
+    if (idType) updateData.idType = idType;
+    if (idNumber) updateData.idNumber = idNumber;
 
     // Validate at least one field is being updated
     if (Object.keys(updateData).length === 0) {
@@ -1313,13 +1333,29 @@ exports.requestWithdrawal = async (req, res) => {
       });
     }
 
-    // Check if rider has a verified bank account
-    if (!rider.bankAccount?.verified && paymentMethod === 'bank_transfer') {
+    const requestedPaymentMethod = paymentMethod || 'bank_transfer';
+    const submittedAccount = accountDetails || {};
+    const withdrawalAccountDetails = {
+      bankName: submittedAccount.bankName || rider.bankAccount?.bankName || '',
+      accountNumber:
+        submittedAccount.accountNumber || rider.bankAccount?.accountNumber || '',
+      accountName:
+        submittedAccount.accountName || rider.bankAccount?.accountName || '',
+      bankCode: submittedAccount.bankCode || rider.bankAccount?.bankCode || ''
+    };
+
+    // Admin verifies/processes the pending payout; the rider only needs saved bank details.
+    if (
+      requestedPaymentMethod === 'bank_transfer' &&
+      (!withdrawalAccountDetails.bankName ||
+        !withdrawalAccountDetails.accountNumber ||
+        !withdrawalAccountDetails.accountName)
+    ) {
       await session.abortTransaction();
       session.endSession();
       return res.status(400).json({
         success: false,
-        message: 'Please update and verify your bank account details first'
+        message: 'Please update your bank account details first'
       });
     }
 
@@ -1332,8 +1368,8 @@ exports.requestWithdrawal = async (req, res) => {
       status: 'pending',
       createdAt: Date.now(),
       reference,
-      paymentMethod: paymentMethod || 'bank_transfer',
-      accountDetails: accountDetails || rider.bankAccount || {}
+      paymentMethod: requestedPaymentMethod,
+      accountDetails: withdrawalAccountDetails
     };
 
     // Deduct from wallet and add to withdrawal history

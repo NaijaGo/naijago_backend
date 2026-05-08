@@ -81,6 +81,46 @@ const normalizeTime = (value, fallback) => {
     return /^\d{2}:\d{2}$/.test(raw) ? raw : fallback;
 };
 
+const normalizeFoodCategory = (value, category = '') => {
+    const raw = String(value || '').trim();
+    if (raw) return raw;
+
+    const parts = String(category || '').split('>');
+    const subcategory = parts.length > 1 ? parts[parts.length - 1].trim() : '';
+    if (subcategory && subcategory.toLowerCase() !== 'restaurant') {
+        return subcategory;
+    }
+
+    return 'Meals';
+};
+
+const deriveFoodCategory = (product = {}) => {
+    const explicit = normalizeFoodCategory(product.foodCategory, product.category);
+    if (explicit && explicit !== 'Meals') return explicit;
+
+    const source = [
+        product.name,
+        product.category,
+        product.description,
+        product.foodInformation,
+        product.restaurantName,
+    ].filter(Boolean).join(' ').toLowerCase();
+
+    const mapped = [
+        ['Rice', ['rice', 'jollof', 'fried rice', 'ofada']],
+        ['Swallow', ['swallow', 'eba', 'amala', 'fufu', 'pounded yam', 'semo']],
+        ['Soups', ['soup', 'egusi', 'ogbono', 'okra', 'banga', 'afang']],
+        ['Grills', ['grill', 'suya', 'barbecue', 'bbq', 'shawarma']],
+        ['Breakfast', ['breakfast', 'tea', 'coffee', 'akara', 'pap']],
+        ['Pastries', ['pastry', 'pastries', 'meat pie', 'doughnut', 'cake']],
+        ['Drinks', ['drink', 'juice', 'smoothie', 'water', 'soda']],
+        ['Snacks', ['snack', 'small chops', 'chips', 'burger']],
+        ['Seafood', ['fish', 'seafood', 'prawn', 'shrimp']],
+    ];
+
+    return mapped.find(([, keywords]) => keywords.some((keyword) => source.includes(keyword)))?.[0] || explicit;
+};
+
 const buildProductLocation = (body = {}) => {
     const formattedAddress = String(
         body.productLocationAddress ||
@@ -215,6 +255,7 @@ router.post(
             foodInformation,
             orderStartTime,
             orderEndTime,
+            foodCategory,
             medicineAccess,
             isOverTheCounter,
             requiresPrescription,
@@ -338,6 +379,9 @@ router.post(
                 foodInformation: isRestaurantCategory(category)
                     ? String(foodInformation || description).trim()
                     : undefined,
+                foodCategory: isRestaurantCategory(category)
+                    ? normalizeFoodCategory(foodCategory || req.body.foodType || req.body.subcategory, category)
+                    : undefined,
                 orderStartTime: isRestaurantCategory(category)
                     ? normalizeTime(orderStartTime, '09:00')
                     : undefined,
@@ -421,6 +465,7 @@ router.put(
             foodInformation,
             orderStartTime,
             orderEndTime,
+            foodCategory,
             medicineAccess,
             isOverTheCounter,
             requiresPrescription,
@@ -549,11 +594,20 @@ router.put(
             if (isRestaurantCategory(product.category)) {
                 if (restaurantName !== undefined) product.restaurantName = String(restaurantName).trim();
                 if (foodInformation !== undefined) product.foodInformation = String(foodInformation).trim();
+                if (foodCategory !== undefined || req.body.foodType !== undefined || req.body.subcategory !== undefined) {
+                    product.foodCategory = normalizeFoodCategory(
+                        foodCategory || req.body.foodType || req.body.subcategory,
+                        product.category
+                    );
+                } else if (!product.foodCategory) {
+                    product.foodCategory = normalizeFoodCategory('', product.category);
+                }
                 if (orderStartTime !== undefined) product.orderStartTime = normalizeTime(orderStartTime, '09:00');
                 if (orderEndTime !== undefined) product.orderEndTime = normalizeTime(orderEndTime, '19:00');
             } else {
                 product.restaurantName = undefined;
                 product.foodInformation = undefined;
+                product.foodCategory = undefined;
                 product.orderStartTime = undefined;
                 product.orderEndTime = undefined;
             }
@@ -715,6 +769,36 @@ router.get('/search', async (req, res) => {
 // @desc    Get restaurant/food products, optionally nearby by customer coordinates
 // @route   GET /api/products/restaurants?lat=&lng=&radiusKm=
 // @access  Public
+router.get('/restaurants/categories', async (req, res) => {
+    try {
+        const products = await Product.find({
+            isActive: true,
+            ...buildCategoryFilter('Restaurant'),
+        })
+            .select('name category description foodInformation restaurantName foodCategory')
+            .lean();
+
+        const categoryMap = new Map();
+        for (const product of products) {
+            const label = deriveFoodCategory(product);
+            const key = label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+            const current = categoryMap.get(key) || { key, label, count: 0 };
+            current.count += 1;
+            categoryMap.set(key, current);
+        }
+
+        const categories = Array.from(categoryMap.values()).sort((a, b) => {
+            if (b.count !== a.count) return b.count - a.count;
+            return a.label.localeCompare(b.label);
+        });
+
+        res.status(200).json({ categories });
+    } catch (error) {
+        console.error('Error fetching restaurant food categories:', error);
+        res.status(500).json({ message: 'Server error fetching restaurant food categories.' });
+    }
+});
+
 router.get('/restaurants', async (req, res) => {
     try {
         const { limit } = parsePagination(req.query, { defaultLimit: 100, maxLimit: 300 });
@@ -726,6 +810,7 @@ router.get('/restaurants', async (req, res) => {
         const minPrice = req.query.minPrice !== undefined ? Number(req.query.minPrice) : null;
         const maxPrice = req.query.maxPrice !== undefined ? Number(req.query.maxPrice) : null;
         const sort = String(req.query.sort || 'nearby').toLowerCase();
+        const foodCategory = String(req.query.foodCategory || '').trim().toLowerCase();
 
         const filter = {
             isActive: true,
@@ -745,6 +830,13 @@ router.get('/restaurants', async (req, res) => {
             .lean();
 
         products = products.filter((product) => matchesRestaurantMeal(product, mealType));
+        if (foodCategory) {
+            products = products.filter((product) => {
+                const label = deriveFoodCategory(product).toLowerCase();
+                const key = label.replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+                return label === foodCategory || key === foodCategory;
+            });
+        }
 
         if (openNow) {
             products = products.filter((product) => isRestaurantProductOpenNow(product));

@@ -19,6 +19,7 @@ const ShipmentItemSchema = new mongoose.Schema({
     commissionRate: { type: Number, default: 0 },
     restaurantName: { type: String },
     foodInformation: { type: String },
+    foodCategory: { type: String },
     orderStartTime: { type: String },
     orderEndTime: { type: String },
     medicineAccess: { type: String },
@@ -54,6 +55,9 @@ const ShipmentSchema = new mongoose.Schema({
     vendorLocation: { // Vendor's coordinates
         latitude: { type: Number, required: true },
         longitude: { type: Number, required: true },
+        formattedAddress: { type: String, trim: true },
+        address: { type: String, trim: true },
+        addressLine: { type: String, trim: true },
     },
     
     // Items included in THIS specific shipment

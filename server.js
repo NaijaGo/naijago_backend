@@ -64,7 +64,7 @@ app.use('/api/wallet', require('./routes/walletRoutes'));
 app.use('/api/subscriptions', require('./routes/subscriptionRoutes'));
 app.use('/api/returns', require('./routes/returnsRoutes'));
 app.use('/api/chat', require('./routes/chatRoutes'));
-app.use('/api/chatbot', require('./routes/chatbotRoutes'));
+// AI chatbot is intentionally not mounted; pharmacy consultations are human-only.
 app.use('/api/disputes', require('./routes/disputesRoutes'));
 app.use('/api/riders', require('./routes/riderRoutes')); // KEEP THIS!
 app.use('/api/mapbox', require('./routes/mapboxRoutes'));
@@ -129,9 +129,6 @@ const Company = require('./models/Company');
 const CompanyRider = require('./models/CompanyRider');
 const CompanyDelivery = require('./models/CompanyDelivery');
 
-// AI helper
-const { getAIResponse } = require('./utils/aiChatService');
-
 // expose io to controllers
 app.set('io', io);
 
@@ -146,6 +143,8 @@ const onlineCompanies = new Map(); // companyId -> socketId - NEW
 const onlineCompanyRiders = new Map(); // companyRiderId -> {socketId, companyId, location} - NEW
 const onlineAdmins = new Map(); // adminId -> socketId
 const onlineVendors = new Map(); // vendorId -> socketId
+const onlinePharmacists = new Map(); // pharmacist userId -> socketId
+app.set('onlinePharmacists', onlinePharmacists);
 
 // Room management for order tracking (BOTH SYSTEMS)
 const orderRooms = new Map(); // orderId -> [socketIds]
@@ -175,6 +174,85 @@ function broadcastToVendors(vendorIds, event, data) {
       io.to(socketId).emit(event, data);
     }
   });
+}
+
+function broadcastPharmacistStatus() {
+  const count = onlinePharmacists.size;
+  io.emit('pharmacistStatus', { online: count > 0, count });
+}
+
+async function isApprovedPharmacist(userId) {
+  if (!userId) return false;
+  const user = await User.findById(userId)
+    .select('role isVendor vendorStatus pharmacistStatus')
+    .lean();
+  return Boolean(
+    user &&
+    user.role === 'pharmacist' &&
+    user.isVendor === true &&
+    user.vendorStatus === 'approved' &&
+    user.pharmacistStatus === 'approved'
+  );
+}
+
+function formatChatMessage(message) {
+  return {
+    id: message._id,
+    session: String(message.session),
+    senderType: message.senderType,
+    sender: message.sender ? String(message.sender) : null,
+    text: message.message,
+    createdAt: message.createdAt,
+  };
+}
+
+async function createAndEmitSystemMessage(sessionId, text) {
+  const systemMessage = await ChatMessage.create({
+    session: sessionId,
+    senderType: 'system',
+    sender: null,
+    message: text,
+  });
+  const formatted = formatChatMessage(systemMessage);
+  io.to(`chat_${sessionId}`).emit('new_message', formatted);
+  return formatted;
+}
+
+function notifyOnlinePharmacists(session, textPreview) {
+  for (const socketId of onlinePharmacists.values()) {
+    io.to(socketId).emit('incoming_chat_request', {
+      sessionId: String(session._id),
+      userId: String(session.user),
+      textPreview: String(textPreview || 'A customer is waiting for pharmacist support.').slice(0, 300),
+      createdAt: new Date(),
+    });
+  }
+}
+
+async function emitOpenConsultationQueue(socket) {
+  const openSessions = await ChatSession.find({
+    status: 'open',
+    $or: [{ pharmacist: { $exists: false } }, { pharmacist: null }],
+  })
+    .sort({ createdAt: -1 })
+    .limit(20)
+    .lean();
+
+  for (const session of openSessions) {
+    const latestMessage = await ChatMessage.findOne({
+      session: session._id,
+      senderType: 'user',
+    })
+      .sort({ createdAt: -1 })
+      .lean();
+
+    socket.emit('incoming_chat_request', {
+      sessionId: String(session._id),
+      userId: String(session.user),
+      textPreview: latestMessage?.message || 'A customer is waiting for pharmacist support.',
+      createdAt: latestMessage?.createdAt || session.createdAt,
+    });
+  }
 }
 
 function broadcastToRider(riderId, event, data) {
@@ -344,6 +422,19 @@ io.on('connection', (socket) => {
   } else if (userType === 'vendor') {
     onlineVendors.set(userId, socket.id);
   }
+
+  isApprovedPharmacist(userId)
+    .then((approved) => {
+      if (!approved) return;
+      onlinePharmacists.set(String(userId), socket.id);
+      broadcastPharmacistStatus();
+      emitOpenConsultationQueue(socket).catch((error) => {
+        console.error('Failed to emit open consultation queue:', error);
+      });
+    })
+    .catch((error) => {
+      console.error('Pharmacist presence check failed:', error);
+    });
 
   // Send initial connection confirmation
   socket.emit('connection_established', {
@@ -1147,6 +1238,161 @@ io.on('connection', (socket) => {
   // [KEEP ALL ORIGINAL COMMON EVENTS FROM ORIGINAL CODE]
   // [KEEP ALL ORIGINAL CHAT & DISPUTE HANDLERS FROM ORIGINAL CODE]
 
+  socket.on('join_chat', async (payload, cb) => {
+    try {
+      const { sessionId } = payload || {};
+      if (!sessionId) {
+        return cb && cb({ success: false, error: 'sessionId required' });
+      }
+
+      const session = await ChatSession.findById(sessionId).lean();
+      if (!session) {
+        return cb && cb({ success: false, error: 'Chat session not found' });
+      }
+
+      const isOwner = String(session.user) === String(userId);
+      const isAssignedPharmacist =
+        session.pharmacist && String(session.pharmacist) === String(userId);
+      const canUsePharmacistTools = await isApprovedPharmacist(userId);
+
+      const canPreviewOpenSession = canUsePharmacistTools && !session.pharmacist;
+
+      if (!isOwner && !isAssignedPharmacist && !canPreviewOpenSession) {
+        return cb && cb({ success: false, error: 'Not authorized for this chat' });
+      }
+
+      socket.join(`chat_${sessionId}`);
+
+      const messages = await ChatMessage.find({
+        session: session._id,
+        senderType: { $ne: 'ai' },
+      })
+        .sort({ createdAt: 1 })
+        .lean();
+
+      return cb && cb({
+        success: true,
+        session,
+        messages: messages.map(formatChatMessage),
+      });
+    } catch (error) {
+      console.error('join_chat error:', error);
+      return cb && cb({ success: false, error: 'Server error during chat join' });
+    }
+  });
+
+  socket.on('leave_chat', ({ sessionId } = {}) => {
+    if (sessionId) socket.leave(`chat_${sessionId}`);
+  });
+
+  socket.on('send_chat_message', async (payload, cb) => {
+    try {
+      const { sessionId, text } = payload || {};
+      const cleanText = String(text || '').trim();
+      if (!sessionId || !cleanText) {
+        return cb && cb({ success: false, error: 'sessionId and text required' });
+      }
+
+      const session = await ChatSession.findById(sessionId);
+      if (!session) {
+        return cb && cb({ success: false, error: 'session not found' });
+      }
+
+      const canUsePharmacistTools = await isApprovedPharmacist(userId);
+      const isAssignedPharmacist =
+        session.pharmacist && String(session.pharmacist) === String(userId);
+      const isOwner = String(session.user) === String(userId);
+      const senderType = canUsePharmacistTools ? 'pharmacist' : 'user';
+
+      if (senderType === 'pharmacist' && !isAssignedPharmacist) {
+        return cb && cb({
+          success: false,
+          error: 'Only the assigned pharmacist can reply to this consultation',
+        });
+      }
+
+      if (senderType === 'user' && !isOwner) {
+        return cb && cb({ success: false, error: 'Not authorized for this chat' });
+      }
+
+      const chatMessage = await ChatMessage.create({
+        session: session._id,
+        senderType,
+        sender: userId,
+        message: cleanText,
+      });
+      const formatted = formatChatMessage(chatMessage);
+      io.to(`chat_${sessionId}`).emit('new_message', formatted);
+
+      if (senderType === 'user' && !session.pharmacist) {
+        notifyOnlinePharmacists(session, cleanText);
+      }
+
+      return cb && cb({ success: true, message: formatted });
+    } catch (error) {
+      console.error('send_chat_message error:', error);
+      return cb && cb({ success: false, error: 'failed to send' });
+    }
+  });
+
+  socket.on('pharmacist_claim_session', async (payload, cb) => {
+    try {
+      const { sessionId } = payload || {};
+      if (!sessionId) {
+        return cb && cb({ success: false, message: 'sessionId required' });
+      }
+
+      const canUsePharmacistTools = await isApprovedPharmacist(userId);
+      if (!canUsePharmacistTools) {
+        return cb && cb({
+          success: false,
+          message: 'Only approved pharmacists can claim customer consultations.',
+        });
+      }
+
+      const session = await ChatSession.findById(sessionId);
+      if (!session) {
+        return cb && cb({ success: false, message: 'session not found' });
+      }
+
+      if (session.pharmacist && String(session.pharmacist) !== String(userId)) {
+        return cb && cb({
+          success: false,
+          message: 'This consultation has already been claimed.',
+        });
+      }
+
+      session.pharmacist = userId;
+      session.status = 'assigned';
+      await session.save();
+
+      socket.join(`chat_${sessionId}`);
+
+      const pharmacistUser = await User.findById(userId)
+        .select('firstName lastName businessName')
+        .lean();
+      const pharmacistName =
+        pharmacistUser?.businessName ||
+        [pharmacistUser?.firstName, pharmacistUser?.lastName].filter(Boolean).join(' ') ||
+        'A certified pharmacist';
+
+      await createAndEmitSystemMessage(
+        sessionId,
+        `${pharmacistName} has joined the consultation.`
+      );
+
+      io.to(`chat_${sessionId}`).emit('pharmacist_joined', {
+        pharmacistId: String(userId),
+        name: pharmacistName,
+      });
+
+      return cb && cb({ success: true, session });
+    } catch (error) {
+      console.error('pharmacist_claim_session error:', error);
+      return cb && cb({ success: false, message: 'claim failed' });
+    }
+  });
+
   // ============================================
   // DISCONNECTION HANDLER (UPDATED FOR BOTH)
   // ============================================
@@ -1189,6 +1435,11 @@ io.on('connection', (socket) => {
       onlineAdmins.delete(userId);
     } else if (userType === 'vendor') {
       onlineVendors.delete(userId);
+    }
+
+    if (onlinePharmacists.get(String(userId)) === socket.id) {
+      onlinePharmacists.delete(String(userId));
+      broadcastPharmacistStatus();
     }
 
     // Clean up order rooms

@@ -7,6 +7,7 @@ const Shipment = require('../models/Shipment');
 const Product = require('../models/Product');
 const User = require('../models/User');
 const Rider = require('../models/Rider');
+const CompanyDelivery = require('../models/CompanyDelivery');
 const { protect, authorizeRoles } = require('../middleware/authMiddleware');
 const axios = require("axios");
 const notificationService = require('../services/notificationService');
@@ -615,6 +616,7 @@ function buildOrderItemFromProduct(item, product) {
         category: product.category || 'Uncategorized',
         restaurantName: product.restaurantName || undefined,
         foodInformation: product.foodInformation || undefined,
+        foodCategory: product.foodCategory || undefined,
         orderStartTime: product.orderStartTime || undefined,
         orderEndTime: product.orderEndTime || undefined,
         medicineAccess: product.medicineAccess || undefined,
@@ -704,7 +706,7 @@ router.post('/summary', protect, async (req, res) => {
         for (const item of cartItems) {
             // Fetch product, vendor, and category data
             const [product, vendorUser] = await Promise.all([
-                Product.findById(item.product, 'name price imageUrls vendor category restaurantName foodInformation orderStartTime orderEndTime medicineAccess isOverTheCounter requiresPrescription requiresPharmacistApproval'),
+                Product.findById(item.product, 'name price imageUrls vendor category restaurantName foodInformation foodCategory orderStartTime orderEndTime medicineAccess isOverTheCounter requiresPrescription requiresPharmacistApproval'),
                 User.findById(item.vendor, 'businessName businessLocation')
             ]);
             
@@ -743,7 +745,13 @@ router.post('/summary', protect, async (req, res) => {
                 vendorCartMap.set(vendorId, {
                     vendorId: vendorId,
                     vendorName: vendorUser.businessName,
-                    vendorLocation: vendorUser.businessLocation,
+                    vendorLocation: {
+                        latitude: vendorUser.businessLocation.latitude,
+                        longitude: vendorUser.businessLocation.longitude,
+                        formattedAddress: vendorUser.businessLocation.formattedAddress,
+                        address: vendorUser.businessLocation.address,
+                        addressLine: vendorUser.businessLocation.addressLine,
+                    },
                     items: [],
                     subtotal: 0,
                     platformFee: 0,
@@ -795,6 +803,7 @@ router.post('/summary', protect, async (req, res) => {
                 vendorId: data.vendorId,
                 vendorName: data.vendorName,
                 vendorLocation: vendorLocation, 
+                vendorZone: vendorLocation.formattedAddress || vendorLocation.address || vendorLocation.addressLine || '',
                 subtotal: parseFloat(data.subtotal.toFixed(2)),
                 shippingPrice: shippingPrice,
                 originalShippingPrice: shippingPrice,
@@ -1039,10 +1048,28 @@ router.post('/', protect, async (req, res) => {
         
         // --- Step 3: Create Shipment documents for each vendor ---
         for (const summary of shipmentSummaries) {
+            const summaryVendorId = summary.vendor || summary.vendorId;
+            let vendorLocation = summary.vendorLocation || {};
+            if (!vendorLocation.formattedAddress && summaryVendorId) {
+                const vendorForZone = await User.findById(summaryVendorId)
+                    .select('businessLocation')
+                    .session(session)
+                    .lean();
+                if (vendorForZone?.businessLocation) {
+                    vendorLocation = {
+                        ...vendorForZone.businessLocation,
+                        ...vendorLocation,
+                        formattedAddress:
+                            vendorLocation.formattedAddress ||
+                            vendorForZone.businessLocation.formattedAddress,
+                    };
+                }
+            }
+
             const newShipment = new Shipment({
                 mainOrder: createdMainOrder._id,
-                vendor: summary.vendor,
-                vendorLocation: summary.vendorLocation,
+                vendor: summaryVendorId,
+                vendorLocation,
                 items: summary.items.map(item => ({
                     product: item.product,
                     name: item.name,
@@ -1054,6 +1081,7 @@ router.post('/', protect, async (req, res) => {
                     commissionRate: item.commissionRate, // Store individual item commission rate
                     restaurantName: item.restaurantName,
                     foodInformation: item.foodInformation,
+                    foodCategory: item.foodCategory,
                     orderStartTime: item.orderStartTime,
                     orderEndTime: item.orderEndTime,
                     medicineAccess: item.medicineAccess,
@@ -2260,10 +2288,13 @@ router.get('/admin', protect, authorizeRoles('admin'), async (req, res) => {
         const orders = await MainOrder.find({})
             .populate('user', 'firstName lastName email phoneNumber')
             .populate('rider', 'fullName phoneNumber plateNumber')
+            .populate('company', 'companyName name phoneNumber contactPhone')
             .populate({
                 path: 'shipments',
                 populate: [
                     { path: 'vendor', select: 'businessName phoneNumber' },
+                    { path: 'rider', select: 'fullName phoneNumber plateNumber' },
+                    { path: 'company', select: 'companyName name phoneNumber contactPhone' },
                     { path: 'items.product', select: 'name imageUrls price stockQuantity' }
                 ]
             })
@@ -2271,6 +2302,26 @@ router.get('/admin', protect, authorizeRoles('admin'), async (req, res) => {
             .skip(skip)
             .limit(limit)
             .lean();
+
+        const orderIds = orders.map((order) => order._id);
+        const companyDeliveries = await CompanyDelivery.find({
+            mainOrder: { $in: orderIds },
+        })
+            .populate('company', 'companyName name phoneNumber contactPhone')
+            .populate('rider', 'fullName phoneNumber plateNumber riderId')
+            .lean();
+
+        const companyDeliveriesByOrder = companyDeliveries.reduce((acc, delivery) => {
+            const orderId = delivery.mainOrder?.toString();
+            if (!orderId) return acc;
+            if (!acc[orderId]) acc[orderId] = [];
+            acc[orderId].push(delivery);
+            return acc;
+        }, {});
+
+        orders.forEach((order) => {
+            order.companyDeliveries = companyDeliveriesByOrder[order._id.toString()] || [];
+        });
 
         res.json(orders);
     } catch (error) {

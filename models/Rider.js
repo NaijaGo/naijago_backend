@@ -33,6 +33,20 @@ const riderSchema = new mongoose.Schema({
     required: [true, 'Phone number is required'],
     match: [/^\+?[\d\s-]{10,}$/, 'Please provide a valid phone number']
   },
+
+  dateOfBirth: {
+    type: Date
+  },
+
+  gender: {
+    type: String,
+    trim: true
+  },
+
+  homeAddress: {
+    type: String,
+    trim: true
+  },
   
   // Vehicle Information
   plateNumber: { 
@@ -55,6 +69,36 @@ const riderSchema = new mongoose.Schema({
   },
   
   vehicleColor: {
+    type: String,
+    trim: true
+  },
+
+  state: {
+    type: String,
+    trim: true
+  },
+
+  city: {
+    type: String,
+    trim: true
+  },
+
+  deliveryZone: {
+    type: String,
+    trim: true
+  },
+
+  licenseNumber: {
+    type: String,
+    trim: true
+  },
+
+  idType: {
+    type: String,
+    trim: true
+  },
+
+  idNumber: {
     type: String,
     trim: true
   },
