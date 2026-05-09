@@ -554,11 +554,26 @@ exports.updateRiderStatus = async (req, res) => {
       }
     }
 
+    updateData.lastActive = new Date();
+
     const updatedRider = await Rider.findByIdAndUpdate(
       req.rider._id,
-      updateData,
+      { $set: updateData },
       { new: true }
     ).select('-password');
+
+    const notifyAdminRiderStatus = req.app.get('notifyAdminRiderStatus');
+    if (typeof notifyAdminRiderStatus === 'function') {
+      notifyAdminRiderStatus({
+        riderId: req.rider._id.toString(),
+        riderName: updatedRider.fullName,
+        plateNumber: updatedRider.plateNumber,
+        status: 'status_updated',
+        isAvailable: updatedRider.isAvailable,
+        isActive: updatedRider.isActive,
+        timestamp: new Date()
+      });
+    }
 
     res.json({
       success: true,

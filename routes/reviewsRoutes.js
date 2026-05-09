@@ -5,6 +5,8 @@ const { protect } = require('../middleware/authMiddleware');
 const Review = require('../models/Review');
 const Product = require('../models/Product'); // Ensure Product model is imported
 const User = require('../models/User'); // Ensure User model is imported
+const Shipment = require('../models/Shipment');
+const MainOrder = require('../models/MainOrder');
 
 // @desc    Get all reviews by the logged-in user
 // @route   GET /api/reviews/myreviews
@@ -52,14 +54,23 @@ router.post('/', protect, async (req, res) => {
             return res.status(400).json({ message: 'You have already reviewed this product.' });
         }
 
-        // Optional: Check if the user has purchased this product
-        // This would involve checking the user's order history.
-        // For simplicity, we'll skip this check for now, but it's good practice.
-        // Example:
-        // const userOrders = await Order.find({ user: req.user._id, 'orderItems.product': productId });
-        // if (userOrders.length === 0) {
-        //     return res.status(403).json({ message: 'You can only review products you have purchased.' });
-        // }
+        const paidOrderIds = await MainOrder.find({
+            user: req.user._id,
+            isPaid: true,
+            mainOrderStatus: { $ne: 'cancelled' },
+        }).select('_id').lean();
+
+        const purchasedShipment = paidOrderIds.length > 0
+            ? await Shipment.exists({
+                mainOrder: { $in: paidOrderIds.map((order) => order._id) },
+                'items.product': productId,
+                shipmentStatus: { $nin: ['cancelled', 'rejected'] },
+            })
+            : null;
+
+        if (!purchasedShipment) {
+            return res.status(403).json({ message: 'You can only review products you have purchased.' });
+        }
 
 
         const review = new Review({

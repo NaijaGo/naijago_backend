@@ -544,11 +544,10 @@ io.on('connection', (socket) => {
         onlineRiders.set(userId, riderData);
 
         // Update in database
-        await Rider.findByIdAndUpdate(userId, {
-          isAvailable: isAvailable !== undefined ? isAvailable : undefined,
-          isActive: isActive !== undefined ? isActive : undefined,
-          lastActive: new Date()
-        });
+        const updateData = { lastActive: new Date() };
+        if (isAvailable !== undefined) updateData.isAvailable = isAvailable;
+        if (isActive !== undefined) updateData.isActive = isActive;
+        await Rider.findByIdAndUpdate(userId, { $set: updateData });
 
         // Broadcast to admins
         broadcastToAdmins('rider_status_change', {
@@ -996,36 +995,82 @@ io.on('connection', (socket) => {
   if (userType === 'admin') {
     
     // Admin requests all online riders (BOTH TYPES)
-    socket.on('get_online_riders', () => {
-      // Individual riders
-      const individualRiders = Array.from(onlineRiders.entries()).map(([riderId, data]) => ({
-        riderId,
-        type: 'individual',
-        socketId: data.socketId,
-        location: data.location,
-        lastUpdate: data.lastUpdate,
-        isAvailable: data.isAvailable,
-        isActive: data.isActive
-      }));
-      
-      // Company riders
-      const companyRidersList = Array.from(onlineCompanyRiders.entries()).map(([riderId, data]) => ({
-        riderId,
-        type: 'company',
-        companyId: data.companyId,
-        socketId: data.socketId,
-        location: data.location,
-        lastUpdate: data.lastUpdate,
-        isAvailable: data.isAvailable,
-        isActive: data.isActive
-      }));
-      
-      socket.emit('online_riders_list', {
-        individualRiders,
-        companyRiders: companyRidersList,
-        total: individualRiders.length + companyRidersList.length,
-        timestamp: new Date()
-      });
+    socket.on('get_online_riders', async () => {
+      try {
+        const individualIds = Array.from(onlineRiders.keys());
+        const companyRiderIds = Array.from(onlineCompanyRiders.keys());
+
+        const [individualDocs, companyRiderDocs] = await Promise.all([
+          Rider.find({ _id: { $in: individualIds } })
+            .select('fullName phoneNumber plateNumber vehicleType isAvailable isActive status currentLocation')
+            .lean(),
+          CompanyRider.find({ _id: { $in: companyRiderIds } })
+            .populate('company', 'companyName phoneNumber status')
+            .select('fullName phoneNumber plateNumber vehicleType isAvailable isActive status company currentLocation')
+            .lean()
+        ]);
+
+        const individualById = new Map(
+          individualDocs.map((rider) => [rider._id.toString(), rider])
+        );
+        const companyRiderById = new Map(
+          companyRiderDocs.map((rider) => [rider._id.toString(), rider])
+        );
+
+        // Individual riders
+        const individualRiders = Array.from(onlineRiders.entries()).map(([riderId, data]) => {
+          const rider = individualById.get(riderId) || {};
+          return {
+            riderId,
+            _id: riderId,
+            type: 'individual',
+            fullName: rider.fullName || 'Individual Rider',
+            phoneNumber: rider.phoneNumber || '',
+            plateNumber: rider.plateNumber || '',
+            vehicleType: rider.vehicleType || '',
+            status: rider.status || '',
+            socketId: data.socketId,
+            location: data.location || rider.currentLocation,
+            lastUpdate: data.lastUpdate,
+            isAvailable: data.isAvailable ?? rider.isAvailable ?? false,
+            isActive: data.isActive ?? rider.isActive ?? false
+          };
+        });
+
+        // Company riders
+        const companyRidersList = Array.from(onlineCompanyRiders.entries()).map(([riderId, data]) => {
+          const rider = companyRiderById.get(riderId) || {};
+          const company = rider.company || {};
+          return {
+            riderId,
+            _id: riderId,
+            type: 'company',
+            companyId: data.companyId || company._id,
+            companyName: company.companyName || 'Company',
+            companyPhone: company.phoneNumber || '',
+            fullName: rider.fullName || 'Company Rider',
+            phoneNumber: rider.phoneNumber || '',
+            plateNumber: rider.plateNumber || '',
+            vehicleType: rider.vehicleType || '',
+            status: rider.status || '',
+            socketId: data.socketId,
+            location: data.location || rider.currentLocation,
+            lastUpdate: data.lastUpdate,
+            isAvailable: data.isAvailable ?? rider.isAvailable ?? false,
+            isActive: data.isActive ?? rider.isActive ?? false
+          };
+        });
+
+        socket.emit('online_riders_list', {
+          individualRiders,
+          companyRiders: companyRidersList,
+          total: individualRiders.length + companyRidersList.length,
+          timestamp: new Date()
+        });
+      } catch (error) {
+        console.error('Get online riders error:', error);
+        socket.emit('error', { message: 'Failed to load online riders' });
+      }
     });
 
     // Admin starts tracking a specific rider (BOTH TYPES)
@@ -1084,7 +1129,9 @@ io.on('connection', (socket) => {
               assignedToCompany: null // Clear company assignment if any
             },
             { new: true }
-          ).populate('rider', 'fullName phoneNumber plateNumber');
+          )
+            .populate('rider', 'fullName phoneNumber plateNumber')
+            .populate('user', 'firstName lastName phoneNumber');
 
           if (!order) {
             return socket.emit('error', { message: 'Order not found' });
@@ -1520,6 +1567,10 @@ app.set('emitRiderUpdate', (riderId, data) => {
 
 app.set('notifyAdmin', (data) => {
   broadcastToAdmins('admin_notification', data);
+});
+
+app.set('notifyAdminRiderStatus', (data) => {
+  broadcastToAdmins('rider_status_change', data);
 });
 
 app.set('notifyCompany', (companyId, data) => {
