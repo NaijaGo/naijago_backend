@@ -145,6 +145,7 @@ const onlineCompanyRiders = new Map(); // companyRiderId -> {socketId, companyId
 const onlineAdmins = new Map(); // adminId -> socketId
 const onlineVendors = new Map(); // vendorId -> socketId
 const onlinePharmacists = new Map(); // pharmacist userId -> socketId
+app.set('onlineUsers', onlineUsers);
 app.set('onlinePharmacists', onlinePharmacists);
 
 // Room management for order tracking (BOTH SYSTEMS)
@@ -177,23 +178,94 @@ function broadcastToVendors(vendorIds, event, data) {
   });
 }
 
-function broadcastPharmacistStatus() {
-  const count = onlinePharmacists.size;
-  io.emit('pharmacistStatus', { online: count > 0, count });
+async function getOnlinePharmacistPayload() {
+  const pharmacistIds = Array.from(onlinePharmacists.keys());
+  const pharmacists = pharmacistIds.length
+    ? await User.find({ _id: { $in: pharmacistIds } })
+        .select('firstName lastName businessName phoneNumber businessSupportPhone')
+        .lean()
+    : [];
+  const byId = new Map(pharmacists.map((user) => [String(user._id), user]));
+  const list = pharmacistIds.map((id) => {
+    const user = byId.get(id) || {};
+    return {
+      id,
+      name:
+        user.businessName ||
+        [user.firstName, user.lastName].filter(Boolean).join(' ') ||
+        'Pharmacist',
+      phoneNumber: user.businessSupportPhone || user.phoneNumber || '',
+    };
+  });
+  return { online: list.length > 0, count: list.length, pharmacists: list };
 }
 
-async function isApprovedPharmacist(userId) {
+async function broadcastPharmacistStatus() {
+  try {
+    io.emit('pharmacistStatus', await getOnlinePharmacistPayload());
+  } catch (error) {
+    console.error('Broadcast pharmacist status failed:', error);
+    io.emit('pharmacistStatus', { online: onlinePharmacists.size > 0, count: onlinePharmacists.size, pharmacists: [] });
+  }
+}
+
+async function getApprovedPharmacist(userId) {
   if (!userId) return false;
   const user = await User.findById(userId)
-    .select('role isVendor vendorStatus pharmacistStatus')
+    .select('role isVendor vendorStatus pharmacistStatus isAvailable firstName lastName businessName')
     .lean();
-  return Boolean(
+  const approved = Boolean(
     user &&
     user.isVendor === true &&
     user.vendorStatus === 'approved' &&
     (user.role === 'pharmacist' || user.pharmacistStatus === 'approved') &&
     user.pharmacistStatus === 'approved'
   );
+  return approved ? user : null;
+}
+
+async function isApprovedPharmacist(userId) {
+  return Boolean(await getApprovedPharmacist(userId));
+}
+
+async function notifyUserOfPharmacyMessage(session, textPreview, pharmacistId) {
+  if (!session?.user) return;
+  const pharmacist = pharmacistId
+    ? await User.findById(pharmacistId).select('firstName lastName businessName').lean()
+    : null;
+  const pharmacistName =
+    pharmacist?.businessName ||
+    [pharmacist?.firstName, pharmacist?.lastName].filter(Boolean).join(' ') ||
+    'A pharmacist';
+  const payload = {
+    type: 'pharmacy_chat_message',
+    sessionId: String(session._id),
+    message: `${pharmacistName}: ${String(textPreview || 'You have a new pharmacy chat message.').slice(0, 220)}`,
+    createdAt: new Date(),
+  };
+
+  await User.findByIdAndUpdate(session.user, {
+    $push: {
+      notifications: {
+        $each: [{
+          type: 'general',
+          message: payload.message,
+          read: false,
+          data: { type: payload.type, sessionId: payload.sessionId },
+          createdAt: payload.createdAt,
+        }],
+        $position: 0,
+        $slice: 100,
+      },
+    },
+  });
+
+  const userSocketId = onlineUsers.get(String(session.user));
+  if (userSocketId) {
+    io.to(userSocketId).emit('pharmacy_chat_message', payload);
+    io.to(userSocketId).emit(`user_${session.user}`, payload);
+  }
+  io.emit(`user_${session.user}`, payload);
 }
 
 function formatChatMessage(message) {
@@ -447,10 +519,14 @@ io.on('connection', (socket) => {
     onlineVendors.set(userId, socket.id);
   }
 
-  isApprovedPharmacist(userId)
-    .then((approved) => {
-      if (!approved) return;
-      onlinePharmacists.set(String(userId), socket.id);
+  getApprovedPharmacist(userId)
+    .then((pharmacist) => {
+      if (!pharmacist) return;
+      if (pharmacist.isAvailable === true) {
+        onlinePharmacists.set(String(userId), socket.id);
+      } else {
+        onlinePharmacists.delete(String(userId));
+      }
       broadcastPharmacistStatus();
       emitConsultationQueueForPharmacist(socket, userId).catch((error) => {
         console.error('Failed to emit pharmacist consultation queue:', error);
@@ -1400,6 +1476,10 @@ io.on('connection', (socket) => {
         if (!assignedNotified && !session.pharmacist) {
           notifyOnlinePharmacists(session, cleanText);
         }
+      } else if (senderType === 'pharmacist') {
+        notifyUserOfPharmacyMessage(session, cleanText, userId).catch((error) => {
+          console.error('Failed to notify user of pharmacy message:', error);
+        });
       }
 
       return cb && cb({ success: true, message: formatted });
@@ -1429,7 +1509,10 @@ io.on('connection', (socket) => {
         return cb && cb({ success: false, message: 'session not found' });
       }
 
-      if (session.pharmacist && String(session.pharmacist) !== String(userId)) {
+      const wasAlreadyAssignedToMe =
+        session.pharmacist && String(session.pharmacist) === String(userId);
+
+      if (session.pharmacist && !wasAlreadyAssignedToMe) {
         return cb && cb({
           success: false,
           message: 'This consultation has already been claimed.',
@@ -1442,28 +1525,59 @@ io.on('connection', (socket) => {
 
       socket.join(`chat_${sessionId}`);
 
-      const pharmacistUser = await User.findById(userId)
-        .select('firstName lastName businessName')
-        .lean();
-      const pharmacistName =
-        pharmacistUser?.businessName ||
-        [pharmacistUser?.firstName, pharmacistUser?.lastName].filter(Boolean).join(' ') ||
-        'A certified pharmacist';
+      if (!wasAlreadyAssignedToMe) {
+        const pharmacistUser = await User.findById(userId)
+          .select('firstName lastName businessName')
+          .lean();
+        const pharmacistName =
+          pharmacistUser?.businessName ||
+          [pharmacistUser?.firstName, pharmacistUser?.lastName].filter(Boolean).join(' ') ||
+          'A certified pharmacist';
 
-      await createAndEmitSystemMessage(
-        sessionId,
-        `${pharmacistName} has joined the consultation.`
-      );
+        await createAndEmitSystemMessage(
+          sessionId,
+          `${pharmacistName} has joined the consultation.`
+        );
 
-      io.to(`chat_${sessionId}`).emit('pharmacist_joined', {
-        pharmacistId: String(userId),
-        name: pharmacistName,
-      });
+        io.to(`chat_${sessionId}`).emit('pharmacist_joined', {
+          pharmacistId: String(userId),
+          name: pharmacistName,
+        });
+      }
 
       return cb && cb({ success: true, session });
     } catch (error) {
       console.error('pharmacist_claim_session error:', error);
       return cb && cb({ success: false, message: 'claim failed' });
+    }
+  });
+
+  socket.on('pharmacist_status_update', async (payload, cb) => {
+    try {
+      const pharmacist = await getApprovedPharmacist(userId);
+      if (!pharmacist) {
+        return cb && cb({ success: false, message: 'Only approved pharmacists can update availability.' });
+      }
+
+      const online = payload?.online === true || payload?.isAvailable === true;
+      await User.findByIdAndUpdate(userId, {
+        $set: { isAvailable: online, lastActive: new Date() },
+      });
+
+      if (online) {
+        onlinePharmacists.set(String(userId), socket.id);
+        emitConsultationQueueForPharmacist(socket, userId).catch((error) => {
+          console.error('Failed to emit pharmacist consultation queue:', error);
+        });
+      } else {
+        onlinePharmacists.delete(String(userId));
+      }
+
+      await broadcastPharmacistStatus();
+      return cb && cb({ success: true, online, count: onlinePharmacists.size });
+    } catch (error) {
+      console.error('pharmacist_status_update error:', error);
+      return cb && cb({ success: false, message: 'Unable to update pharmacist status.' });
     }
   });
 

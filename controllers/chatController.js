@@ -51,6 +51,64 @@ const notifyPharmacistsForSession = (app, session, textPreview) => {
   return onlinePharmacists.size > 0;
 };
 
+const getOnlinePharmacistList = async (app) => {
+  const onlinePharmacists = app?.get?.('onlinePharmacists');
+  const ids = onlinePharmacists ? Array.from(onlinePharmacists.keys()) : [];
+  if (!ids.length) return [];
+
+  const pharmacists = await User.find({ _id: { $in: ids } })
+    .select('firstName lastName businessName phoneNumber businessSupportPhone')
+    .lean();
+
+  return pharmacists.map((user) => ({
+    id: String(user._id),
+    name:
+      user.businessName ||
+      [user.firstName, user.lastName].filter(Boolean).join(' ') ||
+      'Pharmacist',
+    phoneNumber: user.businessSupportPhone || user.phoneNumber || '',
+  }));
+};
+
+const notifyUserOfPharmacyMessage = async (app, session, textPreview, pharmacist) => {
+  const io = app?.get?.('io');
+  const onlineUsers = app?.get?.('onlineUsers');
+  if (!session?.user) return;
+
+  const pharmacistName =
+    pharmacist?.businessName ||
+    [pharmacist?.firstName, pharmacist?.lastName].filter(Boolean).join(' ') ||
+    'A pharmacist';
+  const payload = {
+    type: 'pharmacy_chat_message',
+    sessionId: String(session._id),
+    message: `${pharmacistName}: ${String(textPreview || 'You have a new pharmacy chat message.').slice(0, 220)}`,
+    createdAt: new Date(),
+  };
+
+  await User.findByIdAndUpdate(session.user, {
+    $push: {
+      notifications: {
+        $each: [{
+          type: 'general',
+          message: payload.message,
+          read: false,
+          createdAt: payload.createdAt,
+        }],
+        $position: 0,
+        $slice: 100,
+      },
+    },
+  });
+
+  const socketId = onlineUsers?.get?.(String(session.user));
+  if (io && socketId) {
+    io.to(socketId).emit('pharmacy_chat_message', payload);
+    io.to(socketId).emit(`user_${session.user}`, payload);
+  }
+  io?.emit(`user_${session.user}`, payload);
+};
+
 const buildQueueItem = async (session) => {
   const latestMessage = await ChatMessage.findOne({
     session: session._id,
@@ -222,6 +280,10 @@ exports.sendMessage = async (req, res) => {
 
     if (!isPharmacist) {
       notifyPharmacistsForSession(req.app, session, message);
+    } else {
+      notifyUserOfPharmacyMessage(req.app, session, message, req.user).catch((error) => {
+        console.error('Failed to notify user of pharmacy message:', error);
+      });
     }
 
     res.json({ success: true, message: formatted });
@@ -263,6 +325,61 @@ exports.getPharmacistQueue = async (req, res) => {
   }
 };
 
+exports.getOnlinePharmacists = async (req, res) => {
+  try {
+    const pharmacists = await getOnlinePharmacistList(req.app);
+    res.json({
+      success: true,
+      online: pharmacists.length > 0,
+      count: pharmacists.length,
+      pharmacists,
+    });
+  } catch (err) {
+    console.error('Get online pharmacists failed:', err);
+    res.status(500).json({ message: 'Failed to load online pharmacists.' });
+  }
+};
+
+exports.updatePharmacistAvailability = async (req, res) => {
+  try {
+    if (!isApprovedPharmacistUser(req.user)) {
+      return res.status(403).json({
+        message: 'Only approved pharmacists can update availability.',
+      });
+    }
+
+    const online = req.body?.online === true || req.body?.isAvailable === true;
+    const updated = await User.findByIdAndUpdate(
+      req.user._id,
+      { $set: { isAvailable: online, lastActive: new Date() } },
+      { new: true },
+    ).select('isAvailable firstName lastName businessName');
+
+    const onlinePharmacists = req.app.get('onlinePharmacists');
+    const io = req.app.get('io');
+    const socketId = onlinePharmacists?.get?.(String(req.user._id));
+    if (!online && onlinePharmacists) {
+      onlinePharmacists.delete(String(req.user._id));
+    }
+
+    const pharmacists = await getOnlinePharmacistList(req.app);
+    io?.emit('pharmacistStatus', {
+      online: pharmacists.length > 0,
+      count: pharmacists.length,
+      pharmacists,
+    });
+
+    res.json({
+      success: true,
+      online: updated?.isAvailable === true,
+      hasSocket: Boolean(socketId),
+    });
+  } catch (err) {
+    console.error('Update pharmacist availability failed:', err);
+    res.status(500).json({ message: 'Unable to update pharmacist availability.' });
+  }
+};
+
 exports.claimSession = async (req, res) => {
   try {
     if (!isApprovedPharmacistUser(req.user)) {
@@ -274,7 +391,10 @@ exports.claimSession = async (req, res) => {
     const session = await ChatSession.findById(req.params.sessionId || req.body.sessionId);
     if (!session) return res.status(404).json({ message: 'Chat session not found.' });
 
-    if (session.pharmacist && String(session.pharmacist) !== String(req.user._id)) {
+    const wasAlreadyAssignedToMe =
+      session.pharmacist && String(session.pharmacist) === String(req.user._id);
+
+    if (session.pharmacist && !wasAlreadyAssignedToMe) {
       return res.status(409).json({ message: 'This consultation has already been claimed.' });
     }
 
@@ -287,19 +407,21 @@ exports.claimSession = async (req, res) => {
       [req.user.firstName, req.user.lastName].filter(Boolean).join(' ') ||
       'A certified pharmacist';
 
-    const systemMessage = await ChatMessage.create({
-      session: session._id,
-      senderType: 'system',
-      sender: null,
-      message: `${pharmacistName} has joined the consultation.`,
-    });
-
     const io = req.app.get('io');
-    io?.to(`chat_${session._id}`).emit('new_message', formatChatMessage(systemMessage));
-    io?.to(`chat_${session._id}`).emit('pharmacist_joined', {
-      pharmacistId: String(req.user._id),
-      name: pharmacistName,
-    });
+    if (!wasAlreadyAssignedToMe) {
+      const systemMessage = await ChatMessage.create({
+        session: session._id,
+        senderType: 'system',
+        sender: null,
+        message: `${pharmacistName} has joined the consultation.`,
+      });
+
+      io?.to(`chat_${session._id}`).emit('new_message', formatChatMessage(systemMessage));
+      io?.to(`chat_${session._id}`).emit('pharmacist_joined', {
+        pharmacistId: String(req.user._id),
+        name: pharmacistName,
+      });
+    }
 
     res.json({ success: true, session });
   } catch (err) {
