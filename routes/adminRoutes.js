@@ -76,6 +76,21 @@ const VENDOR_CONTACT_FILTER = {
         { businessName: { $exists: true, $ne: '' } },
     ],
 };
+const BUILT_IN_MARKETING_LISTS = [
+    { id: 'segment:all_customers', name: 'All Customers', audience: 'customers', segment: 'all_customers' },
+    { id: 'segment:customers_with_orders', name: 'Customers With Orders', audience: 'customers', segment: 'customers_with_orders' },
+    { id: 'segment:customers_without_orders', name: 'Customers Without Orders', audience: 'customers', segment: 'customers_without_orders' },
+    { id: 'segment:active_subscribers', name: 'Active Subscribers', audience: 'customers', segment: 'active_subscribers' },
+    { id: 'segment:all_vendors', name: 'All Vendors', audience: 'vendors', segment: 'all_vendors' },
+    { id: 'segment:approved_vendors', name: 'Approved Vendors', audience: 'vendors', segment: 'approved_vendors' },
+    { id: 'segment:pending_vendors', name: 'Pending Vendors', audience: 'vendors', segment: 'pending_vendors' },
+    { id: 'segment:suspended_vendors', name: 'Suspended Vendors', audience: 'vendors', segment: 'suspended_vendors' },
+    { id: 'segment:all_riders', name: 'All Riders', audience: 'riders', segment: 'all_riders' },
+    { id: 'segment:approved_riders', name: 'Approved Riders', audience: 'riders', segment: 'approved_riders' },
+    { id: 'segment:pending_riders', name: 'Pending Riders', audience: 'riders', segment: 'pending_riders' },
+    { id: 'segment:suspended_riders', name: 'Suspended Riders', audience: 'riders', segment: 'suspended_riders' },
+    { id: 'segment:all', name: 'All Customers, Vendors, and Riders', audience: 'mixed', segment: 'all' },
+];
 
 const parsePagination = (query, defaults = {}) => {
     const maxLimit = defaults.maxLimit || 500;
@@ -902,6 +917,61 @@ const authorizeAdmin = (req, res, next) => {
     }
 };
 
+const marketingListIdToSegment = (id) => {
+    const value = String(id || '').trim();
+    if (!value.startsWith('segment:')) return null;
+
+    const segment = value.slice('segment:'.length);
+    return SERVICE_NOTIFICATION_SEGMENTS.has(segment) ? segment : null;
+};
+
+const marketingContactFromExport = (contact) => ({
+    name: contact.name || contact.businessName || contact.email || contact.phoneNumber || '',
+    email: contact.email || '',
+    phoneNumber:
+        contact.type === 'vendor'
+            ? contact.businessWhatsAppNumber || contact.businessSupportPhone || contact.phoneNumber || ''
+            : contact.phoneNumber || '',
+    type: ['customer', 'vendor', 'rider'].includes(contact.type) ? contact.type : 'other',
+    source: `segment:${contact.type || 'contact'}`,
+});
+
+const buildMarketingListFromSegment = async (segment) => {
+    const definition = BUILT_IN_MARKETING_LISTS.find((list) => list.segment === segment);
+    if (!definition) return null;
+
+    const recipients = await resolveAdminNotificationSegment(segment);
+    const contacts = exportRecipients(recipients)
+        .map(marketingContactFromExport)
+        .filter((contact) => contact.email || contact.phoneNumber);
+
+    return {
+        _id: definition.id,
+        id: definition.id,
+        name: definition.name,
+        audience: definition.audience,
+        contacts,
+        contactCount: contacts.length,
+        source: 'built_in_segment',
+        segment,
+        createdAt: null,
+        updatedAt: null,
+    };
+};
+
+const summarizeBuiltInMarketingLists = async () => {
+    const summaries = await Promise.all(
+        BUILT_IN_MARKETING_LISTS.map(async (definition) => {
+            const list = await buildMarketingListFromSegment(definition.segment);
+            if (!list) return null;
+            const { contacts, ...summary } = list;
+            return summary;
+        }),
+    );
+
+    return summaries.filter((list) => list && list.contactCount > 0);
+};
+
 // --- Admin Routes ---
 
 router.get('/product-moderation', protect, authorizeAdmin, async (req, res) => {
@@ -1726,15 +1796,16 @@ router.post('/notifications/export-segment', protect, authorizeAdmin, async (req
 router.get('/marketing-lists', protect, authorizeAdmin, async (req, res) => {
     try {
         const { page, limit, skip } = parsePagination(req.query, { defaultLimit: 100, maxLimit: 500 });
-        const [lists, total] = await Promise.all([
+        const [importedLists, builtInLists] = await Promise.all([
             MarketingContactList.find({})
                 .populate('importedBy', 'firstName lastName email')
                 .sort({ createdAt: -1 })
-                .skip(skip)
-                .limit(limit)
                 .lean(),
-            MarketingContactList.countDocuments({}),
+            summarizeBuiltInMarketingLists(),
         ]);
+        const allLists = [...builtInLists, ...importedLists];
+        const total = allLists.length;
+        const lists = allLists.slice(skip, skip + limit);
 
         res.status(200).json({
             count: total,
@@ -1749,6 +1820,19 @@ router.get('/marketing-lists', protect, authorizeAdmin, async (req, res) => {
 
 router.get('/marketing-lists/:id', protect, authorizeAdmin, async (req, res) => {
     try {
+        const segment = marketingListIdToSegment(req.params.id);
+        if (segment) {
+            const list = await buildMarketingListFromSegment(segment);
+            if (!list) {
+                return res.status(404).json({ message: 'Marketing list not found.' });
+            }
+
+            return res.status(200).json({ list });
+        }
+        if (String(req.params.id || '').startsWith('segment:')) {
+            return res.status(404).json({ message: 'Marketing list not found.' });
+        }
+
         const list = await MarketingContactList.findById(req.params.id)
             .populate('importedBy', 'firstName lastName email')
             .lean();
@@ -1821,6 +1905,13 @@ router.post('/marketing-lists/import', protect, authorizeAdmin, async (req, res)
 
 router.delete('/marketing-lists/:id', protect, authorizeAdmin, async (req, res) => {
     try {
+        if (marketingListIdToSegment(req.params.id)) {
+            return res.status(400).json({ message: 'Built-in marketing lists cannot be deleted.' });
+        }
+        if (String(req.params.id || '').startsWith('segment:')) {
+            return res.status(404).json({ message: 'Marketing list not found.' });
+        }
+
         const list = await MarketingContactList.findByIdAndDelete(req.params.id);
 
         if (!list) {
@@ -1845,7 +1936,12 @@ router.post('/marketing-campaigns/send', protect, authorizeAdmin, async (req, re
             return res.status(400).json({ message: 'Marketing list is required.' });
         }
 
-        const list = await MarketingContactList.findById(listId).lean();
+        const segment = marketingListIdToSegment(listId);
+        const list = segment
+            ? await buildMarketingListFromSegment(segment)
+            : String(listId).startsWith('segment:')
+                ? null
+                : await MarketingContactList.findById(listId).lean();
         if (!list) {
             return res.status(404).json({ message: 'Marketing list not found.' });
         }

@@ -44,7 +44,13 @@ const extractProviderMessage = (data) => {
   if (!data) return '';
   if (typeof data === 'string') return data;
   if (Array.isArray(data)) return data.filter(Boolean).join('; ');
-  return extractProviderMessage(data.message || data.error || data.response);
+  return extractProviderMessage(
+    data.message ||
+    data.error ||
+    data.response ||
+    data.details ||
+    data.errors,
+  );
 };
 
 const normalizeNigeriaPhone = (value) => {
@@ -61,7 +67,7 @@ const normalizeNigeriaPhone = (value) => {
     digits = `234${digits}`;
   }
 
-  if (process.env.WAPISENDER_NUMBER_FORMAT !== 'digits') {
+  if (process.env.WAPISENDER_NUMBER_FORMAT === 'jid') {
     return `${digits}@s.whatsapp.net`;
   }
 
@@ -85,6 +91,20 @@ const buildSendTextBody = ({ number, text }) => {
   };
 };
 
+const postSendText = (endpoint, body, apiKey) =>
+  axios.post(
+    endpoint,
+    body,
+    {
+      headers: {
+        apikey: apiKey,
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      timeout: Number(process.env.WAPISENDER_TIMEOUT_MS || 10000),
+    },
+  );
+
 const sendText = async ({ to, text }) => {
   if (!isEnabled()) {
     return { skipped: true, reason: 'WapiSender is not configured.' };
@@ -105,22 +125,23 @@ const sendText = async ({ to, text }) => {
   const body = buildSendTextBody({ number, text });
 
   try {
-    const response = await axios.post(
-      endpoint,
-      body,
-      {
-        headers: {
-          apikey: apiKey,
-          Authorization: `Bearer ${apiKey}`,
-          'Content-Type': 'application/json',
-        },
-        timeout: Number(process.env.WAPISENDER_TIMEOUT_MS || 10000),
-      },
-    );
+    let response;
+    try {
+      response = await postSendText(endpoint, body, apiKey);
+    } catch (error) {
+      if (
+        error.response?.status !== 400 ||
+        process.env.WAPISENDER_PAYLOAD_MODE === 'simple'
+      ) {
+        throw error;
+      }
+
+      response = await postSendText(endpoint, { number, text }, apiKey);
+    }
 
     return response.data;
   } catch (error) {
-    const providerMessage = extractProviderMessage(error.response?.data);
+    const providerMessage = extractProviderMessage(error.response?.data) || error.response?.statusText;
     if (providerMessage) {
       error.message = `WapiSender error: ${providerMessage}`;
     }
