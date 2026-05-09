@@ -97,10 +97,23 @@ function addDays(date, days) {
 function isWithinHours(now, validHours) {
   const [startHour, startMinute] = validHours.start.split(':').map(Number);
   const [endHour, endMinute] = validHours.end.split(':').map(Number);
-  const currentMinutes = now.getHours() * 60 + now.getMinutes();
+  const timeZone = process.env.SUBSCRIPTION_TIMEZONE || 'Africa/Lagos';
+  const zonedParts = new Intl.DateTimeFormat('en-GB', {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+    timeZone,
+  }).formatToParts(now);
+  const currentHour = Number(zonedParts.find((part) => part.type === 'hour')?.value || now.getHours());
+  const currentMinute = Number(zonedParts.find((part) => part.type === 'minute')?.value || now.getMinutes());
+  const currentMinutes = currentHour * 60 + currentMinute;
   const startMinutes = startHour * 60 + startMinute;
   const endMinutes = endHour * 60 + endMinute;
-  return currentMinutes >= startMinutes && currentMinutes <= endMinutes;
+  if (startMinutes === endMinutes) return true;
+  if (startMinutes < endMinutes) {
+    return currentMinutes >= startMinutes && currentMinutes <= endMinutes;
+  }
+  return currentMinutes >= startMinutes || currentMinutes <= endMinutes;
 }
 
 function normalizeSubscription(user) {

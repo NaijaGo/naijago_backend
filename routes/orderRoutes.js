@@ -44,10 +44,23 @@ function isWithinSubscriptionHours(subscription) {
     const [startHour, startMinute] = start.split(':').map(Number);
     const [endHour, endMinute] = end.split(':').map(Number);
     const now = new Date();
-    const currentMinutes = now.getHours() * 60 + now.getMinutes();
+    const timeZone = process.env.SUBSCRIPTION_TIMEZONE || 'Africa/Lagos';
+    const zonedParts = new Intl.DateTimeFormat('en-GB', {
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+        timeZone,
+    }).formatToParts(now);
+    const currentHour = Number(zonedParts.find((part) => part.type === 'hour')?.value || now.getHours());
+    const currentMinute = Number(zonedParts.find((part) => part.type === 'minute')?.value || now.getMinutes());
+    const currentMinutes = currentHour * 60 + currentMinute;
     const startMinutes = startHour * 60 + startMinute;
     const endMinutes = endHour * 60 + endMinute;
-    return currentMinutes >= startMinutes && currentMinutes <= endMinutes;
+    if (startMinutes === endMinutes) return true;
+    if (startMinutes < endMinutes) {
+        return currentMinutes >= startMinutes && currentMinutes <= endMinutes;
+    }
+    return currentMinutes >= startMinutes || currentMinutes <= endMinutes;
 }
 
 function normalizeZone(value) {
@@ -944,23 +957,25 @@ router.post('/', protect, async (req, res) => {
             return res.status(400).json({ message: 'No shipment summaries provided. Please calculate summary first.' });
         }
 
-        const requestedSubscriptionDiscount = Number(subscriptionDeliveryDiscount || 0);
-        if (subscriptionFreeDeliveryApplied === true || requestedSubscriptionDiscount > 0) {
-            const buyerForSubscription = await User.findById(req.user._id)
-                .select('naijagoSubscription')
-                .session(session);
-            const activeSubscription = getActiveNaijaGoSubscription(buyerForSubscription);
-            if (!activeSubscription) {
+        // --- Step 1: Stock Check (Must check stock for ALL items across ALL shipments) ---
+        const deliveryFeeSettings = await getDeliveryFeeSettings();
+        let recalculatedSubtotal = 0;
+        let recalculatedPlatformFees = 0;
+        let recalculatedShippingPrice = 0;
+        let recalculatedOriginalShippingPrice = 0;
+        let matchedDeliveryZone = null;
+
+        for (const summary of shipmentSummaries) {
+            let summarySubtotal = 0;
+            let summaryPlatformFee = 0;
+            let summaryVendorLocation = summary.vendorLocation || {};
+            let summaryVendorId = summary.vendor || summary.vendorId;
+            if (!Array.isArray(summary.items) || summary.items.length === 0) {
                 await session.abortTransaction();
                 session.endSession();
-                return res.status(400).json({
-                    message: 'Subscription free delivery is no longer available. Please refresh checkout summary.',
-                });
+                return res.status(400).json({ message: 'Each shipment summary must include items.' });
             }
-        }
 
-        // --- Step 1: Stock Check (Must check stock for ALL items across ALL shipments) ---
-        for (const summary of shipmentSummaries) {
             for (const item of summary.items) {
                 const product = await Product.findById(item.product)
                     .populate('vendor', 'businessName businessLocation operatingHours isTemporarilyClosed temporaryClosureReason deliveryRadiusKm prepTimeMinutes')
@@ -1017,26 +1032,111 @@ router.post('/', protect, async (req, res) => {
                     }
                 }
 
-                Object.assign(item, buildOrderItemFromProduct(item, product), {
-                    commissionRate: item.commissionRate,
+                if (!summaryVendorLocation?.latitude && product.vendor?.businessLocation) {
+                    summaryVendorLocation = product.vendor.businessLocation;
+                }
+                if (!summaryVendorId && product.vendor?._id) {
+                    summaryVendorId = product.vendor._id;
+                }
+
+                const safeQuantity = Math.max(1, Number(item.quantity || 1));
+                const commissionRate = getCommissionRateForCategory(product.category || 'Uncategorized');
+                const itemSubtotal = Number(product.price || 0) * safeQuantity;
+                const itemCommission = itemSubtotal * commissionRate;
+
+                summarySubtotal += itemSubtotal;
+                summaryPlatformFee += itemCommission;
+
+                Object.assign(item, buildOrderItemFromProduct({ ...item, quantity: safeQuantity }, product), {
+                    commissionRate,
+                    itemCommission: parseFloat(itemCommission.toFixed(2)),
                 });
             }
+
+            const distanceKm =
+                userLocation?.latitude &&
+                userLocation?.longitude &&
+                summaryVendorLocation?.latitude &&
+                summaryVendorLocation?.longitude
+                    ? calculateDistance(
+                        summaryVendorLocation.latitude,
+                        summaryVendorLocation.longitude,
+                        userLocation.latitude,
+                        userLocation.longitude,
+                    )
+                    : 0;
+
+            const deliveryFeeQuote = buildDeliveryFeeQuote({
+                shippingAddress,
+                distanceKm,
+                settings: deliveryFeeSettings,
+            });
+            const shippingPrice = deliveryFeeQuote.amount;
+            matchedDeliveryZone = matchedDeliveryZone || deliveryFeeQuote.zone;
+
+            summary.vendor = summaryVendorId;
+            summary.vendorId = summaryVendorId;
+            summary.vendorLocation = summaryVendorLocation;
+            summary.subtotal = parseFloat(summarySubtotal.toFixed(2));
+            summary.platformFee = parseFloat(summaryPlatformFee.toFixed(2));
+            summary.commissionRate = summarySubtotal > 0
+                ? parseFloat((summaryPlatformFee / summarySubtotal).toFixed(3))
+                : 0;
+            summary.shippingPrice = shippingPrice;
+            summary.originalShippingPrice = shippingPrice;
+            summary.subscriptionDeliveryDiscount = 0;
+            summary.subscriptionFreeDeliveryApplied = false;
+            summary.deliveryFeeSource = deliveryFeeQuote.source;
+            summary.deliveryFeeZone = deliveryFeeQuote.zone;
+
+            recalculatedSubtotal += summarySubtotal;
+            recalculatedPlatformFees += summaryPlatformFee;
+            recalculatedShippingPrice += shippingPrice;
+            recalculatedOriginalShippingPrice += shippingPrice;
         }
+
+        const buyerForSubscription = await User.findById(req.user._id)
+            .select('naijagoSubscription')
+            .session(session);
+        const authoritativeSubscriptionDiscount = buildSubscriptionDeliveryDiscount({
+            user: buyerForSubscription,
+            totalSubtotal: recalculatedSubtotal,
+            totalShippingPrice: recalculatedShippingPrice,
+            matchedDeliveryZone,
+            shippingAddress,
+        });
+
+        if (authoritativeSubscriptionDiscount.eligible) {
+            recalculatedShippingPrice = 0;
+            shipmentSummaries.forEach((summary) => {
+                summary.subscriptionDeliveryDiscount = summary.originalShippingPrice;
+                summary.subscriptionFreeDeliveryApplied = true;
+                summary.shippingPrice = 0;
+            });
+        }
+
+        const authoritativeTotalPrice = parseFloat((
+            recalculatedSubtotal +
+            recalculatedShippingPrice +
+            Number(taxPrice || 0)
+        ).toFixed(2));
         
         // --- Step 2: Create the MainOrder document (The Receipt) ---
         const mainOrder = new MainOrder({ // Use MainOrder model
             user: req.user._id,
             shippingAddress,
             userLocation,
-            totalSubtotal,
-            totalPlatformFees,
-            totalShippingPrice,
-            originalShippingPrice: originalShippingPrice || totalShippingPrice || 0,
-            subscriptionDeliveryDiscount: subscriptionDeliveryDiscount || 0,
-            subscriptionFreeDeliveryApplied: subscriptionFreeDeliveryApplied === true,
-            subscriptionPlanId: subscriptionPlanId || '',
+            totalSubtotal: parseFloat(recalculatedSubtotal.toFixed(2)),
+            totalPlatformFees: parseFloat(recalculatedPlatformFees.toFixed(2)),
+            totalShippingPrice: parseFloat(recalculatedShippingPrice.toFixed(2)),
+            originalShippingPrice: parseFloat(recalculatedOriginalShippingPrice.toFixed(2)),
+            subscriptionDeliveryDiscount: authoritativeSubscriptionDiscount.eligible
+                ? parseFloat(authoritativeSubscriptionDiscount.discount.toFixed(2))
+                : 0,
+            subscriptionFreeDeliveryApplied: authoritativeSubscriptionDiscount.eligible,
+            subscriptionPlanId: authoritativeSubscriptionDiscount.planId || '',
             totalTaxPrice: taxPrice || 0.0,
-            totalPrice,
+            totalPrice: authoritativeTotalPrice,
             paymentMethod,
             isPaid: false, 
             mainOrderStatus: 'pending_payment',

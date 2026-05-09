@@ -8,6 +8,67 @@ const {
 } = require('../services/pharmacySubscriptionService');
 // NOTE: axios and getAIResponse removed as core logic moves to server.js socket handler
 
+const formatChatMessage = (message) => ({
+  id: message._id,
+  session: String(message.session),
+  senderType: message.senderType,
+  sender: message.sender ? String(message.sender) : null,
+  text: message.message,
+  createdAt: message.createdAt,
+});
+
+const isApprovedPharmacistUser = (user) =>
+  Boolean(
+    user &&
+      user.isVendor === true &&
+      user.vendorStatus === 'approved' &&
+      (user.role === 'pharmacist' || user.pharmacistStatus === 'approved') &&
+      user.pharmacistStatus === 'approved',
+  );
+
+const notifyPharmacistsForSession = (app, session, textPreview) => {
+  const onlinePharmacists = app?.get?.('onlinePharmacists');
+  const io = app?.get?.('io');
+  if (!onlinePharmacists || !io) return false;
+
+  const payload = {
+    sessionId: String(session._id),
+    userId: String(session.user),
+    textPreview: String(textPreview || 'A customer is waiting for pharmacist support.').slice(0, 300),
+    createdAt: new Date(),
+  };
+
+  if (session.pharmacist) {
+    const socketId = onlinePharmacists.get(String(session.pharmacist));
+    if (!socketId) return false;
+    io.to(socketId).emit('incoming_chat_request', payload);
+    return true;
+  }
+
+  for (const socketId of onlinePharmacists.values()) {
+    io.to(socketId).emit('incoming_chat_request', payload);
+  }
+  return onlinePharmacists.size > 0;
+};
+
+const buildQueueItem = async (session) => {
+  const latestMessage = await ChatMessage.findOne({
+    session: session._id,
+    senderType: 'user',
+  })
+    .sort({ createdAt: -1 })
+    .lean();
+
+  return {
+    sessionId: String(session._id),
+    userId: String(session.user),
+    textPreview: latestMessage?.message || 'A customer is waiting for pharmacist support.',
+    createdAt: latestMessage?.createdAt || session.createdAt,
+    status: session.status,
+    pharmacist: session.pharmacist ? String(session.pharmacist) : null,
+  };
+};
+
 const distanceKm = (lat1, lon1, lat2, lon2) => {
   const toRad = (degrees) => degrees * Math.PI / 180;
   const earthRadiusKm = 6371;
@@ -125,24 +186,124 @@ exports.startChat = async (req, res) => {
 // as the primary messaging logic is in server.js/send_chat_message.
 exports.sendMessage = async (req, res) => {
   try {
-    const { sessionId, message } = req.body;
+    const { sessionId } = req.body;
+    const message = String(req.body.message || req.body.text || '').trim();
+    if (!sessionId || !message) {
+      return res.status(400).json({ message: 'sessionId and message are required.' });
+    }
+
     const session = await ChatSession.findById(sessionId);
     if (!session) return res.status(404).json({ message: 'Chat not found' });
 
-    // Save user message but rely on the socket to handle real-time reply (AI/Pharmacist)
-    const userMsg = await ChatMessage.create({
+    const isPharmacist = isApprovedPharmacistUser(req.user);
+    const isOwner = String(session.user) === String(req.user._id);
+    const isAssignedPharmacist =
+      session.pharmacist && String(session.pharmacist) === String(req.user._id);
+
+    if (isPharmacist && !isAssignedPharmacist) {
+      return res.status(403).json({
+        message: 'Only the assigned pharmacist can reply to this consultation.',
+      });
+    }
+
+    if (!isPharmacist && !isOwner) {
+      return res.status(403).json({ message: 'Not authorized for this chat.' });
+    }
+
+    const chatMessage = await ChatMessage.create({
       session: sessionId,
-      senderType: 'user',
+      senderType: isPharmacist ? 'pharmacist' : 'user',
       sender: req.user._id,
       message,
     });
-    
-    // Note: AI/Pharmacist reply logic is removed here to prevent duplication with socket.io
-    // The client should send the message via socket.io's 'send_chat_message' event.
 
-    res.json({ success: true, message: userMsg });
+    const formatted = formatChatMessage(chatMessage);
+    req.app.get('io')?.to(`chat_${sessionId}`).emit('new_message', formatted);
+
+    if (!isPharmacist) {
+      notifyPharmacistsForSession(req.app, session, message);
+    }
+
+    res.json({ success: true, message: formatted });
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: 'Message send failed' });
   }
+};
+
+exports.getPharmacistQueue = async (req, res) => {
+  try {
+    if (!isApprovedPharmacistUser(req.user)) {
+      return res.status(403).json({
+        message: 'Only approved pharmacists can view consultation queue.',
+      });
+    }
+
+    const sessions = await ChatSession.find({
+      $or: [
+        {
+          status: 'open',
+          $or: [{ pharmacist: { $exists: false } }, { pharmacist: null }],
+        },
+        {
+          status: 'assigned',
+          pharmacist: req.user._id,
+        },
+      ],
+    })
+      .sort({ createdAt: -1 })
+      .limit(50)
+      .lean();
+
+    const queue = await Promise.all(sessions.map(buildQueueItem));
+    res.json({ success: true, queue });
+  } catch (err) {
+    console.error('Get pharmacist queue failed:', err);
+    res.status(500).json({ message: 'Failed to load consultation queue.' });
+  }
+};
+
+exports.claimSession = async (req, res) => {
+  try {
+    if (!isApprovedPharmacistUser(req.user)) {
+      return res.status(403).json({
+        message: 'Only approved pharmacists can claim customer consultations.',
+      });
+    }
+
+    const session = await ChatSession.findById(req.params.sessionId || req.body.sessionId);
+    if (!session) return res.status(404).json({ message: 'Chat session not found.' });
+
+    if (session.pharmacist && String(session.pharmacist) !== String(req.user._id)) {
+      return res.status(409).json({ message: 'This consultation has already been claimed.' });
+    }
+
+    session.pharmacist = req.user._id;
+    session.status = 'assigned';
+    await session.save();
+
+    const pharmacistName =
+      req.user.businessName ||
+      [req.user.firstName, req.user.lastName].filter(Boolean).join(' ') ||
+      'A certified pharmacist';
+
+    const systemMessage = await ChatMessage.create({
+      session: session._id,
+      senderType: 'system',
+      sender: null,
+      message: `${pharmacistName} has joined the consultation.`,
+    });
+
+    const io = req.app.get('io');
+    io?.to(`chat_${session._id}`).emit('new_message', formatChatMessage(systemMessage));
+    io?.to(`chat_${session._id}`).emit('pharmacist_joined', {
+      pharmacistId: String(req.user._id),
+      name: pharmacistName,
+    });
+
+    res.json({ success: true, session });
+  } catch (err) {
+    console.error('Claim session failed:', err);
+    res.status(500).json({ message: 'Failed to claim consultation.' });
+  }
 };
