@@ -19,6 +19,7 @@ const { initializeReferralProgramSettings } = require('./services/referralServic
 const { initializeDeliveryFeeSettings } = require('./services/deliveryFeeService');
 const { initializePharmacySubscriptionSettings } = require('./services/pharmacySubscriptionService');
 const { startScheduledNotificationRunner } = require('./services/scheduledNotificationRunner');
+const { cleanupObsoleteIndexes } = require('./utils/dbIndexMaintenance');
 
 const app = express();
 app.set('trust proxy', true);
@@ -188,9 +189,9 @@ async function isApprovedPharmacist(userId) {
     .lean();
   return Boolean(
     user &&
-    user.role === 'pharmacist' &&
     user.isVendor === true &&
     user.vendorStatus === 'approved' &&
+    (user.role === 'pharmacist' || user.pharmacistStatus === 'approved') &&
     user.pharmacistStatus === 'approved'
   );
 }
@@ -229,16 +230,39 @@ function notifyOnlinePharmacists(session, textPreview) {
   }
 }
 
-async function emitOpenConsultationQueue(socket) {
-  const openSessions = await ChatSession.find({
-    status: 'open',
-    $or: [{ pharmacist: { $exists: false } }, { pharmacist: null }],
+function notifyAssignedPharmacist(session, textPreview) {
+  if (!session?.pharmacist) return false;
+
+  const socketId = onlinePharmacists.get(String(session.pharmacist));
+  if (!socketId) return false;
+
+  io.to(socketId).emit('incoming_chat_request', {
+    sessionId: String(session._id),
+    userId: String(session.user),
+    textPreview: String(textPreview || 'A customer is waiting for pharmacist support.').slice(0, 300),
+    createdAt: new Date(),
+  });
+  return true;
+}
+
+async function emitConsultationQueueForPharmacist(socket, pharmacistId) {
+  const sessions = await ChatSession.find({
+    $or: [
+      {
+        status: 'open',
+        $or: [{ pharmacist: { $exists: false } }, { pharmacist: null }],
+      },
+      {
+        status: 'assigned',
+        pharmacist: pharmacistId,
+      },
+    ],
   })
     .sort({ createdAt: -1 })
     .limit(20)
     .lean();
 
-  for (const session of openSessions) {
+  for (const session of sessions) {
     const latestMessage = await ChatMessage.findOne({
       session: session._id,
       senderType: 'user',
@@ -428,8 +452,8 @@ io.on('connection', (socket) => {
       if (!approved) return;
       onlinePharmacists.set(String(userId), socket.id);
       broadcastPharmacistStatus();
-      emitOpenConsultationQueue(socket).catch((error) => {
-        console.error('Failed to emit open consultation queue:', error);
+      emitConsultationQueueForPharmacist(socket, userId).catch((error) => {
+        console.error('Failed to emit pharmacist consultation queue:', error);
       });
     })
     .catch((error) => {
@@ -1324,8 +1348,11 @@ io.on('connection', (socket) => {
       const formatted = formatChatMessage(chatMessage);
       io.to(`chat_${sessionId}`).emit('new_message', formatted);
 
-      if (senderType === 'user' && !session.pharmacist) {
-        notifyOnlinePharmacists(session, cleanText);
+      if (senderType === 'user') {
+        const assignedNotified = notifyAssignedPharmacist(session, cleanText);
+        if (!assignedNotified && !session.pharmacist) {
+          notifyOnlinePharmacists(session, cleanText);
+        }
       }
 
       return cb && cb({ success: true, message: formatted });
@@ -1520,6 +1547,7 @@ app.use(errorHandler);
 
 const startServer = async () => {
   await connectDB();
+  await cleanupObsoleteIndexes();
   const referralSettingsState = await initializeReferralProgramSettings();
   const deliveryFeeSettingsState = await initializeDeliveryFeeSettings();
   const pharmacySubscriptionState = await initializePharmacySubscriptionSettings();

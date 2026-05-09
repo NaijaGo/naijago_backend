@@ -152,12 +152,15 @@ const UserSchema = new mongoose.Schema({
   // NEW FIELD: Business Location
   businessLocation: {
     type: {
-      latitude: { type: Number, required: true },
-      longitude: { type: Number, required: true },
+      latitude: { type: Number },
+      longitude: { type: Number },
       formattedAddress: { type: String, required: false },
+      zone: { type: String, trim: true },
+      city: { type: String, trim: true },
     },
     sparse: true,
   },
+  deliveryZones: [{ type: String, trim: true }],
   validIdentification: {
     idType: {
       type: String,
@@ -532,11 +535,8 @@ UserSchema.index({ isAdmin: 1, isVendor: 1, role: 1, createdAt: -1 });
 UserSchema.index({ isVendor: 1, vendorStatus: 1, createdAt: -1 });
 UserSchema.index({ vendorStatus: 1, createdAt: -1 });
 UserSchema.index({ pharmacistStatus: 1, createdAt: -1 });
-UserSchema.index({ businessName: 1 });
 UserSchema.index({ 'naijagoSubscription.status': 1, 'naijagoSubscription.expiresAt': 1 });
 UserSchema.index({ referredBy: 1, createdAt: -1 });
-UserSchema.index({ oneSignalUserId: 1 }, { sparse: true });
-UserSchema.index({ oneSignalPlayerId: 1 }, { sparse: true });
 UserSchema.index({ 'vendorWithdrawals.status': 1, 'vendorWithdrawals.createdAt': -1 });
 UserSchema.index({ 'userWithdrawals.status': 1, 'userWithdrawals.createdAt': -1 });
 

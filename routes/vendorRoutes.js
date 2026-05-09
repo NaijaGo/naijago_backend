@@ -59,14 +59,18 @@ function sanitizeLocation(value) {
     if (!value || typeof value !== 'object') return undefined;
     const latitude = Number(value.latitude);
     const longitude = Number(value.longitude);
-    if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+    const formattedAddress = sanitizeText(value.formattedAddress, 220);
+    const zone = sanitizeText(value.zone, 80);
+    const city = sanitizeText(value.city, 80);
+
+    if (!formattedAddress && !zone && !city) {
         return undefined;
     }
-    return {
-        latitude,
-        longitude,
-        formattedAddress: sanitizeText(value.formattedAddress, 220),
-    };
+
+    const location = { formattedAddress, zone, city };
+    if (Number.isFinite(latitude)) location.latitude = latitude;
+    if (Number.isFinite(longitude)) location.longitude = longitude;
+    return location;
 }
 
 function sanitizeSampleProducts(value) {
@@ -125,6 +129,7 @@ function buildVendorProfile(user) {
         businessWhatsAppNumber: user.businessWhatsAppNumber || user.alternatePhoneNumber || user.phoneNumber || '',
         businessSupportPhone: user.businessSupportPhone || user.phoneNumber || '',
         businessLocation: user.businessLocation || null,
+        deliveryZones: user.deliveryZones || [],
         validIdentification: user.validIdentification || null,
         shopPhotoUrls: user.shopPhotoUrls || [],
         sampleProducts: user.sampleProducts || [],
@@ -172,6 +177,7 @@ router.post('/request', protect, async (req, res) => {
         cacNumber,
         bankAccountDetails,
         operatingHours,
+        deliveryZones,
         deliveryAvailable,
         emergencyContactNumber,
         vendorAgreements,
@@ -180,6 +186,7 @@ router.post('/request', protect, async (req, res) => {
     const userId = req.user.id; // User ID from the authenticated token
 
     const sanitizedBusinessLocation = sanitizeLocation(businessLocation);
+    const sanitizedDeliveryZones = sanitizeStringArray(deliveryZones, 12, 80);
     const sanitizedShopPhotoUrls = sanitizeStringArray(shopPhotoUrls, 12, 400);
     const sanitizedSampleProducts = sanitizeSampleProducts(sampleProducts);
     const idType = sanitizeText(validIdentification?.idType, 40);
@@ -263,6 +270,7 @@ router.post('/request', protect, async (req, res) => {
         user.businessName = sanitizeText(businessName, 100);
         user.businessCategories = sanitizeStringArray(businessCategories, 12, 80);
         user.businessLocation = sanitizedBusinessLocation;
+        user.deliveryZones = sanitizedDeliveryZones;
         user.alternatePhoneNumber = phone;
         user.businessSupportPhone = phone;
         user.businessWhatsAppNumber = whatsapp;
@@ -304,7 +312,7 @@ router.post('/request', protect, async (req, res) => {
 router.get('/profile', protect, authorizeRoles('vendor'), async (req, res) => {
     try {
         const user = await User.findById(req.user.id).select(
-            'businessName businessCategories businessLogoUrl businessWhatsAppNumber vendorContactEmail businessSupportPhone businessLocation validIdentification shopPhotoUrls sampleProducts socialMediaPage cacCertificateUrl cacNumber bankAccountDetails deliveryAvailable emergencyContactNumber prohibitedProductsAcknowledged deliveryRadiusKm prepTimeMinutes isTemporarilyClosed temporaryClosureReason operatingHours vendorStatus isVendor pharmacistStatus role phoneNumber alternatePhoneNumber email'
+            'businessName businessCategories businessLogoUrl businessWhatsAppNumber vendorContactEmail businessSupportPhone businessLocation deliveryZones validIdentification shopPhotoUrls sampleProducts socialMediaPage cacCertificateUrl cacNumber bankAccountDetails deliveryAvailable emergencyContactNumber prohibitedProductsAcknowledged deliveryRadiusKm prepTimeMinutes isTemporarilyClosed temporaryClosureReason operatingHours vendorStatus isVendor pharmacistStatus role phoneNumber alternatePhoneNumber email'
         );
 
         if (!user) {
@@ -349,6 +357,7 @@ router.put('/profile', protect, authorizeRoles('vendor'), async (req, res) => {
         user.businessLogoUrl = sanitizeText(req.body.businessLogoUrl, 400);
         user.businessWhatsAppNumber = whatsappNumber || undefined;
         user.businessSupportPhone = supportPhone || undefined;
+        user.deliveryZones = sanitizeStringArray(req.body.deliveryZones, 12, 80);
         user.deliveryRadiusKm = toNumber(req.body.deliveryRadiusKm, user.deliveryRadiusKm ?? 15, 0, 100);
         user.prepTimeMinutes = toNumber(req.body.prepTimeMinutes, user.prepTimeMinutes ?? 30, 0, 240);
         user.isTemporarilyClosed = toBoolean(req.body.isTemporarilyClosed, false);

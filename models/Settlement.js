@@ -157,7 +157,6 @@ settlementSchema.virtual('periodString').get(function() {
 // Indexes for better query performance
 settlementSchema.index({ company: 1, status: 1 });
 settlementSchema.index({ createdAt: -1 });
-settlementSchema.index({ reference: 1 }, { unique: true });
 
 const Settlement = mongoose.model('Settlement', settlementSchema);
 

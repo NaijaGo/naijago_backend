@@ -48,7 +48,31 @@ const pushUserNotification = async ({
  */
 exports.registerRider = async (req, res) => {
   try {
-    const { fullName, email, password, plateNumber, vehicleType, phoneNumber, documentUrls } = req.body;
+    const {
+      fullName,
+      email,
+      password,
+      plateNumber,
+      vehicleType,
+      phoneNumber,
+      dateOfBirth,
+      gender,
+      homeAddress,
+      state,
+      city,
+      deliveryZone,
+      vehicleModel,
+      licenseNumber,
+      idType,
+      idNumber,
+      bankName,
+      accountNumber,
+      accountName,
+      emergencyName,
+      emergencyPhone,
+      emergencyRelationship,
+      documentUrls
+    } = req.body;
 
     // Check if rider already exists
     const riderExists = await Rider.findOne({ $or: [{ email }, { plateNumber }] });
@@ -84,6 +108,27 @@ exports.registerRider = async (req, res) => {
       phoneNumber,
       plateNumber: plateNumber.toUpperCase().trim(),
       vehicleType: vehicleType || 'motorcycle',
+      dateOfBirth,
+      gender,
+      homeAddress,
+      state,
+      city,
+      deliveryZone,
+      vehicleBrand: vehicleModel,
+      licenseNumber,
+      idType,
+      idNumber,
+      bankAccount: {
+        bankName,
+        accountNumber,
+        accountName,
+        verified: false
+      },
+      emergencyContact: {
+        name: emergencyName,
+        phone: emergencyPhone,
+        relationship: emergencyRelationship
+      },
       documents: {
         ninFront: documentUrls.ninFront,
         ninBack: documentUrls.ninBack,

@@ -249,8 +249,6 @@ const AppSettingSchema = new mongoose.Schema(
   },
 );
 
-AppSettingSchema.index({ key: 1 }, { unique: true });
-
 const AppSetting = mongoose.model('AppSetting', AppSettingSchema);
 
 module.exports = AppSetting;

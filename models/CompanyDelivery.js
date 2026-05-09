@@ -215,7 +215,6 @@ companyDeliverySchema.virtual('formattedCompanyEarnings').get(function() {
 companyDeliverySchema.index({ company: 1, status: 1 });
 companyDeliverySchema.index({ company: 1, settlementStatus: 1 });
 companyDeliverySchema.index({ rider: 1, status: 1 });
-companyDeliverySchema.index({ deliveryId: 1 }, { unique: true });
 companyDeliverySchema.index({ createdAt: -1 });
 
 const CompanyDelivery = mongoose.model('CompanyDelivery', companyDeliverySchema);

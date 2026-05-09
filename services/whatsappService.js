@@ -2,10 +2,27 @@ const axios = require('axios');
 
 const DEFAULT_WAPISENDER_BASE_URL = 'https://api.wapisender.com';
 
+const getApiKey = () => String(process.env.WAPISENDER_API_KEY || '').trim();
+
+const getInstanceName = () =>
+  String(
+    process.env.WAPISENDER_INSTANCE_NAME ||
+    process.env.WAPISENDER_INSTANCE ||
+    'NaijaGo',
+  ).trim();
+
+const isTruthy = (value) => ['true', '1', 'yes'].includes(String(value || '').trim().toLowerCase());
+
 const isEnabled = () =>
-  process.env.WAPISENDER_ENABLED === 'true' &&
-  Boolean(process.env.WAPISENDER_API_KEY) &&
-  Boolean(process.env.WAPISENDER_INSTANCE);
+  isTruthy(process.env.WAPISENDER_ENABLED) &&
+  Boolean(getApiKey());
+
+const extractProviderMessage = (data) => {
+  if (!data) return '';
+  if (typeof data === 'string') return data;
+  if (Array.isArray(data)) return data.filter(Boolean).join('; ');
+  return extractProviderMessage(data.message || data.error || data.response);
+};
 
 const normalizeNigeriaPhone = (value) => {
   const raw = String(value || '').trim();
@@ -21,7 +38,7 @@ const normalizeNigeriaPhone = (value) => {
     digits = `234${digits}`;
   }
 
-  if (process.env.WAPISENDER_NUMBER_FORMAT === 'jid') {
+  if (process.env.WAPISENDER_NUMBER_FORMAT !== 'digits') {
     return `${digits}@s.whatsapp.net`;
   }
 
@@ -38,8 +55,13 @@ const sendText = async ({ to, text }) => {
     return { skipped: true, reason: 'Missing WhatsApp number.' };
   }
 
+  const apiKey = getApiKey();
+  const instance = encodeURIComponent(getInstanceName());
+  if (!instance) {
+    return { skipped: true, reason: 'Missing WapiSender instance key.' };
+  }
+
   const baseUrl = process.env.WAPISENDER_BASE_URL || DEFAULT_WAPISENDER_BASE_URL;
-  const instance = encodeURIComponent(process.env.WAPISENDER_INSTANCE);
   const endpoint = (process.env.WAPISENDER_SEND_TEXT_URL || `${baseUrl.replace(/\/$/, '')}/message/sendText/${instance}`)
     .replace('{instance}', instance);
   const payloadMode = process.env.WAPISENDER_PAYLOAD_MODE || 'evolution';
@@ -54,20 +76,28 @@ const sendText = async ({ to, text }) => {
         textMessage: { text },
       };
 
-  const response = await axios.post(
-    endpoint,
-    body,
-    {
-      headers: {
-        apikey: process.env.WAPISENDER_API_KEY,
-        Authorization: `Bearer ${process.env.WAPISENDER_API_KEY}`,
-        'Content-Type': 'application/json',
+  try {
+    const response = await axios.post(
+      endpoint,
+      body,
+      {
+        headers: {
+          apikey: apiKey,
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        timeout: Number(process.env.WAPISENDER_TIMEOUT_MS || 10000),
       },
-      timeout: Number(process.env.WAPISENDER_TIMEOUT_MS || 10000),
-    },
-  );
+    );
 
-  return response.data;
+    return response.data;
+  } catch (error) {
+    const providerMessage = extractProviderMessage(error.response?.data);
+    if (providerMessage) {
+      error.message = `WapiSender error: ${providerMessage}`;
+    }
+    throw error;
+  }
 };
 
 module.exports = {

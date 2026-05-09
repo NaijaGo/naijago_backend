@@ -2237,48 +2237,6 @@ router.put('/:id/status', protect, authorizeRoles('admin'), async (req, res) => 
     }
 });
 
-// @desc    Get single order by ID
-// @route   GET /api/orders/:id
-// @access  Private
-router.get('/:id', protect, async (req, res) => {
-    try {
-        const order = await MainOrder.findById(req.params.id)
-            .populate('user', 'firstName lastName email phoneNumber')
-            .populate('rider', 'fullName phoneNumber plateNumber')
-            .populate({
-                path: 'shipments',
-                populate: [
-                    { path: 'vendor', select: 'businessName phoneNumber' },
-                    { path: 'items.product', select: 'name imageUrls price stockQuantity' }
-                ]
-            });
-
-        if (!order) {
-            return res.status(404).json({ message: 'Order not found' });
-        }
-
-        const isOwner = order.user.toString() === req.user.id.toString();
-        const isAdmin = req.user.isAdmin;
-        const isDispatchRider = req.user.role === 'dispatch';
-        const isVendor = order.shipments?.some(shipment =>
-            shipment.vendor && shipment.vendor._id.toString() === req.user.id.toString()
-        );
-
-        if (!isOwner && !isAdmin && !isDispatchRider && !isVendor) {
-            return res.status(401).json({ message: 'Not authorized to view this order' });
-        }
-        
-        res.json(order);
-    } catch (error) {
-        console.error('Error fetching single order:', error);
-        if (error.kind === 'ObjectId') {
-            return res.status(400).json({ message: 'Invalid Order ID format' });
-        }
-        res.status(500).json({ message: 'Server Error' });
-    }
-});
-
-
 // @desc    All orders for Admin
 // @route   GET /api/orders/admin
 // @access  Private/Admin
@@ -2326,6 +2284,48 @@ router.get('/admin', protect, authorizeRoles('admin'), async (req, res) => {
         res.json(orders);
     } catch (error) {
         console.error('Error fetching all orders for admin:', error);
+        res.status(500).json({ message: 'Server Error' });
+    }
+});
+
+
+// @desc    Get single order by ID
+// @route   GET /api/orders/:id
+// @access  Private
+router.get('/:id', protect, async (req, res) => {
+    try {
+        const order = await MainOrder.findById(req.params.id)
+            .populate('user', 'firstName lastName email phoneNumber')
+            .populate('rider', 'fullName phoneNumber plateNumber')
+            .populate({
+                path: 'shipments',
+                populate: [
+                    { path: 'vendor', select: 'businessName phoneNumber' },
+                    { path: 'items.product', select: 'name imageUrls price stockQuantity' }
+                ]
+            });
+
+        if (!order) {
+            return res.status(404).json({ message: 'Order not found' });
+        }
+
+        const isOwner = order.user.toString() === req.user.id.toString();
+        const isAdmin = req.user.isAdmin;
+        const isDispatchRider = req.user.role === 'dispatch';
+        const isVendor = order.shipments?.some(shipment =>
+            shipment.vendor && shipment.vendor._id.toString() === req.user.id.toString()
+        );
+
+        if (!isOwner && !isAdmin && !isDispatchRider && !isVendor) {
+            return res.status(401).json({ message: 'Not authorized to view this order' });
+        }
+        
+        res.json(order);
+    } catch (error) {
+        console.error('Error fetching single order:', error);
+        if (error.kind === 'ObjectId') {
+            return res.status(400).json({ message: 'Invalid Order ID format' });
+        }
         res.status(500).json({ message: 'Server Error' });
     }
 });

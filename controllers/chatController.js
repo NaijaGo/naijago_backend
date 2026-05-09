@@ -38,7 +38,6 @@ const findBestPharmacistForUser = async (user, app) => {
     : [];
 
   const pharmacists = await User.find({
-    role: 'pharmacist',
     pharmacistStatus: 'approved',
     vendorStatus: 'approved',
     isVendor: true,

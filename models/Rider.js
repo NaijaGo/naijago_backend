@@ -263,8 +263,7 @@ const riderSchema = new mongoose.Schema({
       type: Date
     },
     reference: {
-      type: String,
-      unique: true
+      type: String
     },
     paymentMethod: {
       type: String,
@@ -366,6 +365,12 @@ const riderSchema = new mongoose.Schema({
       default: false
     }
   },
+
+  emergencyContact: {
+    name: String,
+    phone: String,
+    relationship: String
+  },
   
   // Metadata
   deviceToken: {
@@ -425,8 +430,6 @@ riderSchema.virtual('totalDeliveries').get(function() {
 });
 
 // Indexes for better query performance
-riderSchema.index({ email: 1 }, { unique: true });
-riderSchema.index({ plateNumber: 1 }, { unique: true });
 riderSchema.index({ status: 1 });
 riderSchema.index({ isActive: 1 });
 riderSchema.index({ isAvailable: 1 });
