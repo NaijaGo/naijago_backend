@@ -17,6 +17,29 @@ const isEnabled = () =>
   isTruthy(process.env.WAPISENDER_ENABLED) &&
   Boolean(getApiKey());
 
+const stripTrailingSlash = (value) => String(value || '').trim().replace(/\/+$/, '');
+
+const buildSendTextEndpoint = (instance) => {
+  const baseUrl = stripTrailingSlash(process.env.WAPISENDER_BASE_URL || DEFAULT_WAPISENDER_BASE_URL);
+  const configuredUrl = String(process.env.WAPISENDER_SEND_TEXT_URL || '').trim();
+  let endpoint = configuredUrl || `${baseUrl}/message/sendText/{instance}`;
+
+  endpoint = endpoint
+    .replace(/\{instance\}/g, instance)
+    .replace(/INSTANCE_NAME/g, instance)
+    .replace(/your-instance/g, instance);
+
+  if (!/\/message\/sendText(?:\/|$)/i.test(endpoint)) {
+    return `${stripTrailingSlash(endpoint)}/message/sendText/${instance}`;
+  }
+
+  if (/\/message\/sendText\/?$/i.test(endpoint)) {
+    return `${stripTrailingSlash(endpoint)}/${instance}`;
+  }
+
+  return endpoint;
+};
+
 const extractProviderMessage = (data) => {
   if (!data) return '';
   if (typeof data === 'string') return data;
@@ -45,6 +68,23 @@ const normalizeNigeriaPhone = (value) => {
   return digits;
 };
 
+const buildSendTextBody = ({ number, text }) => {
+  const payloadMode = process.env.WAPISENDER_PAYLOAD_MODE || 'evolution';
+
+  if (payloadMode === 'simple') {
+    return { number, text };
+  }
+
+  return {
+    number,
+    options: {
+      delay: Number(process.env.WAPISENDER_MESSAGE_DELAY_MS || 1200),
+      presence: 'composing',
+    },
+    textMessage: { text },
+  };
+};
+
 const sendText = async ({ to, text }) => {
   if (!isEnabled()) {
     return { skipped: true, reason: 'WapiSender is not configured.' };
@@ -61,20 +101,8 @@ const sendText = async ({ to, text }) => {
     return { skipped: true, reason: 'Missing WapiSender instance key.' };
   }
 
-  const baseUrl = process.env.WAPISENDER_BASE_URL || DEFAULT_WAPISENDER_BASE_URL;
-  const endpoint = (process.env.WAPISENDER_SEND_TEXT_URL || `${baseUrl.replace(/\/$/, '')}/message/sendText/${instance}`)
-    .replace('{instance}', instance);
-  const payloadMode = process.env.WAPISENDER_PAYLOAD_MODE || 'evolution';
-  const body = payloadMode === 'simple'
-    ? { number, text }
-    : {
-        number,
-        options: {
-          delay: Number(process.env.WAPISENDER_MESSAGE_DELAY_MS || 1200),
-          presence: 'composing',
-        },
-        textMessage: { text },
-      };
+  const endpoint = buildSendTextEndpoint(instance);
+  const body = buildSendTextBody({ number, text });
 
   try {
     const response = await axios.post(
@@ -101,6 +129,8 @@ const sendText = async ({ to, text }) => {
 };
 
 module.exports = {
+  buildSendTextBody,
+  buildSendTextEndpoint,
   isEnabled,
   normalizeNigeriaPhone,
   sendText,
