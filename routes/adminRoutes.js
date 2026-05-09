@@ -27,6 +27,10 @@ const {
     updatePharmacySubscriptionSettings,
 } = require('../services/pharmacySubscriptionService');
 const { sendVerificationEmail } = require('../utils/emailHelper');
+const {
+    findEligibleRiders,
+    notifyAssignedRider,
+} = require('../services/riderAssignmentService');
 const { sendMarketingCampaign } = require('../services/marketingCampaignService');
 const {
     ADMIN_NOTIFICATION_SEGMENTS: SERVICE_NOTIFICATION_SEGMENTS,
@@ -2885,6 +2889,34 @@ router.get('/riders/pending', protect, authorizeAdmin, async (req, res) => {
     }
 });
 
+// @desc    Get eligible riders near a pickup point for manual assignment
+// @route   GET /api/admin/riders/eligible?lat=...&lng=...
+// @access  Private (Admin only)
+router.get('/riders/eligible', protect, authorizeAdmin, async (req, res) => {
+    const lat = Number(req.query.lat);
+    const lng = Number(req.query.lng);
+    const radiusKm = Number(req.query.radiusKm || 25);
+    const limit = Number(req.query.limit || 20);
+
+    try {
+        const riders = await findEligibleRiders({
+            pickupLocation: Number.isFinite(lat) && Number.isFinite(lng)
+                ? { latitude: lat, longitude: lng }
+                : null,
+            radiusKm,
+            limit,
+        });
+
+        res.json({
+            count: riders.length,
+            riders,
+        });
+    } catch (error) {
+        console.error('Eligible riders error:', error);
+        res.status(500).json({ message: 'Server error fetching eligible riders.' });
+    }
+});
+
 // @desc    Update individual rider status
 // @route   PUT /api/admin/riders/:riderId/status
 // @access  Private (Admin only)
@@ -2942,6 +2974,134 @@ router.put('/riders/:riderId/status', protect, authorizeAdmin, async (req, res) 
     } catch (error) {
         console.error('Admin status update error:', error);
         res.status(500).json({ message: 'Server error updating rider status.' });
+    }
+});
+
+// @desc    Manually assign a ready order to an approved rider
+// @route   PUT /api/admin/riders/assign-order
+// @access  Private (Admin only)
+router.put('/riders/assign-order', protect, authorizeAdmin, async (req, res) => {
+    const { orderId, riderId } = req.body;
+
+    if (!orderId || !riderId) {
+        return res.status(400).json({ message: 'orderId and riderId are required.' });
+    }
+
+    const session = await MainOrder.startSession();
+    session.startTransaction();
+
+    try {
+        const rider = await Rider.findOne({
+            _id: riderId,
+            status: 'approved',
+            isActive: true,
+        }).session(session);
+
+        if (!rider) {
+            await session.abortTransaction();
+            session.endSession();
+            return res.status(404).json({ message: 'Approved active rider not found.' });
+        }
+
+        if ((rider.activeDeliveries || 0) >= 5) {
+            await session.abortTransaction();
+            session.endSession();
+            return res.status(400).json({ message: 'Rider already has the maximum active deliveries.' });
+        }
+
+        const readyShipments = await Shipment.find({
+            mainOrder: orderId,
+            shipmentStatus: 'ready_for_pickup',
+            isClaimed: false,
+        }).session(session);
+
+        if (readyShipments.length === 0) {
+            await session.abortTransaction();
+            session.endSession();
+            return res.status(400).json({ message: 'No unclaimed ready shipments found for this order.' });
+        }
+
+        const pickupOTP = Math.floor(1000 + Math.random() * 9000).toString();
+        const deliveryOTP = Math.floor(1000 + Math.random() * 9000).toString();
+
+        const mainOrder = await MainOrder.findOneAndUpdate(
+            {
+                _id: orderId,
+                isPaid: true,
+                isClaimed: false,
+                mainOrderStatus: { $nin: ['delivered', 'completed', 'cancelled'] },
+                $or: [{ rider: null }, { rider: { $exists: false } }],
+            },
+            {
+                $set: {
+                    rider: riderId,
+                    isClaimed: true,
+                    claimedAt: Date.now(),
+                    pickupOTP,
+                    deliveryOTP,
+                    shipmentStatus: 'ready_for_pickup',
+                },
+            },
+            { new: true, session },
+        );
+
+        if (!mainOrder) {
+            await session.abortTransaction();
+            session.endSession();
+            return res.status(409).json({ message: 'Order has already been claimed or is not available.' });
+        }
+
+        await Shipment.updateMany(
+            {
+                _id: { $in: readyShipments.map((shipment) => shipment._id) },
+                isClaimed: false,
+                shipmentStatus: 'ready_for_pickup',
+            },
+            {
+                $set: {
+                    rider: riderId,
+                    isClaimed: true,
+                    claimedAt: Date.now(),
+                    pickupOTP,
+                    deliveryOTP,
+                },
+            },
+            { session },
+        );
+
+        rider.activeDeliveries = (rider.activeDeliveries || 0) + 1;
+        await rider.save({ session });
+
+        await session.commitTransaction();
+        session.endSession();
+
+        await notifyAssignedRider({
+            app: req.app,
+            riderId,
+            mainOrder,
+            pickupOTP,
+            deliveryOTP,
+        });
+
+        req.app.get('notifyAdmin')?.({
+            type: 'manual_rider_assignment',
+            message: `Order ${orderId} manually assigned to rider ${rider.fullName}.`,
+            orderId,
+            riderId,
+        });
+
+        res.json({
+            message: 'Rider assigned successfully.',
+            orderId,
+            riderId,
+            pickupOTP,
+            deliveryOTP,
+        });
+    } catch (error) {
+        await session.abortTransaction();
+        session.endSession();
+        console.error('Manual rider assignment error:', error);
+        res.status(500).json({ message: 'Server error assigning rider.', error: error.message });
     }
 });
 

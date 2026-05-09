@@ -15,6 +15,7 @@ const { grantReferralRewardForVerifiedUser } = require('../services/referralServ
 const { getDeliveryFeeSettings, buildDeliveryFeeQuote } = require('../services/deliveryFeeService');
 const { notifyVendorOfPaidShipment } = require('../services/vendorOrderNotificationService');
 const { trackAnalyticsEvent } = require('../services/analyticsService');
+const { notifyEligibleRidersForShipment } = require('../services/riderAssignmentService');
 
 const parsePagination = (query, defaults = {}) => {
     const maxLimit = defaults.maxLimit || 200;
@@ -1830,7 +1831,7 @@ router.put('/shipments/:id/status-update', protect, authorizeRoles('vendor', 'ad
     }
 
     try {
-        const shipment = await Shipment.findById(SHIPMENT_ID);
+        const shipment = await Shipment.findById(SHIPMENT_ID).populate('mainOrder');
 
         if (!shipment) {
             return res.status(404).json({ message: 'Shipment not found' });
@@ -1860,17 +1861,18 @@ router.put('/shipments/:id/status-update', protect, authorizeRoles('vendor', 'ad
         await shipment.save();
 
         if (status === 'ready_for_pickup') {
+            const mainOrderId = shipment.mainOrder?._id || shipment.mainOrder;
             const siblingShipments = await Shipment.find({
-                mainOrder: shipment.mainOrder,
+                mainOrder: mainOrderId,
                 shipmentStatus: { $nin: ['rejected', 'cancelled', 'returned'] }
             }).select('shipmentStatus');
             const allFulfillableShipmentsReady = siblingShipments.length > 0 &&
                 siblingShipments.every((item) => item.shipmentStatus === 'ready_for_pickup');
 
-            await MainOrder.findByIdAndUpdate(shipment.mainOrder, {
+            const mainOrder = await MainOrder.findByIdAndUpdate(mainOrderId, {
                 shipmentStatus: allFulfillableShipmentsReady ? 'ready_for_pickup' : 'processing',
                 mainOrderStatus: 'processing'
-            });
+            }, { new: true });
 
             const io = req.app.get('io');
             if (io) {
@@ -1878,11 +1880,17 @@ router.put('/shipments/:id/status-update', protect, authorizeRoles('vendor', 'ad
                     type: 'shipment_ready_for_pickup',
                     message: `Shipment ${shipment._id} is ready for rider pickup`,
                     shipmentId: shipment._id,
-                    orderId: shipment.mainOrder,
+                    orderId: mainOrderId,
                     vendorId: shipment.vendor,
                     timestamp: Date.now()
                 });
             }
+
+            await notifyEligibleRidersForShipment({
+                app: req.app,
+                shipment,
+                mainOrder: mainOrder || shipment.mainOrder,
+            });
         }
 
         res.json({ message: `Shipment ${SHIPMENT_ID} status updated to ${status}.`, shipment });

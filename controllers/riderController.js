@@ -7,6 +7,10 @@ const mongoose = require('mongoose');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const { sendVerificationEmail } = require('../utils/emailHelper');
+const {
+  MAX_ACTIVE_DELIVERIES,
+  notifyAssignedRider,
+} = require('../services/riderAssignmentService');
 
 // Helper to create JWT
 const generateToken = (id) => {
@@ -394,7 +398,10 @@ exports.updateRiderProfile = async (req, res) => {
       vehicleColor,
       licenseNumber,
       idType,
-      idNumber
+      idNumber,
+      emergencyName,
+      emergencyPhone,
+      emergencyRelationship
     } = req.body;
     
     const updateData = {};
@@ -410,6 +417,11 @@ exports.updateRiderProfile = async (req, res) => {
     if (licenseNumber) updateData.licenseNumber = licenseNumber;
     if (idType) updateData.idType = idType;
     if (idNumber) updateData.idNumber = idNumber;
+    if (emergencyName) updateData['emergencyContact.name'] = emergencyName;
+    if (emergencyPhone) updateData['emergencyContact.phone'] = emergencyPhone;
+    if (emergencyRelationship) {
+      updateData['emergencyContact.relationship'] = emergencyRelationship;
+    }
 
     // Validate at least one field is being updated
     if (Object.keys(updateData).length === 0) {
@@ -587,13 +599,12 @@ exports.getAvailableOrders = async (req, res) => {
       });
     }
 
-    // Find paid MainOrders that are ready for rider pickup and not claimed.
+    // Find paid MainOrders with at least one shipment ready for rider pickup.
     // Vendor apps move shipments to ready_for_pickup; riders should not see
     // orders that vendors are still processing.
     const availableOrders = await MainOrder.find({
       isPaid: true,
       mainOrderStatus: { $nin: ['delivered', 'completed', 'cancelled'] },
-      shipmentStatus: 'ready_for_pickup',
       isClaimed: false,
       $or: [{ rider: null }, { rider: { $exists: false } }]
     })
@@ -625,8 +636,8 @@ exports.getAvailableOrders = async (req, res) => {
       const firstShipment = order.shipments[0];
       let distance = null;
       
-      if (rider.currentLocation && firstShipment?.vendor?.businessLocation) {
-        const vendorLoc = firstShipment.vendor.businessLocation;
+      if (rider.currentLocation && firstShipment?.vendorLocation) {
+        const vendorLoc = firstShipment.vendorLocation;
         distance = calculateDistance(
           rider.currentLocation.lat,
           rider.currentLocation.lng,
@@ -680,7 +691,7 @@ exports.claimOrder = async (req, res) => {
       });
     }
 
-    const mainOrder = await MainOrder.findById(orderId)
+    let mainOrder = await MainOrder.findById(orderId)
       .populate('shipments')
       .session(session);
 
@@ -741,13 +752,13 @@ exports.claimOrder = async (req, res) => {
       });
     }
 
-    // Check if rider has too many active deliveries (limit to 5)
-    if (rider.activeDeliveries >= 5) {
+    // Check if rider has too many active deliveries.
+    if (rider.activeDeliveries >= MAX_ACTIVE_DELIVERIES) {
       await session.abortTransaction();
       session.endSession();
       return res.status(400).json({
         success: false,
-        message: 'You have reached the maximum limit of active deliveries (5). Complete some deliveries first.'
+        message: `You have reached the maximum limit of active deliveries (${MAX_ACTIVE_DELIVERIES}). Complete some deliveries first.`
       });
     }
 
@@ -755,30 +766,69 @@ exports.claimOrder = async (req, res) => {
     const pickupOTP = Math.floor(1000 + Math.random() * 9000).toString();
     const deliveryOTP = Math.floor(1000 + Math.random() * 9000).toString();
 
-    // Assign rider to MainOrder
-    mainOrder.rider = riderId;
-    mainOrder.isClaimed = true;
-    mainOrder.claimedAt = Date.now();
-    mainOrder.pickupOTP = pickupOTP;
-    mainOrder.deliveryOTP = deliveryOTP;
-    mainOrder.shipmentStatus = 'ready_for_pickup';
+    const readyShipmentIds = mainOrder.shipments
+      .filter((shipment) => shipment.shipmentStatus === 'ready_for_pickup' && !shipment.isClaimed)
+      .map((shipment) => shipment._id);
 
-    // Update all shipments
-    const shipmentUpdates = [];
-    for (const shipment of mainOrder.shipments) {
-      if (shipment.shipmentStatus === 'ready_for_pickup' && !shipment.isClaimed) {
-        shipment.rider = riderId;
-        shipment.isClaimed = true;
-        shipment.claimedAt = Date.now();
-        shipment.shipmentStatus = 'ready_for_pickup';
-        shipment.pickupOTP = pickupOTP;
-        shipment.deliveryOTP = deliveryOTP;
-        shipmentUpdates.push(shipment.save({ session }));
-      }
+    if (readyShipmentIds.length === 0) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({
+        success: false,
+        message: 'No ready shipments are available for this order'
+      });
     }
 
-    // Wait for all shipment updates
-    await Promise.all(shipmentUpdates);
+    const claimedMainOrder = await MainOrder.findOneAndUpdate(
+      {
+        _id: orderId,
+        isPaid: true,
+        isClaimed: false,
+        mainOrderStatus: { $nin: ['delivered', 'completed', 'cancelled'] },
+        $or: [{ rider: null }, { rider: { $exists: false } }],
+        shipments: { $in: readyShipmentIds }
+      },
+      {
+        $set: {
+          rider: riderId,
+          isClaimed: true,
+          claimedAt: Date.now(),
+          pickupOTP,
+          deliveryOTP,
+          shipmentStatus: 'ready_for_pickup'
+        }
+      },
+      { new: true, session }
+    ).populate('shipments');
+
+    if (!claimedMainOrder) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(409).json({
+        success: false,
+        message: 'Order already claimed by another rider'
+      });
+    }
+
+    await Shipment.updateMany(
+      {
+        _id: { $in: readyShipmentIds },
+        shipmentStatus: 'ready_for_pickup',
+        isClaimed: false
+      },
+      {
+        $set: {
+          rider: riderId,
+          isClaimed: true,
+          claimedAt: Date.now(),
+          pickupOTP,
+          deliveryOTP
+        }
+      },
+      { session }
+    );
+
+    mainOrder = claimedMainOrder;
 
     // Update rider's active deliveries count
     await Rider.findByIdAndUpdate(
@@ -787,7 +837,6 @@ exports.claimOrder = async (req, res) => {
       { session }
     );
 
-    await mainOrder.save({ session });
     await session.commitTransaction();
     session.endSession();
 
@@ -800,6 +849,13 @@ exports.claimOrder = async (req, res) => {
     ];
 
     await Promise.all([
+      notifyAssignedRider({
+        app: req.app,
+        riderId,
+        mainOrder,
+        pickupOTP,
+        deliveryOTP,
+      }),
       pushUserNotification({
         userId: mainOrder.user,
         type: 'order_update',
@@ -1829,7 +1885,7 @@ exports.getDeliveryLocation = async (req, res) => {
 exports.getDashboardStats = async (req, res) => {
   try {
     const rider = await Rider.findById(req.rider._id)
-      .select('walletBalance totalEarnings completedDeliveries activeDeliveries rating totalRatings');
+      .select('walletBalance totalEarnings completedDeliveries activeDeliveries rating totalRatings isAvailable isActive status');
     
     if (!rider) {
       return res.status(404).json({ 
@@ -1896,6 +1952,9 @@ exports.getDashboardStats = async (req, res) => {
       todayEarnings,
       completedDeliveries: rider.completedDeliveries || 0,
       activeDeliveries: rider.activeDeliveries || 0,
+      isAvailable: rider.isAvailable === true,
+      isActive: rider.isActive === true,
+      status: rider.status,
       averageRating: rider.totalRatings > 0 ? (rider.rating / rider.totalRatings).toFixed(1) : 0,
       totalRatings: rider.totalRatings || 0,
       performance: {
