@@ -11,6 +11,7 @@ const {
   MAX_ACTIVE_DELIVERIES,
   notifyAssignedRider,
 } = require('../services/riderAssignmentService');
+const notificationService = require('../services/notificationService');
 
 // Helper to create JWT
 const generateToken = (id) => {
@@ -543,10 +544,18 @@ exports.updateRiderStatus = async (req, res) => {
       });
     }
 
+    const existingRider = await Rider.findById(req.rider._id)
+      .select('status isAvailable isActive lastOnlineNotificationAt');
+    if (!existingRider) {
+      return res.status(404).json({
+        success: false,
+        message: 'Rider not found'
+      });
+    }
+
     // If rider is marking themselves as active, ensure they're approved
     if (isActive === true) {
-      const rider = await Rider.findById(req.rider._id);
-      if (rider.status !== 'approved') {
+      if (existingRider.status !== 'approved') {
         return res.status(400).json({ 
           success: false,
           message: 'Cannot activate account. Rider account must be approved by admin.' 
@@ -555,6 +564,12 @@ exports.updateRiderStatus = async (req, res) => {
     }
 
     updateData.lastActive = new Date();
+    const nextIsOnline =
+      (isAvailable !== undefined ? isAvailable : existingRider.isAvailable) === true &&
+      (isActive !== undefined ? isActive : existingRider.isActive) === true;
+    if (!nextIsOnline) {
+      updateData.lastOnlineNotificationAt = null;
+    }
 
     const updatedRider = await Rider.findByIdAndUpdate(
       req.rider._id,
@@ -572,6 +587,35 @@ exports.updateRiderStatus = async (req, res) => {
         isAvailable: updatedRider.isAvailable,
         isActive: updatedRider.isActive,
         timestamp: new Date()
+      });
+    }
+
+    const wasOnline = existingRider.isAvailable === true && existingRider.isActive === true;
+    const shouldSendOnlineNotification =
+      updatedRider.isAvailable === true &&
+      updatedRider.isActive === true &&
+      (!wasOnline || !existingRider.lastOnlineNotificationAt);
+
+    if (shouldSendOnlineNotification) {
+      updatedRider.lastOnlineNotificationAt = new Date();
+      updatedRider.notifications.unshift({
+        type: 'admin_message',
+        message: 'You are online: You can now receive delivery requests from NaijaGo.',
+        read: false,
+        createdAt: updatedRider.lastOnlineNotificationAt,
+      });
+      updatedRider.notifications = updatedRider.notifications.slice(0, 100);
+      await updatedRider.save();
+
+      notificationService.sendToUser(req.rider._id.toString(), {
+        title: 'You are online',
+        message: 'You can now receive delivery requests from NaijaGo.',
+        data: {
+          type: 'rider_online',
+          riderId: req.rider._id.toString(),
+        },
+      }).catch((error) => {
+        console.error(`Rider online push failed for ${req.rider._id}:`, error.message);
       });
     }
 
@@ -877,12 +921,36 @@ exports.claimOrder = async (req, res) => {
         message: `Delivery OTP for order ${mainOrder._id}: ${deliveryOTP}. Share this code only after receiving your order.`,
         relatedId: mainOrder._id,
       }),
+      notificationService.sendToUser(mainOrder.user.toString(), {
+        title: 'Rider assigned',
+        message: `A rider has been assigned to your order. Delivery OTP: ${deliveryOTP}`,
+        data: {
+          type: 'order_claimed',
+          orderId: mainOrder._id,
+          deliveryOTP,
+        },
+      }).catch((error) => {
+        console.error(`Customer rider assignment push failed for ${mainOrder.user}:`, error.message);
+      }),
       ...vendorIds.map((vendorId) =>
         pushUserNotification({
           userId: vendorId,
           type: 'order_update',
           message: `Pickup OTP for order ${mainOrder._id}: ${pickupOTP}. Share this code with the rider at pickup.`,
           relatedId: mainOrder._id,
+        })
+      ),
+      ...vendorIds.map((vendorId) =>
+        notificationService.sendToUser(vendorId, {
+          title: 'Rider assigned',
+          message: `Pickup OTP for order ${mainOrder._id}: ${pickupOTP}. Share this code with the rider at pickup.`,
+          data: {
+            type: 'order_claimed',
+            orderId: mainOrder._id,
+            pickupOTP,
+          },
+        }).catch((error) => {
+          console.error(`Vendor rider assignment push failed for ${vendorId}:`, error.message);
         })
       ),
     ]);

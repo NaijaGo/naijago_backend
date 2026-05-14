@@ -21,9 +21,18 @@ const chatSessionSchema = new mongoose.Schema({
     enum: ['one_time', 'weekly', 'monthly', 'admin'],
     default: 'one_time',
   },
+  pharmacyAccessSource: {
+    type: String,
+    enum: ['one_time', 'subscription', 'admin', null],
+    default: null,
+  },
   pharmacyAccessGrantedAt: {
     type: Date,
-    default: Date.now,
+    default: null,
+  },
+  pharmacyAccessExpiresAt: {
+    type: Date,
+    default: null,
   },
   createdAt: { type: Date, default: Date.now },
 });

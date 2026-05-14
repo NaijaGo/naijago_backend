@@ -24,6 +24,7 @@ const {
 } = require('../services/deliveryFeeService');
 const {
     getPharmacySubscriptionSettings,
+    getPharmacySubscribers,
     updatePharmacySubscriptionSettings,
 } = require('../services/pharmacySubscriptionService');
 const { sendVerificationEmail } = require('../utils/emailHelper');
@@ -2684,6 +2685,32 @@ router.get('/pharmacist-subscription-settings', protect, authorizeAdmin, async (
     } catch (error) {
         console.error('Error fetching pharmacist subscription settings:', error);
         res.status(500).json({ message: 'Server error fetching pharmacist subscription settings.' });
+    }
+});
+
+// @desc    Get pharmacist chat subscribers
+// @route   GET /api/admin/pharmacist-subscribers
+// @access  Private (Admin only)
+router.get('/pharmacist-subscribers', protect, authorizeAdmin, async (req, res) => {
+    try {
+        const { limit, skip, page } = parsePagination(req.query, {
+            defaultLimit: 100,
+            maxLimit: 500,
+        });
+        const status = String(req.query.status || 'all').toLowerCase() === 'active'
+            ? 'active'
+            : 'all';
+        const result = await getPharmacySubscribers({ status, limit, skip });
+
+        res.status(200).json({
+            ...result,
+            page,
+            limit,
+            status,
+        });
+    } catch (error) {
+        console.error('Error fetching pharmacist subscribers:', error);
+        res.status(500).json({ message: 'Server error fetching pharmacist subscribers.' });
     }
 });
 

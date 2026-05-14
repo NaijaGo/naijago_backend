@@ -1,4 +1,5 @@
 const Rider = require('../models/Rider');
+const notificationService = require('./notificationService');
 const { calculateDistance } = require('../utils/distanceCalculator');
 
 const MAX_ACTIVE_DELIVERIES = 5;
@@ -100,6 +101,16 @@ const notifyEligibleRidersForShipment = async ({
     app?.get('notifyRider')?.(rider._id.toString(), payload);
   }
 
+  await Promise.allSettled(
+    riders.map((rider) =>
+      notificationService.sendToUser(rider._id.toString(), {
+        title: payload.title,
+        message,
+        data: payload,
+      })
+    )
+  );
+
   app?.get('notifyAdmin')?.({
     type: 'rider_offer_wave_sent',
     message: `Sent rider offer for order ${mainOrder._id} to ${riders.length} riders.`,
@@ -131,6 +142,19 @@ const notifyAssignedRider = async ({ app, riderId, mainOrder, pickupOTP, deliver
     orderId: mainOrder._id,
     pickupOTP,
     deliveryOTP,
+  });
+
+  await notificationService.sendToUser(riderId.toString(), {
+    title: 'Delivery assigned',
+    message,
+    data: {
+      type: 'order_assigned',
+      orderId: mainOrder._id,
+      pickupOTP,
+      deliveryOTP,
+    },
+  }).catch((error) => {
+    console.error(`Rider push notification failed for ${riderId}:`, error.message);
   });
 };
 

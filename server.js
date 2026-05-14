@@ -19,6 +19,7 @@ const { initializeReferralProgramSettings } = require('./services/referralServic
 const { initializeDeliveryFeeSettings } = require('./services/deliveryFeeService');
 const { initializePharmacySubscriptionSettings } = require('./services/pharmacySubscriptionService');
 const { startScheduledNotificationRunner } = require('./services/scheduledNotificationRunner');
+const notificationService = require('./services/notificationService');
 const { cleanupObsoleteIndexes } = require('./utils/dbIndexMaintenance');
 
 const app = express();
@@ -93,21 +94,70 @@ const io = new Server(server, {
   }
 });
 
-// Socket auth (JWT handshake) - UNCHANGED
-io.use((socket, next) => {
+// Socket auth (JWT handshake)
+io.use(async (socket, next) => {
   try {
     const token = socket.handshake.auth?.token;
     if (!token) return next(new Error('Authentication token required'));
-    
+
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const UserModel = require('./models/User');
+    const RiderModel = require('./models/Rider');
+    const CompanyModel = require('./models/Company');
+    const CompanyRiderModel = require('./models/CompanyRider');
+
+    let account = await UserModel.findById(decoded.id)
+      .select('firstName lastName email role isAdmin isVendor vendorStatus pharmacistStatus')
+      .lean();
+    let inferredRole = decoded.role || account?.role || 'user';
+
+    if (account?.isAdmin) {
+      inferredRole = 'admin';
+    } else if (account?.pharmacistStatus === 'approved' || account?.role === 'pharmacist') {
+      inferredRole = 'pharmacist';
+    } else if (account?.isVendor === true) {
+      inferredRole = 'vendor';
+    }
+
+    if (!account) {
+      account = await RiderModel.findById(decoded.id)
+        .select('fullName email')
+        .lean();
+      if (account) {
+        inferredRole = 'rider';
+      }
+    }
+
+    if (!account) {
+      account = await CompanyModel.findById(decoded.id)
+        .select('companyName email')
+        .lean();
+      if (account) {
+        inferredRole = 'company';
+      }
+    }
+
+    if (!account) {
+      account = await CompanyRiderModel.findById(decoded.id)
+        .select('fullName email')
+        .lean();
+      if (account) {
+        inferredRole = 'company_rider';
+      }
+    }
+
+    if (!account) return next(new Error('Account not found'));
+
+    const fullName = account.fullName || account.companyName || '';
+    const [firstName = '', ...lastNameParts] = fullName.split(' ');
     socket.user = {
       id: decoded.id,
-      role: decoded.role || 'user',
-      email: decoded.email,
-      firstName: decoded.firstName,
-      lastName: decoded.lastName
+      role: inferredRole,
+      email: decoded.email || account.email,
+      firstName: decoded.firstName || account.firstName || firstName,
+      lastName: decoded.lastName || account.lastName || lastNameParts.join(' ')
     };
-    
+
     return next();
   } catch (err) {
     console.error('Socket auth failed:', err.message);
@@ -159,6 +209,7 @@ function getUserTypeFromRole(role) {
   if (role === 'company_rider') return 'company_rider'; // COMPANY RIDER - NEW
   if (role === 'company') return 'company'; // COMPANY - NEW
   if (role === 'admin') return 'admin';
+  if (role === 'pharmacist') return 'vendor';
   if (role === 'vendor') return 'vendor';
   return 'user';
 }
@@ -179,15 +230,24 @@ function broadcastToVendors(vendorIds, event, data) {
 }
 
 async function getOnlinePharmacistPayload() {
-  const pharmacistIds = Array.from(onlinePharmacists.keys());
-  const pharmacists = pharmacistIds.length
-    ? await User.find({ _id: { $in: pharmacistIds } })
-        .select('firstName lastName businessName phoneNumber businessSupportPhone')
-        .lean()
-    : [];
-  const byId = new Map(pharmacists.map((user) => [String(user._id), user]));
-  const list = pharmacistIds.map((id) => {
-    const user = byId.get(id) || {};
+  const socketPharmacistIds = Array.from(onlinePharmacists.keys());
+  if (socketPharmacistIds.length === 0) {
+    return { online: false, count: 0, pharmacists: [] };
+  }
+  const pharmacists = await User.find({
+    _id: { $in: socketPharmacistIds },
+    isVendor: true,
+    vendorStatus: 'approved',
+    pharmacistStatus: 'approved',
+    $or: [
+      { role: 'pharmacist' },
+      { pharmacistStatus: 'approved' },
+    ],
+  })
+    .select('firstName lastName businessName phoneNumber businessSupportPhone isAvailable')
+    .lean();
+  const list = pharmacists.map((user) => {
+    const id = String(user._id);
     return {
       id,
       name:
@@ -195,6 +255,7 @@ async function getOnlinePharmacistPayload() {
         [user.firstName, user.lastName].filter(Boolean).join(' ') ||
         'Pharmacist',
       phoneNumber: user.businessSupportPhone || user.phoneNumber || '',
+      hasSocket: onlinePharmacists.has(id),
     };
   });
   return { online: list.length > 0, count: list.length, pharmacists: list };
@@ -266,6 +327,55 @@ async function notifyUserOfPharmacyMessage(session, textPreview, pharmacistId) {
     io.to(userSocketId).emit(`user_${session.user}`, payload);
   }
   io.emit(`user_${session.user}`, payload);
+
+  notificationService.sendToUser(String(session.user), {
+    title: 'New pharmacy chat message',
+    message: payload.message,
+    data: payload,
+  }).catch((error) => {
+    console.error(`User pharmacy chat push failed for ${session.user}:`, error.message);
+  });
+}
+
+async function sendPharmacistPush(pharmacistId, session, textPreview) {
+  if (!pharmacistId) return;
+  const message = String(textPreview || 'A customer is waiting for pharmacist support.').slice(0, 220);
+  notificationService.sendToUser(String(pharmacistId), {
+    title: 'New pharmacist consultation',
+    message,
+    data: {
+      type: 'pharmacy_consultation_request',
+      sessionId: String(session._id),
+      userId: String(session.user),
+    },
+  }).catch((error) => {
+    console.error(`Pharmacist push failed for ${pharmacistId}:`, error.message);
+  });
+}
+
+async function sendOnlinePharmacistPushes(session, textPreview) {
+  const onlinePharmacistIds = Array.from(onlinePharmacists.keys());
+
+  const pharmacists = await User.find({
+    isVendor: true,
+    vendorStatus: 'approved',
+    pharmacistStatus: 'approved',
+    $or: [{ role: 'pharmacist' }, { pharmacistStatus: 'approved' }],
+    $and: [
+      {
+        $or: [
+          { isAvailable: true },
+          ...(onlinePharmacistIds.length ? [{ _id: { $in: onlinePharmacistIds } }] : []),
+        ],
+      },
+    ],
+  }).select('_id').lean();
+
+  await Promise.allSettled(
+    pharmacists.map((pharmacist) =>
+      sendPharmacistPush(String(pharmacist._id), session, textPreview)
+    )
+  );
 }
 
 function formatChatMessage(message) {
@@ -277,6 +387,13 @@ function formatChatMessage(message) {
     text: message.message,
     createdAt: message.createdAt,
   };
+}
+
+function hasExplicitPharmacyAccessGrant(session) {
+  return Boolean(
+    session?.pharmacyAccessGrantedAt &&
+      ['one_time', 'subscription', 'admin'].includes(session?.pharmacyAccessSource)
+  );
 }
 
 async function createAndEmitSystemMessage(sessionId, text) {
@@ -300,10 +417,17 @@ function notifyOnlinePharmacists(session, textPreview) {
       createdAt: new Date(),
     });
   }
+  sendOnlinePharmacistPushes(session, textPreview).catch((error) => {
+    console.error('Failed to send online pharmacist pushes:', error);
+  });
 }
 
 function notifyAssignedPharmacist(session, textPreview) {
   if (!session?.pharmacist) return false;
+
+  sendPharmacistPush(String(session.pharmacist), session, textPreview).catch((error) => {
+    console.error('Failed to send assigned pharmacist push:', error);
+  });
 
   const socketId = onlinePharmacists.get(String(session.pharmacist));
   if (!socketId) return false;
@@ -318,7 +442,10 @@ function notifyAssignedPharmacist(session, textPreview) {
 }
 
 async function emitConsultationQueueForPharmacist(socket, pharmacistId) {
+  const onlinePharmacistIds = Array.from(onlinePharmacists.keys());
   const sessions = await ChatSession.find({
+    pharmacyAccessGrantedAt: { $ne: null },
+    pharmacyAccessSource: { $in: ['one_time', 'subscription', 'admin'] },
     $or: [
       {
         status: 'open',
@@ -327,6 +454,10 @@ async function emitConsultationQueueForPharmacist(socket, pharmacistId) {
       {
         status: 'assigned',
         pharmacist: pharmacistId,
+      },
+      {
+        status: 'assigned',
+        pharmacist: { $nin: onlinePharmacistIds },
       },
     ],
   })
@@ -543,6 +674,11 @@ io.on('connection', (socket) => {
     userType,
     timestamp: new Date()
   });
+  getOnlinePharmacistPayload()
+    .then((payload) => socket.emit('pharmacistStatus', payload))
+    .catch((error) => {
+      console.error('Failed to emit initial pharmacist status:', error);
+    });
 
   // ============================================
   // RIDER-SPECIFIC EVENTS (ORIGINAL - INDIVIDUAL RIDERS)
@@ -1077,10 +1213,21 @@ io.on('connection', (socket) => {
         const companyRiderIds = Array.from(onlineCompanyRiders.keys());
 
         const [individualDocs, companyRiderDocs] = await Promise.all([
-          Rider.find({ _id: { $in: individualIds } })
+          Rider.find({
+            status: 'approved',
+            $or: [
+              { isAvailable: true, isActive: true },
+              { _id: { $in: individualIds } },
+            ],
+          })
             .select('fullName phoneNumber plateNumber vehicleType isAvailable isActive status currentLocation')
             .lean(),
-          CompanyRider.find({ _id: { $in: companyRiderIds } })
+          CompanyRider.find({
+            $or: [
+              { isAvailable: true, isActive: true, status: 'active' },
+              { _id: { $in: companyRiderIds } },
+            ],
+          })
             .populate('company', 'companyName phoneNumber status')
             .select('fullName phoneNumber plateNumber vehicleType isAvailable isActive status company currentLocation')
             .lean()
@@ -1093,9 +1240,11 @@ io.on('connection', (socket) => {
           companyRiderDocs.map((rider) => [rider._id.toString(), rider])
         );
 
-        // Individual riders
-        const individualRiders = Array.from(onlineRiders.entries()).map(([riderId, data]) => {
-          const rider = individualById.get(riderId) || {};
+        // Individual riders. Include DB-available riders even when the mobile OS
+        // has paused their socket in the background.
+        const individualRiders = individualDocs.map((rider) => {
+          const riderId = rider._id.toString();
+          const data = onlineRiders.get(riderId) || {};
           return {
             riderId,
             _id: riderId,
@@ -1105,17 +1254,19 @@ io.on('connection', (socket) => {
             plateNumber: rider.plateNumber || '',
             vehicleType: rider.vehicleType || '',
             status: rider.status || '',
-            socketId: data.socketId,
+            socketId: data.socketId || null,
             location: data.location || rider.currentLocation,
-            lastUpdate: data.lastUpdate,
+            lastUpdate: data.lastUpdate || rider.currentLocation?.lastUpdated || rider.lastActive,
             isAvailable: data.isAvailable ?? rider.isAvailable ?? false,
-            isActive: data.isActive ?? rider.isActive ?? false
+            isActive: data.isActive ?? rider.isActive ?? false,
+            isSocketConnected: Boolean(data.socketId)
           };
         });
 
         // Company riders
-        const companyRidersList = Array.from(onlineCompanyRiders.entries()).map(([riderId, data]) => {
-          const rider = companyRiderById.get(riderId) || {};
+        const companyRidersList = companyRiderDocs.map((rider) => {
+          const riderId = rider._id.toString();
+          const data = onlineCompanyRiders.get(riderId) || {};
           const company = rider.company || {};
           return {
             riderId,
@@ -1129,11 +1280,12 @@ io.on('connection', (socket) => {
             plateNumber: rider.plateNumber || '',
             vehicleType: rider.vehicleType || '',
             status: rider.status || '',
-            socketId: data.socketId,
+            socketId: data.socketId || null,
             location: data.location || rider.currentLocation,
-            lastUpdate: data.lastUpdate,
+            lastUpdate: data.lastUpdate || rider.currentLocation?.updatedAt || rider.lastActivity,
             isAvailable: data.isAvailable ?? rider.isAvailable ?? false,
-            isActive: data.isActive ?? rider.isActive ?? false
+            isActive: data.isActive ?? rider.isActive ?? false,
+            isSocketConnected: Boolean(data.socketId)
           };
         });
 
@@ -1236,6 +1388,18 @@ io.on('connection', (socket) => {
             timestamp: new Date()
           });
 
+          notificationService.sendToUser(String(riderId), {
+            title: 'Delivery assigned',
+            message: `Admin assigned you to order ${orderId}. Open the rider app to start the delivery.`,
+            data: {
+              type: 'order_assigned',
+              orderId,
+              riderId,
+            },
+          }).catch((error) => {
+            console.error(`Admin rider assignment push failed for ${riderId}:`, error.message);
+          });
+
           // Broadcast to order room
           io.to(`order_${orderId}`).emit('rider_assigned', {
             orderId,
@@ -1244,6 +1408,22 @@ io.on('connection', (socket) => {
             riderPhone: order.rider?.phoneNumber,
             timestamp: new Date()
           });
+
+          if (order.user?._id) {
+            notificationService.sendToUser(String(order.user._id), {
+              title: 'Rider assigned',
+              message: `${order.rider?.fullName || 'A rider'} has been assigned to your order.`,
+              data: {
+                type: 'rider_assigned',
+                orderId,
+                riderId,
+                riderName: order.rider?.fullName,
+                riderPhone: order.rider?.phoneNumber,
+              },
+            }).catch((error) => {
+              console.error(`Customer rider assignment push failed for ${order.user._id}:`, error.message);
+            });
+          }
 
           socket.emit('rider_assigned_success', {
             orderId,
@@ -1396,6 +1576,13 @@ io.on('connection', (socket) => {
       if (!session) {
         return cb && cb({ success: false, error: 'Chat session not found' });
       }
+      if (!hasExplicitPharmacyAccessGrant(session)) {
+        return cb && cb({
+          success: false,
+          code: 'PHARMACY_SUBSCRIPTION_REQUIRED',
+          error: 'Pharmacist chat subscription required',
+        });
+      }
 
       const isOwner = String(session.user) === String(userId);
       const isAssignedPharmacist =
@@ -1444,6 +1631,13 @@ io.on('connection', (socket) => {
       if (!session) {
         return cb && cb({ success: false, error: 'session not found' });
       }
+      if (!hasExplicitPharmacyAccessGrant(session)) {
+        return cb && cb({
+          success: false,
+          code: 'PHARMACY_SUBSCRIPTION_REQUIRED',
+          error: 'Pharmacist chat subscription required',
+        });
+      }
 
       const canUsePharmacistTools = await isApprovedPharmacist(userId);
       const isAssignedPharmacist =
@@ -1473,7 +1667,7 @@ io.on('connection', (socket) => {
 
       if (senderType === 'user') {
         const assignedNotified = notifyAssignedPharmacist(session, cleanText);
-        if (!assignedNotified && !session.pharmacist) {
+        if (!assignedNotified) {
           notifyOnlinePharmacists(session, cleanText);
         }
       } else if (senderType === 'pharmacist') {
@@ -1508,11 +1702,21 @@ io.on('connection', (socket) => {
       if (!session) {
         return cb && cb({ success: false, message: 'session not found' });
       }
+      if (!hasExplicitPharmacyAccessGrant(session)) {
+        return cb && cb({
+          success: false,
+          code: 'PHARMACY_SUBSCRIPTION_REQUIRED',
+          message: 'This consultation is waiting for pharmacist chat access before it can be claimed.',
+        });
+      }
 
       const wasAlreadyAssignedToMe =
         session.pharmacist && String(session.pharmacist) === String(userId);
 
-      if (session.pharmacist && !wasAlreadyAssignedToMe) {
+      const assignedPharmacistOnline =
+        session.pharmacist && onlinePharmacists.has(String(session.pharmacist));
+
+      if (session.pharmacist && !wasAlreadyAssignedToMe && assignedPharmacistOnline) {
         return cb && cb({
           success: false,
           message: 'This consultation has already been claimed.',

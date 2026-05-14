@@ -353,6 +353,10 @@ const riderSchema = new mongoose.Schema({
   lastActive: {
     type: Date
   },
+
+  lastOnlineNotificationAt: {
+    type: Date
+  },
   
   // Bank/Account Information
   bankAccount: {

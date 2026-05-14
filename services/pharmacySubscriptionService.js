@@ -162,9 +162,12 @@ const getUserPharmacyAccess = (user) => {
   const hasTimedAccess =
     subscription.status === 'active' && expiresAt && !Number.isNaN(expiresAt.getTime()) && expiresAt > now;
   const oneTimeCredits = Math.max(Number(subscription.oneTimeCredits || 0), 0);
+  const source = hasTimedAccess ? 'subscription' : oneTimeCredits > 0 ? 'one_time' : null;
 
   return {
     hasAccess: hasTimedAccess || oneTimeCredits > 0,
+    entitlement: 'pharmacy_chat',
+    source,
     planType: hasTimedAccess ? subscription.planType : oneTimeCredits > 0 ? 'one_time' : 'none',
     status: hasTimedAccess ? 'active' : oneTimeCredits > 0 ? 'credit_available' : 'inactive',
     expiresAt: hasTimedAccess ? expiresAt : null,
@@ -245,6 +248,82 @@ const consumeOneTimeCreditIfNeeded = async (user) => {
   return { allowed: true, access: getUserPharmacyAccess(user), consumed: true };
 };
 
+const getPharmacySubscribers = async ({ status = 'all', limit = 100, skip = 0 } = {}) => {
+  const now = new Date();
+  const baseQuery = {
+    $or: [
+      { 'pharmacySubscription.status': 'active' },
+      { 'pharmacySubscription.oneTimeCredits': { $gt: 0 } },
+      { 'pharmacySubscription.purchasedAt': { $ne: null } },
+      { 'pharmacySubscription.expiresAt': { $ne: null } },
+    ],
+  };
+
+  const query =
+    status === 'active'
+      ? {
+          $or: [
+            {
+              'pharmacySubscription.status': 'active',
+              'pharmacySubscription.expiresAt': { $gt: now },
+            },
+            { 'pharmacySubscription.oneTimeCredits': { $gt: 0 } },
+          ],
+        }
+      : baseQuery;
+
+  const activeQuery = {
+    $or: [
+      {
+        'pharmacySubscription.status': 'active',
+        'pharmacySubscription.expiresAt': { $gt: now },
+      },
+      { 'pharmacySubscription.oneTimeCredits': { $gt: 0 } },
+    ],
+  };
+
+  const [users, total, activeTotal] = await Promise.all([
+    User.find(query)
+      .select('firstName lastName email phoneNumber userWalletBalance pharmacySubscription createdAt updatedAt')
+      .sort({ 'pharmacySubscription.purchasedAt': -1, updatedAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .lean(),
+    User.countDocuments(query),
+    User.countDocuments(activeQuery),
+  ]);
+
+  const subscribers = users.map((user) => ({
+    id: String(user._id),
+    firstName: user.firstName || '',
+    lastName: user.lastName || '',
+    name:
+      [user.firstName, user.lastName].filter(Boolean).join(' ') ||
+      user.email ||
+      'Customer',
+    email: user.email || '',
+    phoneNumber: user.phoneNumber || '',
+    walletBalance: Number(user.userWalletBalance || 0),
+    pharmacySubscription: user.pharmacySubscription || {},
+    access: getUserPharmacyAccess(user),
+    createdAt: user.createdAt,
+    updatedAt: user.updatedAt,
+  }));
+
+  const summary = subscribers.reduce(
+    (acc, subscriber) => {
+      const access = subscriber.access;
+      if (access.hasAccess) acc.pageActive += 1;
+      if (access.source === 'subscription') acc.timed += 1;
+      if (access.oneTimeCredits > 0) acc.oneTimeCredits += access.oneTimeCredits;
+      return acc;
+    },
+    { total, active: activeTotal, pageActive: 0, timed: 0, oneTimeCredits: 0 },
+  );
+
+  return { subscribers, total, summary };
+};
+
 module.exports = {
   getPharmacySubscriptionSettings,
   initializePharmacySubscriptionSettings,
@@ -252,4 +331,5 @@ module.exports = {
   getUserPharmacyAccess,
   purchasePharmacySubscription,
   consumeOneTimeCreditIfNeeded,
+  getPharmacySubscribers,
 };
