@@ -13,6 +13,7 @@ const {
   notifyRiderAssignmentOffer,
 } = require('../services/riderAssignmentService');
 const {
+  calculateOrderRiderEarningsBreakdown,
   calculateShipmentRiderEarning,
   creditRiderForCompletedOrder,
 } = require('../services/riderEarningsService');
@@ -595,6 +596,24 @@ exports.updateRiderStatus = async (req, res) => {
       });
     }
 
+    if (!nextIsOnline) {
+      const activeOrder = await MainOrder.findOne({
+        rider: req.rider._id,
+        mainOrderStatus: { $nin: ['delivered', 'completed', 'cancelled'] },
+      }).select('_id');
+
+      if (activeOrder) {
+        req.app.get('notifyAdmin')?.({
+          type: 'rider_offline_active_delivery',
+          message: `${updatedRider.fullName} went offline during active delivery ${activeOrder._id}.`,
+          riderId: req.rider._id,
+          riderName: updatedRider.fullName,
+          orderId: activeOrder._id,
+          timestamp: new Date(),
+        });
+      }
+    }
+
     const wasOnline = existingRider.isAvailable === true && existingRider.isActive === true;
     const shouldSendOnlineNotification =
       updatedRider.isAvailable === true &&
@@ -725,12 +744,21 @@ exports.getAvailableOrders = async (req, res) => {
         );
       }
 
+      const payoutBreakdown = calculateOrderRiderEarningsBreakdown({
+        mainOrder: order,
+        shipments: order.shipments || [],
+      });
+
       return {
         ...order.toObject(),
         estimatedDistance: distance,
         totalShipments: order.shipments.length,
         totalShippingPrice: order.totalShippingPrice,
-        estimatedEarnings: order.totalShippingPrice * 0.7, // Example: rider gets 70% of shipping fee
+        estimatedEarnings: payoutBreakdown.amount,
+        riderPayoutAmount: payoutBreakdown.amount,
+        riderPayoutBreakdown: payoutBreakdown,
+        riderDistanceKm: payoutBreakdown.totalDistanceKm,
+        riderRatePerKm: payoutBreakdown.ratePerKm,
         isAssignedToYou: order.assignedRider?.toString() === req.rider._id.toString(),
       };
     });
@@ -1525,10 +1553,25 @@ exports.getActiveDeliveries = async (req, res) => {
     .sort({ claimedAt: -1 })
     .limit(20);
 
+    const ordersWithPayout = activeOrders.map((order) => {
+      const payoutBreakdown = calculateOrderRiderEarningsBreakdown({
+        mainOrder: order,
+        shipments: order.shipments || [],
+      });
+      return {
+        ...order.toObject(),
+        estimatedEarnings: payoutBreakdown.amount,
+        riderPayoutAmount: order.riderPayoutAmount || payoutBreakdown.amount,
+        riderPayoutBreakdown: order.riderPayoutBreakdown || payoutBreakdown,
+        riderDistanceKm: payoutBreakdown.totalDistanceKm,
+        riderRatePerKm: payoutBreakdown.ratePerKm,
+      };
+    });
+
     res.json({
       success: true,
-      count: activeOrders.length,
-      orders: activeOrders
+      count: ordersWithPayout.length,
+      orders: ordersWithPayout
     });
     
   } catch (error) {
@@ -1562,10 +1605,27 @@ exports.getCompletedDeliveries = async (req, res) => {
     .sort({ deliveredAt: -1 })
     .limit(50);
 
+    const ordersWithPayout = completedOrders.map((order) => {
+      const payoutBreakdown =
+        order.riderPayoutBreakdown ||
+        calculateOrderRiderEarningsBreakdown({
+          mainOrder: order,
+          shipments: order.shipments || [],
+        });
+      return {
+        ...order.toObject(),
+        actualEarnings: order.riderPayoutAmount || payoutBreakdown.amount,
+        riderPayoutAmount: order.riderPayoutAmount || payoutBreakdown.amount,
+        riderPayoutBreakdown: payoutBreakdown,
+        riderDistanceKm: payoutBreakdown.totalDistanceKm,
+        riderRatePerKm: payoutBreakdown.ratePerKm,
+      };
+    });
+
     res.json({
       success: true,
-      count: completedOrders.length,
-      orders: completedOrders
+      count: ordersWithPayout.length,
+      orders: ordersWithPayout
     });
     
   } catch (error) {

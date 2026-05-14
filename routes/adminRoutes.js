@@ -3032,6 +3032,7 @@ router.get('/riders/eligible', protect, authorizeAdmin, async (req, res) => {
 
         res.json({
             count: riders.length,
+            locationFreshnessMinutes: Number(process.env.RIDER_LOCATION_MAX_AGE_MINUTES || 10),
             riders,
         });
     } catch (error) {

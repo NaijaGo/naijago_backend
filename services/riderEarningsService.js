@@ -23,6 +23,10 @@ const calculateDistance = (lat1, lon1, lat2, lon2) => {
 };
 
 const calculateShipmentRiderEarning = (shipment, mainOrder) => {
+  return calculateShipmentRiderEarningBreakdown(shipment, mainOrder).amount;
+};
+
+const calculateShipmentRiderEarningBreakdown = (shipment, mainOrder) => {
   const distanceKm = calculateDistance(
     shipment?.vendorLocation?.latitude,
     shipment?.vendorLocation?.longitude,
@@ -31,20 +35,58 @@ const calculateShipmentRiderEarning = (shipment, mainOrder) => {
   );
 
   if (distanceKm !== null) {
-    return roundMoney(distanceKm * RIDER_RATE_PER_KM);
+    return {
+      shipmentId: shipment?._id || null,
+      method: 'distance_rate',
+      distanceKm,
+      ratePerKm: RIDER_RATE_PER_KM,
+      shippingPrice: roundMoney(shipment?.shippingPrice || 0),
+      fallbackShare: null,
+      amount: roundMoney(distanceKm * RIDER_RATE_PER_KM),
+    };
   }
 
-  return roundMoney(Number(shipment?.shippingPrice || 0) * FALLBACK_RIDER_SHIPPING_SHARE);
+  return {
+    shipmentId: shipment?._id || null,
+    method: 'shipping_share',
+    distanceKm: null,
+    ratePerKm: null,
+    shippingPrice: roundMoney(shipment?.shippingPrice || 0),
+    fallbackShare: FALLBACK_RIDER_SHIPPING_SHARE,
+    amount: roundMoney(Number(shipment?.shippingPrice || 0) * FALLBACK_RIDER_SHIPPING_SHARE),
+  };
 };
 
 const calculateOrderRiderEarnings = ({ mainOrder, shipments = [] }) => {
+  return calculateOrderRiderEarningsBreakdown({ mainOrder, shipments }).amount;
+};
+
+const calculateOrderRiderEarningsBreakdown = ({ mainOrder, shipments = [] }) => {
   const sourceShipments = shipments.length ? shipments : mainOrder?.shipments || [];
-  return roundMoney(
-    sourceShipments.reduce(
-      (sum, shipment) => sum + calculateShipmentRiderEarning(shipment, mainOrder),
-      0,
-    ),
+  const shipmentBreakdowns = sourceShipments.map((shipment) =>
+    calculateShipmentRiderEarningBreakdown(shipment, mainOrder),
   );
+  const amount = roundMoney(
+    shipmentBreakdowns.reduce((sum, shipment) => sum + shipment.amount, 0),
+  );
+  const distanceShipments = shipmentBreakdowns.filter((shipment) => shipment.distanceKm !== null);
+  const totalDistanceKm = roundMoney(
+    distanceShipments.reduce((sum, shipment) => sum + Number(shipment.distanceKm || 0), 0),
+  );
+
+  return {
+    method:
+      distanceShipments.length === shipmentBreakdowns.length
+        ? 'distance_rate'
+        : distanceShipments.length > 0
+          ? 'mixed'
+          : 'shipping_share',
+    amount,
+    totalDistanceKm,
+    ratePerKm: RIDER_RATE_PER_KM,
+    fallbackShare: FALLBACK_RIDER_SHIPPING_SHARE,
+    shipments: shipmentBreakdowns,
+  };
 };
 
 const creditRiderForCompletedOrder = async ({
@@ -59,10 +101,15 @@ const creditRiderForCompletedOrder = async ({
     null;
 
   if (!riderId || mainOrder.riderPaidAt) {
-    return { credited: false, amount: Number(mainOrder?.riderPayoutAmount || 0) };
+    return {
+      credited: false,
+      amount: Number(mainOrder?.riderPayoutAmount || 0),
+      breakdown: mainOrder?.riderPayoutBreakdown || null,
+    };
   }
 
-  const amount = calculateOrderRiderEarnings({ mainOrder, shipments });
+  const breakdown = calculateOrderRiderEarningsBreakdown({ mainOrder, shipments });
+  const amount = breakdown.amount;
   if (amount <= 0) return { credited: false, amount: 0 };
 
   const inc = {
@@ -86,12 +133,15 @@ const creditRiderForCompletedOrder = async ({
 
   mainOrder.riderPaidAt = new Date();
   mainOrder.riderPayoutAmount = amount;
+  mainOrder.riderPayoutBreakdown = breakdown;
 
-  return { credited: true, amount };
+  return { credited: true, amount, breakdown };
 };
 
 module.exports = {
   calculateOrderRiderEarnings,
+  calculateOrderRiderEarningsBreakdown,
   calculateShipmentRiderEarning,
+  calculateShipmentRiderEarningBreakdown,
   creditRiderForCompletedOrder,
 };

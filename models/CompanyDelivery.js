@@ -70,10 +70,17 @@ const companyDeliverySchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ['pending', 'assigned', 'picked_up', 'in_transit', 'delivered', 'cancelled', 'failed'],
+    enum: ['pending', 'offered', 'assigned', 'rejected', 'picked_up', 'in_transit', 'delivered', 'cancelled', 'failed'],
     default: 'pending',
     index: true
   },
+  assignedAt: Date,
+  acceptedAt: Date,
+  rejectedAt: Date,
+  assignmentRejectedBy: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'CompanyRider'
+  }],
   // SETTLEMENT FIELDS - ADDED
   settlementStatus: {
     type: String,

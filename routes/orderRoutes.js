@@ -15,7 +15,8 @@ const { grantReferralRewardForVerifiedUser } = require('../services/referralServ
 const { getDeliveryFeeSettings, buildDeliveryFeeQuote } = require('../services/deliveryFeeService');
 const { notifyVendorOfPaidShipment } = require('../services/vendorOrderNotificationService');
 const {
-    calculateShipmentRiderEarning,
+    calculateOrderRiderEarningsBreakdown,
+    calculateShipmentRiderEarningBreakdown,
     creditRiderForCompletedOrder,
 } = require('../services/riderEarningsService');
 const { trackAnalyticsEvent } = require('../services/analyticsService');
@@ -115,6 +116,22 @@ function buildSubscriptionDeliveryDiscount({ user, totalSubtotal, totalShippingP
         planName: subscription.planName,
         deliveriesRemaining: subscription.deliveriesRemaining,
     };
+}
+
+function formatLastSeen(date) {
+    if (!date) return 'never';
+    const seconds = Math.max(0, Math.floor((Date.now() - new Date(date).getTime()) / 1000));
+    if (seconds < 60) return `${seconds}s ago`;
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `${minutes} min ago`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return `${hours} hr ago`;
+    return `${Math.floor(hours / 24)} day(s) ago`;
+}
+
+function isRiderTrackingVisible(order) {
+    if (!order?.rider || !order?.isClaimed) return false;
+    return !['cancelled', 'completed'].includes(order.mainOrderStatus);
 }
 
 async function consumeSubscriptionDeliveryIfNeeded({ buyer, mainOrder, session }) {
@@ -1346,7 +1363,7 @@ router.get('/vendor', protect, authorizeRoles('vendor', 'admin'), async (req, re
         const shipments = await Shipment.find({ vendor: req.user.id })
             .populate({
                 path: 'mainOrder',
-                select: 'shippingAddress userLocation totalPrice paymentMethod createdAt rider mainOrderStatus',
+                select: 'shippingAddress userLocation totalPrice totalShippingPrice paymentMethod createdAt rider mainOrderStatus pickupOTP riderPayoutAmount riderPayoutBreakdown payoutDetails',
                 populate: [
                     {
                         path: 'user',
@@ -2101,6 +2118,7 @@ router.put('/:id/status', protect, authorizeRoles('admin'), async (req, res) => 
                     order: mainOrder,
                     payoutSummary: {
                         totalRiderPayout: riderPayout.amount,
+                        riderPayoutBreakdown: riderPayout.breakdown || mainOrder.riderPayoutBreakdown,
                         payoutDate: mainOrder.riderPaidAt,
                     },
                 });
@@ -2190,7 +2208,8 @@ router.put('/:id/status', protect, authorizeRoles('admin'), async (req, res) => 
                     const vendorEarning = shipment.subtotal - shipment.platformFee;
                     totalVendorPayout += vendorEarning;
 
-                    const riderPayoutPerShipment = calculateShipmentRiderEarning(shipment, mainOrder);
+                    const riderPayoutBreakdownPerShipment = calculateShipmentRiderEarningBreakdown(shipment, mainOrder);
+                    const riderPayoutPerShipment = riderPayoutBreakdownPerShipment.amount;
                     let companySettlementPerShipment = 0;
 
                     if (shipment.vendorLocation && mainOrder.userLocation) {
@@ -2255,13 +2274,11 @@ router.put('/:id/status', protect, authorizeRoles('admin'), async (req, res) => 
                         vendorName: updatedVendor?.businessName || 'Unknown Vendor',
                         vendorPayout: vendorEarning,
                         shipmentId: shipment._id,
-                        distance: calculateDistance(
-                            shipment.vendorLocation.latitude,
-                            shipment.vendorLocation.longitude,
-                            mainOrder.userLocation.latitude,
-                            mainOrder.userLocation.longitude
-                        ),
+                        distance: riderPayoutBreakdownPerShipment.distanceKm,
+                        riderRatePerKm: riderPayoutBreakdownPerShipment.ratePerKm,
+                        riderPayoutMethod: riderPayoutBreakdownPerShipment.method,
                         riderPayout: riderPayoutPerShipment,
+                        riderPayoutBreakdown: riderPayoutBreakdownPerShipment,
                         companySettlement: companySettlementPerShipment
                     });
 
@@ -2287,6 +2304,7 @@ router.put('/:id/status', protect, authorizeRoles('admin'), async (req, res) => 
                 payoutSummary = {
                     totalVendorPayout,
                     totalRiderPayout,
+                    riderPayoutBreakdown: riderPayout.breakdown || mainOrder.riderPayoutBreakdown,
                     totalCompanySettlement,
                     payoutDate: mainOrder.payoutDetails.payoutDate
                 };
@@ -2383,13 +2401,15 @@ router.get('/admin', protect, authorizeRoles('admin'), async (req, res) => {
         const { limit, skip } = parsePagination(req.query, { defaultLimit: 100, maxLimit: 300 });
         const orders = await MainOrder.find({})
             .populate('user', 'firstName lastName email phoneNumber')
-            .populate('rider', 'fullName phoneNumber plateNumber')
+            .populate('rider', 'fullName phoneNumber plateNumber vehicleType currentLocation lastActive isAvailable isActive')
+            .populate('assignedRider', 'fullName phoneNumber plateNumber vehicleType currentLocation lastActive isAvailable isActive')
             .populate('company', 'companyName name phoneNumber contactPhone')
             .populate({
                 path: 'shipments',
                 populate: [
                     { path: 'vendor', select: 'businessName phoneNumber' },
-                    { path: 'rider', select: 'fullName phoneNumber plateNumber' },
+                    { path: 'rider', select: 'fullName phoneNumber plateNumber vehicleType currentLocation lastActive isAvailable isActive' },
+                    { path: 'assignedRider', select: 'fullName phoneNumber plateNumber vehicleType currentLocation lastActive isAvailable isActive' },
                     { path: 'company', select: 'companyName name phoneNumber contactPhone' },
                     { path: 'items.product', select: 'name imageUrls price stockQuantity' }
                 ]
@@ -2422,6 +2442,109 @@ router.get('/admin', protect, authorizeRoles('admin'), async (req, res) => {
         res.json(orders);
     } catch (error) {
         console.error('Error fetching all orders for admin:', error);
+        res.status(500).json({ message: 'Server Error' });
+    }
+});
+
+// @desc    Customer-safe rider tracking for an order
+// @route   GET /api/orders/:id/rider-location
+// @access  Private/Owner/Admin
+router.get('/:id/rider-location', protect, async (req, res) => {
+    try {
+        const order = await MainOrder.findById(req.params.id)
+            .populate('rider', 'fullName phoneNumber plateNumber vehicleType currentLocation lastActive isAvailable isActive')
+            .populate({
+                path: 'shipments',
+                select: 'vendor vendorLocation shippingPrice subtotal platformFee',
+                populate: {
+                    path: 'vendor',
+                    select: 'businessName businessLocation phoneNumber'
+                }
+            })
+            .lean();
+
+        if (!order) {
+            return res.status(404).json({ message: 'Order not found' });
+        }
+
+        const isOwner = order.user?.toString() === req.user.id.toString();
+        const isAdmin = req.user.isAdmin || req.user.role === 'admin';
+
+        if (!isOwner && !isAdmin) {
+            return res.status(403).json({ message: 'Not authorized to track this order' });
+        }
+
+        const trackingAvailable = isRiderTrackingVisible(order);
+        const payoutBreakdown =
+            order.riderPayoutBreakdown ||
+            calculateOrderRiderEarningsBreakdown({
+                mainOrder: order,
+                shipments: order.shipments || [],
+            });
+
+        if (!trackingAvailable) {
+            return res.json({
+                success: true,
+                trackingAvailable: false,
+                stage: order.isClaimed ? 'accepted' : 'awaiting_rider',
+                message: order.rider
+                    ? 'Rider tracking will appear when this delivery is active.'
+                    : 'A rider has not accepted this order yet.',
+                orderId: order._id,
+                riderPayout: {
+                    amount: order.riderPayoutAmount || payoutBreakdown.amount,
+                    distanceKm: payoutBreakdown.totalDistanceKm,
+                    ratePerKm: payoutBreakdown.ratePerKm,
+                    breakdown: payoutBreakdown,
+                },
+            });
+        }
+
+        const rider = order.rider || {};
+        const location = rider.currentLocation || {};
+        const lastUpdated = location.lastUpdated || rider.lastActive || null;
+        const staleMs = Number(process.env.CUSTOMER_TRACKING_STALE_SECONDS || 180) * 1000;
+        const isStale = !lastUpdated || Date.now() - new Date(lastUpdated).getTime() > staleMs;
+        const stage =
+            order.shipmentStatus === 'out_for_delivery' || order.mainOrderStatus === 'out_for_delivery'
+                ? 'after_pickup'
+                : 'accepted';
+
+        res.json({
+            success: true,
+            trackingAvailable: true,
+            stage,
+            orderId: order._id,
+            shipmentStatus: order.shipmentStatus,
+            mainOrderStatus: order.mainOrderStatus,
+            rider: {
+                _id: rider._id,
+                fullName: rider.fullName,
+                phoneNumber: rider.phoneNumber,
+                plateNumber: rider.plateNumber,
+                vehicleType: rider.vehicleType,
+                isOnline: rider.isAvailable === true && rider.isActive === true,
+                currentLocation: {
+                    lat: location.lat ?? null,
+                    lng: location.lng ?? null,
+                    address: location.address || '',
+                    lastUpdated,
+                    lastSeenLabel: formatLastSeen(lastUpdated),
+                    isStale,
+                },
+            },
+            riderPayout: {
+                amount: order.riderPayoutAmount || payoutBreakdown.amount,
+                distanceKm: payoutBreakdown.totalDistanceKm,
+                ratePerKm: payoutBreakdown.ratePerKm,
+                breakdown: payoutBreakdown,
+            },
+        });
+    } catch (error) {
+        console.error('Error fetching customer rider tracking:', error);
+        if (error.kind === 'ObjectId') {
+            return res.status(400).json({ message: 'Invalid Order ID format' });
+        }
         res.status(500).json({ message: 'Server Error' });
     }
 });

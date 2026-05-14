@@ -19,6 +19,10 @@ const { initializeReferralProgramSettings } = require('./services/referralServic
 const { initializeDeliveryFeeSettings } = require('./services/deliveryFeeService');
 const { initializePharmacySubscriptionSettings } = require('./services/pharmacySubscriptionService');
 const { startScheduledNotificationRunner } = require('./services/scheduledNotificationRunner');
+const {
+  releaseExpiredRiderAssignments,
+  notifyRiderAssignmentOffer,
+} = require('./services/riderAssignmentService');
 const notificationService = require('./services/notificationService');
 const { cleanupObsoleteIndexes } = require('./utils/dbIndexMaintenance');
 
@@ -680,6 +684,62 @@ io.on('connection', (socket) => {
       console.error('Failed to emit initial pharmacist status:', error);
     });
 
+  const joinCustomerOrderTracking = async ({ orderId }) => {
+    if (!orderId) return;
+
+    const order = await MainOrder.findById(orderId)
+      .select('user rider shipments')
+      .populate('shipments', 'vendor')
+      .lean();
+    if (!order) {
+      socket.emit('error', { message: 'Order not found' });
+      return;
+    }
+
+    const isOwner = order.user?.toString() === userId;
+    const isAdmin = userType === 'admin';
+    const isAssignedRider = order.rider?.toString() === userId;
+    const isVendor = (order.shipments || []).some(
+      (shipment) => shipment.vendor?.toString() === userId,
+    );
+
+    if (!isOwner && !isAdmin && !isAssignedRider && !isVendor) {
+      socket.emit('error', { message: 'Not authorized for this order tracking room' });
+      return;
+    }
+
+    socket.join(`order_${orderId}`);
+    const orderSockets = orderRooms.get(orderId) || [];
+    if (!orderSockets.includes(socket.id)) {
+      orderSockets.push(socket.id);
+      orderRooms.set(orderId, orderSockets);
+    }
+    socket.emit('order_tracking_joined', { orderId });
+  };
+
+  const leaveCustomerOrderTracking = ({ orderId }) => {
+    if (!orderId) return;
+    socket.leave(`order_${orderId}`);
+    const orderSockets = orderRooms.get(orderId) || [];
+    const updatedSockets = orderSockets.filter(id => id !== socket.id);
+    if (updatedSockets.length === 0) {
+      orderRooms.delete(orderId);
+    } else {
+      orderRooms.set(orderId, updatedSockets);
+    }
+    socket.emit('order_tracking_left', { orderId });
+  };
+
+  if (userType !== 'rider') {
+    socket.on('join_order_tracking', (data) => {
+      joinCustomerOrderTracking(data || {}).catch((error) => {
+        console.error('Join order tracking error:', error);
+        socket.emit('error', { message: 'Failed to join order tracking' });
+      });
+    });
+    socket.on('leave_order_tracking', (data) => leaveCustomerOrderTracking(data || {}));
+  }
+
   // ============================================
   // RIDER-SPECIFIC EVENTS (ORIGINAL - INDIVIDUAL RIDERS)
   // ============================================
@@ -721,6 +781,7 @@ io.on('connection', (socket) => {
           io.to(`order_${orderId}`).emit('rider_location', {
             riderId: userId,
             location: { lat, lng, address },
+            orderId,
             timestamp: new Date()
           });
         }
@@ -1114,6 +1175,101 @@ io.on('connection', (socket) => {
         socket.emit('error', { message: 'Failed to send delivery update' });
       }
     });
+
+    socket.on('company_delivery_accept', async (data) => {
+      try {
+        const { deliveryId } = data || {};
+        const delivery = await CompanyDelivery.findOneAndUpdate(
+          {
+            _id: deliveryId,
+            rider: userId,
+            status: 'offered',
+          },
+          {
+            $set: {
+              status: 'assigned',
+              acceptedAt: new Date(),
+            },
+          },
+          { new: true },
+        );
+
+        if (!delivery) {
+          return socket.emit('error', { message: 'Delivery offer not found or already handled' });
+        }
+
+        broadcastToCompany(delivery.company.toString(), 'company_delivery_accepted', {
+          deliveryId: delivery._id,
+          riderId: userId,
+          status: delivery.status,
+          acceptedAt: delivery.acceptedAt,
+        });
+        broadcastToAdmins('company_delivery_accepted', {
+          deliveryId: delivery._id,
+          riderId: userId,
+          companyId: delivery.company,
+          status: delivery.status,
+        });
+        socket.emit('company_delivery_accept_success', {
+          deliveryId: delivery._id,
+          status: delivery.status,
+        });
+      } catch (error) {
+        console.error('Company delivery accept error:', error);
+        socket.emit('error', { message: 'Failed to accept company delivery' });
+      }
+    });
+
+    socket.on('company_delivery_reject', async (data) => {
+      try {
+        const { deliveryId, reason = '' } = data || {};
+        const delivery = await CompanyDelivery.findOneAndUpdate(
+          {
+            _id: deliveryId,
+            rider: userId,
+            status: 'offered',
+          },
+          {
+            $set: {
+              status: 'rejected',
+              rejectedAt: new Date(),
+              cancellationReason: reason,
+            },
+            $addToSet: {
+              assignmentRejectedBy: userId,
+            },
+            $unset: {
+              rider: '',
+            },
+          },
+          { new: true },
+        );
+
+        if (!delivery) {
+          return socket.emit('error', { message: 'Delivery offer not found or already handled' });
+        }
+
+        broadcastToCompany(delivery.company.toString(), 'company_delivery_rejected', {
+          deliveryId: delivery._id,
+          riderId: userId,
+          reason,
+          rejectedAt: delivery.rejectedAt,
+        });
+        broadcastToAdmins('company_delivery_rejected', {
+          deliveryId: delivery._id,
+          riderId: userId,
+          companyId: delivery.company,
+          reason,
+        });
+        socket.emit('company_delivery_reject_success', {
+          deliveryId: delivery._id,
+          status: delivery.status,
+        });
+      } catch (error) {
+        console.error('Company delivery reject error:', error);
+        socket.emit('error', { message: 'Failed to reject company delivery' });
+      }
+    });
   }
 
   // ============================================
@@ -1347,78 +1503,78 @@ io.on('connection', (socket) => {
         const { orderId, riderId, riderType = 'individual', companyId } = data;
         
         if (riderType === 'individual') {
-          // ORIGINAL LOGIC for individual riders
-          const order = await MainOrder.findByIdAndUpdate(
-            orderId,
-            { 
-              rider: riderId, 
-              isClaimed: true, 
-              claimedAt: new Date(),
-              assignedToCompany: null // Clear company assignment if any
+          const order = await MainOrder.findOneAndUpdate(
+            {
+              _id: orderId,
+              isClaimed: false,
+              mainOrderStatus: { $nin: ['delivered', 'completed', 'cancelled'] },
+            },
+            {
+              $set: {
+                assignedRider: riderId,
+                assignedAt: new Date(),
+                shipmentStatus: 'ready_for_pickup',
+                assignedToCompany: null,
+              },
+              $pull: {
+                assignmentRejectedBy: riderId,
+              },
             },
             { new: true }
           )
-            .populate('rider', 'fullName phoneNumber plateNumber')
+            .populate('assignedRider', 'fullName phoneNumber plateNumber currentLocation lastActive isAvailable isActive')
             .populate('user', 'firstName lastName phoneNumber');
 
           if (!order) {
-            return socket.emit('error', { message: 'Order not found' });
+            return socket.emit('error', { message: 'Order not found or already claimed' });
           }
 
-          // Update all shipments
           await Shipment.updateMany(
-            { mainOrder: orderId },
-            { 
-              rider: riderId,
-              isClaimed: true,
-              claimedAt: new Date(),
-              shipmentStatus: 'out_for_delivery'
+            { mainOrder: orderId, isClaimed: false },
+            {
+              $set: {
+                assignedRider: riderId,
+                assignedAt: new Date(),
+                shipmentStatus: 'ready_for_pickup',
+              },
+              $pull: {
+                assignmentRejectedBy: riderId,
+              },
             }
           );
 
-          // Notify rider
-          broadcastToRider(riderId, 'order_assigned', {
-            orderId,
-            orderDetails: {
-              shippingAddress: order.shippingAddress,
-              totalPrice: order.totalPrice,
-              customerName: order.user?.firstName + ' ' + order.user?.lastName
-            },
-            assignedBy: socket.user?.firstName + ' ' + socket.user?.lastName,
-            timestamp: new Date()
-          });
-
-          notificationService.sendToUser(String(riderId), {
-            title: 'Delivery assigned',
-            message: `Admin assigned you to order ${orderId}. Open the rider app to start the delivery.`,
-            data: {
-              type: 'order_assigned',
-              orderId,
-              riderId,
-            },
-          }).catch((error) => {
-            console.error(`Admin rider assignment push failed for ${riderId}:`, error.message);
+          await notifyRiderAssignmentOffer({
+            app,
+            riderId,
+            mainOrder: order,
+            title: 'New assigned order',
+            message: `Admin offered you order ${orderId}. Open Assigned Orders to accept or reject.`,
+            type: 'rider_order_assigned',
           });
 
           // Broadcast to order room
           io.to(`order_${orderId}`).emit('rider_assigned', {
             orderId,
             riderId,
-            riderName: order.rider?.fullName,
-            riderPhone: order.rider?.phoneNumber,
+            riderName: order.assignedRider?.fullName,
+            riderPhone: order.assignedRider?.phoneNumber,
+            plateNumber: order.assignedRider?.plateNumber,
+            assignedAt: order.assignedAt,
+            requiresAcceptance: true,
             timestamp: new Date()
           });
 
           if (order.user?._id) {
             notificationService.sendToUser(String(order.user._id), {
-              title: 'Rider assigned',
-              message: `${order.rider?.fullName || 'A rider'} has been assigned to your order.`,
+              title: 'Rider assignment pending',
+              message: `${order.assignedRider?.fullName || 'A rider'} has been offered your order.`,
               data: {
                 type: 'rider_assigned',
                 orderId,
                 riderId,
-                riderName: order.rider?.fullName,
-                riderPhone: order.rider?.phoneNumber,
+                riderName: order.assignedRider?.fullName,
+                riderPhone: order.assignedRider?.phoneNumber,
+                requiresAcceptance: true,
               },
             }).catch((error) => {
               console.error(`Customer rider assignment push failed for ${order.user._id}:`, error.message);
@@ -1429,7 +1585,8 @@ io.on('connection', (socket) => {
             orderId,
             riderId,
             riderType: 'individual',
-            message: 'Individual rider assigned successfully'
+            assignedAt: order.assignedAt,
+            message: 'Rider assignment offer sent successfully'
           });
 
         } else if (riderType === 'company' && companyId) {
@@ -1474,7 +1631,8 @@ io.on('connection', (socket) => {
               }))
             ),
             amount: order.totalShippingPrice,
-            status: riderId ? 'assigned' : 'pending'
+            status: riderId ? 'offered' : 'pending',
+            assignedAt: riderId ? new Date() : null,
           });
 
           // Update main order
@@ -1503,6 +1661,8 @@ io.on('connection', (socket) => {
                 amount: delivery.amount
               },
               assignedBy: socket.user?.firstName + ' ' + socket.user?.lastName,
+              requiresAcceptance: true,
+              assignmentTimeoutSeconds: Number(process.env.RIDER_ASSIGNMENT_TIMEOUT_SECONDS || 600),
               timestamp: new Date()
             });
           }
@@ -1953,6 +2113,16 @@ const startServer = async () => {
       console.log(colors.green('⏰ Scheduled notification runner active.'));
     } else {
       console.log(colors.yellow('⏰ In-process scheduled notification runner disabled; use worker:scheduled-notifications.'));
+    }
+    if (process.env.DISABLE_RIDER_ASSIGNMENT_TIMEOUT_RUNNER !== 'true') {
+      const runAssignmentExpiry = () => {
+        releaseExpiredRiderAssignments({ app }).catch((error) => {
+          console.error(colors.red(`Rider assignment timeout runner error: ${error.message}`));
+        });
+      };
+      runAssignmentExpiry();
+      setInterval(runAssignmentExpiry, Number(process.env.RIDER_ASSIGNMENT_TIMEOUT_SCAN_MS || 30000));
+      console.log(colors.green('🚦 Rider assignment timeout runner active.'));
     }
   });
 };

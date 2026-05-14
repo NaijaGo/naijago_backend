@@ -110,6 +110,14 @@ const MainOrderSchema = new mongoose.Schema({
     vendorPaidAt: { type: Date, sparse: true },
     riderPaidAt: { type: Date, sparse: true },
     riderPayoutAmount: { type: Number, default: 0, min: 0 },
+    riderPayoutBreakdown: {
+        type: mongoose.Schema.Types.Mixed,
+        default: null,
+    },
+    payoutDetails: {
+        type: mongoose.Schema.Types.Mixed,
+        default: null,
+    },
     // High-level status (Derived from shipment statuses)
    mainOrderStatus: { 
     type: String,
