@@ -1207,11 +1207,35 @@ exports.verifyPickupOTP = async (req, res) => {
       });
     }
 
+    const normalizedPickupCode = pickupOTP
+      .toString()
+      .trim()
+      .replace(/^#/, '')
+      .toLowerCase();
+    const assignedShipments = await Shipment.find({
+      mainOrder: orderId,
+      rider: req.rider._id,
+    }).select('_id pickupOTP');
+    const matchesShipmentPickupCode = assignedShipments.some((shipment) => {
+      const shipmentId = shipment._id.toString().toLowerCase();
+      const shipmentShortCode = shipmentId.slice(-6);
+      const shipmentOtp = shipment.pickupOTP?.toString().trim().toLowerCase();
+      return (
+        normalizedPickupCode === shipmentId ||
+        normalizedPickupCode === shipmentShortCode ||
+        (shipmentOtp && normalizedPickupCode === shipmentOtp)
+      );
+    });
+
     // Verify OTP
-    if (mainOrder.pickupOTP !== pickupOTP) {
+    if (
+      mainOrder.pickupOTP?.toString().trim().toLowerCase() !==
+        normalizedPickupCode &&
+      !matchesShipmentPickupCode
+    ) {
       return res.status(400).json({ 
         success: false,
-        message: 'Invalid pickup OTP' 
+        message: 'Invalid pickup code' 
       });
     }
 

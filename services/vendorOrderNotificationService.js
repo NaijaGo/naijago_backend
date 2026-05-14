@@ -16,7 +16,7 @@ const buildVendorOrderMessage = ({ order, shipment, paymentMethod = 'Payment' })
   return [
     'New paid order on NaijaGo',
     `Order: #${shortOrderId}`,
-    `Shipment: #${shortShipmentId}`,
+    `Pickup code: #${shortShipmentId}`,
     `Items: ${buildItemSummary(shipment.items)}`,
     `Subtotal: ${formatMoney(shipment.subtotal)}`,
     `Shipping: ${formatMoney(shipment.shippingPrice)}`,
@@ -42,6 +42,7 @@ const notifyVendorOfPaidShipment = async ({
     type: 'new_paid_order_vendor',
     orderId: order._id.toString(),
     shipmentId: shipment._id.toString(),
+    pickupCode: shortShipmentId,
     subtotal: shipment.subtotal,
     itemCount,
     paymentMethod,
