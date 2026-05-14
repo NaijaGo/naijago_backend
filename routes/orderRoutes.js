@@ -14,6 +14,10 @@ const notificationService = require('../services/notificationService');
 const { grantReferralRewardForVerifiedUser } = require('../services/referralService');
 const { getDeliveryFeeSettings, buildDeliveryFeeQuote } = require('../services/deliveryFeeService');
 const { notifyVendorOfPaidShipment } = require('../services/vendorOrderNotificationService');
+const {
+    calculateShipmentRiderEarning,
+    creditRiderForCompletedOrder,
+} = require('../services/riderEarningsService');
 const { trackAnalyticsEvent } = require('../services/analyticsService');
 const { notifyEligibleRidersForShipment } = require('../services/riderAssignmentService');
 
@@ -2077,8 +2081,31 @@ router.put('/:id/status', protect, authorizeRoles('admin'), async (req, res) => 
             return res.status(404).json({ message: 'Main Order not found.' });
         }
 
-        // Prevent double-crediting / double-completion
+        // Allow a completed order to repair a missing rider payout once, but
+        // block true duplicate completion.
         if (status === 'completed' && mainOrder.mainOrderStatus === 'completed') {
+            if (!mainOrder.riderPaidAt) {
+                const shipments = await Shipment.find({ mainOrder: MAIN_ORDER_ID }).session(session);
+                const riderPayout = await creditRiderForCompletedOrder({
+                    mainOrder,
+                    shipments,
+                    session,
+                    updateDeliveryStats: true,
+                });
+                await mainOrder.save({ session });
+                await session.commitTransaction();
+                session.endSession();
+
+                return res.json({
+                    message: `Rider payout repaired for completed order ${MAIN_ORDER_ID}.`,
+                    order: mainOrder,
+                    payoutSummary: {
+                        totalRiderPayout: riderPayout.amount,
+                        payoutDate: mainOrder.riderPaidAt,
+                    },
+                });
+            }
+
             await session.abortTransaction();
             session.endSession();
             return res.status(400).json({
@@ -2146,16 +2173,24 @@ router.put('/:id/status', protect, authorizeRoles('admin'), async (req, res) => 
             if (mainOrder.isPaid) {
                 const shipments = await Shipment.find({ mainOrder: MAIN_ORDER_ID }).session(session);
 
-                // CHANGED: Removed totalRiderPayout variable - rider payments are disabled
+                let totalRiderPayout = 0;
                 let totalVendorPayout = 0;
                 let totalCompanySettlement = 0;
                 let payoutDetails = [];
+
+                const riderPayout = await creditRiderForCompletedOrder({
+                    mainOrder,
+                    shipments,
+                    session,
+                    updateDeliveryStats: mainOrder.riderPaidAt ? false : true,
+                });
+                totalRiderPayout = riderPayout.amount;
 
                 for (const shipment of shipments) {
                     const vendorEarning = shipment.subtotal - shipment.platformFee;
                     totalVendorPayout += vendorEarning;
 
-                    // CHANGED: Removed riderPayoutPerShipment variable
+                    const riderPayoutPerShipment = calculateShipmentRiderEarning(shipment, mainOrder);
                     let companySettlementPerShipment = 0;
 
                     if (shipment.vendorLocation && mainOrder.userLocation) {
@@ -2169,9 +2204,6 @@ router.put('/:id/status', protect, authorizeRoles('admin'), async (req, res) => 
                         companySettlementPerShipment = distance * 150;
                         totalCompanySettlement += companySettlementPerShipment;
 
-                        // CHANGED: Removed rider payout calculation (distance * 150)
-                        // riderPayoutPerShipment = distance * 150;
-                        // totalRiderPayout += riderPayoutPerShipment;
                     }
 
                     // Credit vendor
@@ -2229,8 +2261,7 @@ router.put('/:id/status', protect, authorizeRoles('admin'), async (req, res) => 
                             mainOrder.userLocation.latitude,
                             mainOrder.userLocation.longitude
                         ),
-                        // CHANGED: Removed riderPayout field from payout details
-                        // riderPayout: riderPayoutPerShipment,
+                        riderPayout: riderPayoutPerShipment,
                         companySettlement: companySettlementPerShipment
                     });
 
@@ -2247,8 +2278,7 @@ router.put('/:id/status', protect, authorizeRoles('admin'), async (req, res) => 
 
                 mainOrder.payoutDetails = {
                     totalVendorPayout,
-                    // CHANGED: Removed totalRiderPayout from payout details
-                    // totalRiderPayout,
+                    totalRiderPayout,
                     totalCompanySettlement,
                     payoutDate: Date.now(),
                         details: payoutDetails
@@ -2256,6 +2286,7 @@ router.put('/:id/status', protect, authorizeRoles('admin'), async (req, res) => 
 
                 payoutSummary = {
                     totalVendorPayout,
+                    totalRiderPayout,
                     totalCompanySettlement,
                     payoutDate: mainOrder.payoutDetails.payoutDate
                 };
@@ -2280,9 +2311,8 @@ router.put('/:id/status', protect, authorizeRoles('admin'), async (req, res) => 
             });
         }
 
-        // CHANGED: Updated success message to reflect rider payments are disabled
         res.json({
-            message: `Main Order ${MAIN_ORDER_ID} status updated to ${status}.${status === 'completed' ? ' Vendors paid (rider payments disabled).' : ''}`,
+            message: `Main Order ${MAIN_ORDER_ID} status updated to ${status}.${status === 'completed' ? ' Vendors and rider paid.' : ''}`,
             order: updatedMainOrder,
             ...(status === 'completed' && payoutSummary ? { payoutSummary } : {})
         });

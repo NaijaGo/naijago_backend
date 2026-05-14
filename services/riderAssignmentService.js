@@ -1,10 +1,13 @@
 const Rider = require('../models/Rider');
+const MainOrder = require('../models/MainOrder');
+const Shipment = require('../models/Shipment');
 const notificationService = require('./notificationService');
 const { calculateDistance } = require('../utils/distanceCalculator');
 
 const MAX_ACTIVE_DELIVERIES = 5;
-const DEFAULT_OFFER_LIMIT = 5;
+const DEFAULT_OFFER_LIMIT = 1;
 const DEFAULT_RADIUS_KM = 25;
+const DEFAULT_LOCATION_MAX_AGE_MINUTES = 10;
 
 const riderNotification = ({ message, relatedId }) => ({
   type: 'order_update',
@@ -29,12 +32,20 @@ const findEligibleRiders = async ({
   pickupLocation,
   radiusKm = DEFAULT_RADIUS_KM,
   limit = DEFAULT_OFFER_LIMIT,
+  locationMaxAgeMinutes = DEFAULT_LOCATION_MAX_AGE_MINUTES,
 } = {}) => {
+  const locationCutoff = new Date(
+    Date.now() - Number(locationMaxAgeMinutes || DEFAULT_LOCATION_MAX_AGE_MINUTES) * 60 * 1000,
+  );
+
   const riders = await Rider.find({
     status: 'approved',
     isAvailable: true,
     isActive: true,
     activeDeliveries: { $lt: MAX_ACTIVE_DELIVERIES },
+    'currentLocation.lat': { $exists: true, $ne: null },
+    'currentLocation.lng': { $exists: true, $ne: null },
+    'currentLocation.lastUpdated': { $gte: locationCutoff },
   })
     .select('fullName phoneNumber plateNumber vehicleType currentLocation activeDeliveries rating totalRatings')
     .lean();
@@ -44,7 +55,7 @@ const findEligibleRiders = async ({
       ...rider,
       distanceKm: distanceFromPickup(rider, pickupLocation),
     }))
-    .filter((rider) => rider.distanceKm == null || rider.distanceKm <= radiusKm)
+    .filter((rider) => rider.distanceKm != null && rider.distanceKm <= radiusKm)
     .sort((a, b) => {
       const aDistance = a.distanceKm ?? Number.MAX_SAFE_INTEGER;
       const bDistance = b.distanceKm ?? Number.MAX_SAFE_INTEGER;
@@ -66,57 +77,75 @@ const notifyEligibleRidersForShipment = async ({
   const riders = await findEligibleRiders({
     pickupLocation: shipment.vendorLocation,
     radiusKm,
-    limit,
+    limit: limit || 1,
   });
 
-  if (riders.length === 0) return [];
+  if (riders.length === 0) {
+    app?.get('notifyAdmin')?.({
+      type: 'no_online_rider_near_pickup',
+      message: `No online rider with a fresh GPS location was found near order ${mainOrder._id}.`,
+      orderId: mainOrder._id,
+      shipmentId: shipment._id,
+    });
+    return [];
+  }
 
+  const nearestRider = riders[0];
   const message = `New pickup available for order ${mainOrder._id}. Estimated earning: ₦${Number(
     mainOrder.totalShippingPrice || shipment.shippingPrice || 0,
   ).toFixed(0)}.`;
 
-  await Rider.updateMany(
-    { _id: { $in: riders.map((rider) => rider._id) } },
+  const assignedOrder = await MainOrder.findOneAndUpdate(
     {
-      $push: {
-        notifications: riderNotification({
-          message,
-          relatedId: mainOrder._id,
-        }),
+      _id: mainOrder._id,
+      isClaimed: false,
+      mainOrderStatus: { $nin: ['delivered', 'completed', 'cancelled'] },
+      $or: [{ assignedRider: null }, { assignedRider: { $exists: false } }],
+      assignmentRejectedBy: { $ne: nearestRider._id },
+    },
+    {
+      $set: {
+        assignedRider: nearestRider._id,
+        assignedAt: new Date(),
+        shipmentStatus: 'ready_for_pickup',
+      },
+    },
+    { new: true },
+  );
+
+  if (!assignedOrder) return [];
+
+  await Shipment.findOneAndUpdate(
+    {
+      _id: shipment._id,
+      isClaimed: false,
+      $or: [{ assignedRider: null }, { assignedRider: { $exists: false } }],
+      assignmentRejectedBy: { $ne: nearestRider._id },
+    },
+    {
+      $set: {
+        assignedRider: nearestRider._id,
+        assignedAt: new Date(),
       },
     },
   );
 
-  const payload = {
+  await notifyRiderAssignmentOffer({
+    app,
+    riderId: nearestRider._id,
+    mainOrder: assignedOrder,
+    message,
     type: 'delivery_offer',
     title: 'New delivery available',
-    message,
-    orderId: mainOrder._id,
-    shipmentId: shipment._id,
-    estimatedEarnings: Number(mainOrder.totalShippingPrice || shipment.shippingPrice || 0) * 0.7,
-    pickupLocation: shipment.vendorLocation,
-  };
-
-  for (const rider of riders) {
-    app?.get('notifyRider')?.(rider._id.toString(), payload);
-  }
-
-  await Promise.allSettled(
-    riders.map((rider) =>
-      notificationService.sendToUser(rider._id.toString(), {
-        title: payload.title,
-        message,
-        data: payload,
-      })
-    )
-  );
+  });
 
   app?.get('notifyAdmin')?.({
-    type: 'rider_offer_wave_sent',
-    message: `Sent rider offer for order ${mainOrder._id} to ${riders.length} riders.`,
+    type: 'nearest_rider_assignment_sent',
+    message: `Assigned order ${mainOrder._id} to nearest online rider ${nearestRider.fullName}.`,
     orderId: mainOrder._id,
     shipmentId: shipment._id,
-    riderCount: riders.length,
+    riderId: nearestRider._id,
+    distanceKm: nearestRider.distanceKm,
   });
 
   return riders;
@@ -158,9 +187,48 @@ const notifyAssignedRider = async ({ app, riderId, mainOrder, pickupOTP, deliver
   });
 };
 
+const notifyRiderAssignmentOffer = async ({
+  app,
+  riderId,
+  mainOrder,
+  message = 'New delivery job assigned to you. Open Assigned Orders to accept or reject.',
+  type = 'rider_order_assigned',
+  title = 'New assigned order',
+}) => {
+  if (!riderId || !mainOrder) return;
+
+  const payload = {
+    type,
+    title,
+    message,
+    orderId: mainOrder._id,
+    estimatedEarnings: Number(mainOrder.totalShippingPrice || 0) * 0.7,
+  };
+
+  await Rider.findByIdAndUpdate(riderId, {
+    $push: {
+      notifications: riderNotification({
+        message,
+        relatedId: mainOrder._id,
+      }),
+    },
+  });
+
+  app?.get('notifyRider')?.(riderId.toString(), payload);
+
+  await notificationService.sendToUser(riderId.toString(), {
+    title: payload.title,
+    message,
+    data: payload,
+  }).catch((error) => {
+    console.error(`Rider assignment offer push failed for ${riderId}:`, error.message);
+  });
+};
+
 module.exports = {
   MAX_ACTIVE_DELIVERIES,
   findEligibleRiders,
   notifyEligibleRidersForShipment,
   notifyAssignedRider,
+  notifyRiderAssignmentOffer,
 };

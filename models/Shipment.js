@@ -77,6 +77,17 @@ const ShipmentSchema = new mongoose.Schema({
         ref: 'Rider', 
         default: null 
     },
+    assignedRider: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Rider',
+        default: null,
+        index: true
+    },
+    assignedAt: { type: Date },
+    assignmentRejectedBy: [{
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Rider'
+    }],
     isClaimed: { type: Boolean, default: false },
     claimedAt: { type: Date },
     
@@ -112,6 +123,7 @@ ShipmentSchema.index({ vendor: 1, createdAt: -1 });
 ShipmentSchema.index({ vendor: 1, shipmentStatus: 1, createdAt: -1 });
 ShipmentSchema.index({ vendor: 1, vendorPaidAt: 1 });
 ShipmentSchema.index({ rider: 1, shipmentStatus: 1, createdAt: -1 });
+ShipmentSchema.index({ assignedRider: 1, isClaimed: 1, createdAt: -1 });
 ShipmentSchema.index({ isClaimed: 1, shipmentStatus: 1, createdAt: -1 });
 ShipmentSchema.index({ isDelivered: 1, deliveredAt: -1 });
 

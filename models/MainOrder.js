@@ -78,6 +78,17 @@ const MainOrderSchema = new mongoose.Schema({
         ref: 'Rider', 
         default: null 
     },
+    assignedRider: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Rider',
+        default: null,
+        index: true
+    },
+    assignedAt: { type: Date },
+    assignmentRejectedBy: [{
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Rider'
+    }],
     isClaimed: { type: Boolean, default: false },
     claimedAt: { type: Date },
     
@@ -97,6 +108,8 @@ const MainOrderSchema = new mongoose.Schema({
     deliveredAt: { type: Date },
     isDelivered: { type: Boolean, default: false },
     vendorPaidAt: { type: Date, sparse: true },
+    riderPaidAt: { type: Date, sparse: true },
+    riderPayoutAmount: { type: Number, default: 0, min: 0 },
     // High-level status (Derived from shipment statuses)
    mainOrderStatus: { 
     type: String,
@@ -129,6 +142,7 @@ MainOrderSchema.index({ createdAt: -1, company: 1 });
 MainOrderSchema.index({ createdAt: -1 });
 MainOrderSchema.index({ user: 1, createdAt: -1 });
 MainOrderSchema.index({ rider: 1, createdAt: -1 });
+MainOrderSchema.index({ assignedRider: 1, isClaimed: 1, createdAt: -1 });
 MainOrderSchema.index({ isPaid: 1, mainOrderStatus: 1, createdAt: -1 });
 MainOrderSchema.index({ isPaid: 1, shipmentStatus: 1, isClaimed: 1, rider: 1, createdAt: -1 });
 MainOrderSchema.index({ subscriptionFreeDeliveryApplied: 1, createdAt: -1 });

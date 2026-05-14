@@ -30,7 +30,7 @@ const {
 const { sendVerificationEmail } = require('../utils/emailHelper');
 const {
     findEligibleRiders,
-    notifyAssignedRider,
+    notifyRiderAssignmentOffer,
 } = require('../services/riderAssignmentService');
 const { sendMarketingCampaign } = require('../services/marketingCampaignService');
 const {
@@ -3144,9 +3144,6 @@ router.put('/riders/assign-order', protect, authorizeAdmin, async (req, res) => 
             return res.status(400).json({ message: 'No unclaimed ready shipments found for this order.' });
         }
 
-        const pickupOTP = Math.floor(1000 + Math.random() * 9000).toString();
-        const deliveryOTP = Math.floor(1000 + Math.random() * 9000).toString();
-
         const mainOrder = await MainOrder.findOneAndUpdate(
             {
                 _id: orderId,
@@ -3154,14 +3151,15 @@ router.put('/riders/assign-order', protect, authorizeAdmin, async (req, res) => 
                 isClaimed: false,
                 mainOrderStatus: { $nin: ['delivered', 'completed', 'cancelled'] },
                 $or: [{ rider: null }, { rider: { $exists: false } }],
+                $and: [
+                    { $or: [{ assignedRider: null }, { assignedRider: { $exists: false } }] },
+                    { assignmentRejectedBy: { $ne: riderId } },
+                ],
             },
             {
                 $set: {
-                    rider: riderId,
-                    isClaimed: true,
-                    claimedAt: Date.now(),
-                    pickupOTP,
-                    deliveryOTP,
+                    assignedRider: riderId,
+                    assignedAt: Date.now(),
                     shipmentStatus: 'ready_for_pickup',
                 },
             },
@@ -3179,31 +3177,25 @@ router.put('/riders/assign-order', protect, authorizeAdmin, async (req, res) => 
                 _id: { $in: readyShipments.map((shipment) => shipment._id) },
                 isClaimed: false,
                 shipmentStatus: 'ready_for_pickup',
+                assignmentRejectedBy: { $ne: riderId },
+                $or: [{ assignedRider: null }, { assignedRider: { $exists: false } }],
             },
             {
                 $set: {
-                    rider: riderId,
-                    isClaimed: true,
-                    claimedAt: Date.now(),
-                    pickupOTP,
-                    deliveryOTP,
+                    assignedRider: riderId,
+                    assignedAt: Date.now(),
                 },
             },
             { session },
         );
 
-        rider.activeDeliveries = (rider.activeDeliveries || 0) + 1;
-        await rider.save({ session });
-
         await session.commitTransaction();
         session.endSession();
 
-        await notifyAssignedRider({
+        await notifyRiderAssignmentOffer({
             app: req.app,
             riderId,
             mainOrder,
-            pickupOTP,
-            deliveryOTP,
         });
 
         req.app.get('notifyAdmin')?.({
@@ -3214,11 +3206,9 @@ router.put('/riders/assign-order', protect, authorizeAdmin, async (req, res) => 
         });
 
         res.json({
-            message: 'Rider assigned successfully.',
+            message: 'Order assigned to rider. Waiting for accept or reject.',
             orderId,
             riderId,
-            pickupOTP,
-            deliveryOTP,
         });
     } catch (error) {
         await session.abortTransaction();

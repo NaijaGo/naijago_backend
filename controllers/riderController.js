@@ -10,7 +10,12 @@ const { sendVerificationEmail } = require('../utils/emailHelper');
 const {
   MAX_ACTIVE_DELIVERIES,
   notifyAssignedRider,
+  notifyRiderAssignmentOffer,
 } = require('../services/riderAssignmentService');
+const {
+  calculateShipmentRiderEarning,
+  creditRiderForCompletedOrder,
+} = require('../services/riderEarningsService');
 const notificationService = require('../services/notificationService');
 
 // Helper to create JWT
@@ -665,14 +670,29 @@ exports.getAvailableOrders = async (req, res) => {
       isPaid: true,
       mainOrderStatus: { $nin: ['delivered', 'completed', 'cancelled'] },
       isClaimed: false,
-      $or: [{ rider: null }, { rider: { $exists: false } }]
+      assignmentRejectedBy: { $ne: req.rider._id },
+      $or: [
+        { assignedRider: req.rider._id },
+        {
+          $and: [
+            { $or: [{ assignedRider: null }, { assignedRider: { $exists: false } }] },
+            { $or: [{ rider: null }, { rider: { $exists: false } }] },
+          ],
+        },
+      ],
     })
     .populate('user', 'firstName lastName phoneNumber')
     .populate({
       path: 'shipments',
       match: { 
         shipmentStatus: 'ready_for_pickup',
-        isClaimed: false 
+        isClaimed: false,
+        assignmentRejectedBy: { $ne: req.rider._id },
+        $or: [
+          { assignedRider: req.rider._id },
+          { assignedRider: null },
+          { assignedRider: { $exists: false } },
+        ],
       },
       populate: [
         { 
@@ -710,7 +730,8 @@ exports.getAvailableOrders = async (req, res) => {
         estimatedDistance: distance,
         totalShipments: order.shipments.length,
         totalShippingPrice: order.totalShippingPrice,
-        estimatedEarnings: order.totalShippingPrice * 0.7 // Example: rider gets 70% of shipping fee
+        estimatedEarnings: order.totalShippingPrice * 0.7, // Example: rider gets 70% of shipping fee
+        isAssignedToYou: order.assignedRider?.toString() === req.rider._id.toString(),
       };
     });
 
@@ -782,12 +803,24 @@ exports.claimOrder = async (req, res) => {
       });
     }
 
-    if (mainOrder.rider) {
+    if (mainOrder.rider && mainOrder.rider.toString() !== riderId.toString()) {
       await session.abortTransaction();
       session.endSession();
       return res.status(400).json({ 
         success: false,
         message: 'Order already assigned to a rider' 
+      });
+    }
+
+    if (
+      mainOrder.assignedRider &&
+      mainOrder.assignedRider.toString() !== riderId.toString()
+    ) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(403).json({
+        success: false,
+        message: 'This order is assigned to another rider'
       });
     }
 
@@ -844,7 +877,17 @@ exports.claimOrder = async (req, res) => {
         isPaid: true,
         isClaimed: false,
         mainOrderStatus: { $nin: ['delivered', 'completed', 'cancelled'] },
-        $or: [{ rider: null }, { rider: { $exists: false } }],
+        $or: [{ rider: null }, { rider: { $exists: false } }, { rider: riderId }],
+        $and: [
+          {
+            $or: [
+              { assignedRider: null },
+              { assignedRider: { $exists: false } },
+              { assignedRider: riderId },
+            ],
+          },
+          { assignmentRejectedBy: { $ne: riderId } },
+        ],
         shipments: { $in: readyShipmentIds }
       },
       {
@@ -855,7 +898,11 @@ exports.claimOrder = async (req, res) => {
           pickupOTP,
           deliveryOTP,
           shipmentStatus: 'ready_for_pickup'
-        }
+        },
+        $unset: {
+          assignedRider: '',
+          assignedAt: '',
+        },
       },
       { new: true, session }
     ).populate('shipments');
@@ -882,7 +929,11 @@ exports.claimOrder = async (req, res) => {
           claimedAt: Date.now(),
           pickupOTP,
           deliveryOTP
-        }
+        },
+        $unset: {
+          assignedRider: '',
+          assignedAt: '',
+        },
       },
       { session }
     );
@@ -1007,6 +1058,113 @@ exports.claimOrder = async (req, res) => {
     res.status(500).json({ 
       success: false,
       message: error.message 
+    });
+  }
+};
+
+/**
+ * @desc Reject an assigned delivery offer
+ */
+exports.rejectAssignedOrder = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const orderId = req.params.id;
+    const riderId = req.rider._id;
+
+    if (!mongoose.Types.ObjectId.isValid(orderId)) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid order ID',
+      });
+    }
+
+    const order = await MainOrder.findOneAndUpdate(
+      {
+        _id: orderId,
+        isClaimed: false,
+        assignedRider: riderId,
+        mainOrderStatus: { $nin: ['delivered', 'completed', 'cancelled'] },
+      },
+      {
+        $unset: {
+          assignedRider: '',
+          assignedAt: '',
+        },
+        $addToSet: {
+          assignmentRejectedBy: riderId,
+        },
+      },
+      { new: true, session },
+    );
+
+    if (!order) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(404).json({
+        success: false,
+        message: 'Assigned order not found or already claimed',
+      });
+    }
+
+    await Shipment.updateMany(
+      {
+        mainOrder: orderId,
+        isClaimed: false,
+        assignedRider: riderId,
+      },
+      {
+        $unset: {
+          assignedRider: '',
+          assignedAt: '',
+        },
+        $addToSet: {
+          assignmentRejectedBy: riderId,
+        },
+      },
+      { session },
+    );
+
+    await Rider.findByIdAndUpdate(
+      riderId,
+      {
+        $push: {
+          notifications: {
+            type: 'order_update',
+            message: `You rejected assigned order ${orderId}.`,
+            relatedId: orderId,
+            relatedModel: 'MainOrder',
+          },
+        },
+      },
+      { session },
+    );
+
+    await session.commitTransaction();
+    session.endSession();
+
+    req.app.get('notifyAdmin')?.({
+      type: 'rider_assignment_rejected',
+      message: `Rider rejected assigned order ${orderId}.`,
+      orderId,
+      riderId,
+    });
+
+    res.json({
+      success: true,
+      message: 'Assigned order rejected.',
+      orderId,
+    });
+  } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
+    console.error('Reject assigned order error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Unable to reject assigned order',
     });
   }
 };
@@ -1230,31 +1388,14 @@ exports.verifyDeliveryOTP = async (req, res) => {
       { session }
     );
 
-    // Update rider stats
-    await Rider.findByIdAndUpdate(
-      req.rider._id,
-      { 
-        $inc: { 
-          activeDeliveries: -1,
-          completedDeliveries: 1 
-        },
-        lastActive: Date.now()
-      },
-      { session }
-    );
-
-    // Calculate rider earnings (70% of total shipping price)
-    const riderEarnings = mainOrder.totalShippingPrice * 0.7;
-    await Rider.findByIdAndUpdate(
-      req.rider._id,
-      { 
-        $inc: { 
-          walletBalance: riderEarnings,
-          totalEarnings: riderEarnings
-        }
-      },
-      { session }
-    );
+    const deliveredShipmentsForPayout = await Shipment.find({ mainOrder: orderId }).session(session);
+    const riderPayout = await creditRiderForCompletedOrder({
+      mainOrder,
+      shipments: deliveredShipmentsForPayout,
+      session,
+      updateDeliveryStats: true,
+    });
+    const riderEarnings = riderPayout.amount;
 
     await mainOrder.save({ session });
     await session.commitTransaction();
@@ -1437,16 +1578,22 @@ exports.getEarnings = async (req, res) => {
       rider: req.rider._id,
       isDelivered: true,
       deliveredAt: { $gte: oneWeekAgo }
-    }).select('shippingPrice deliveredAt');
+    }).select('shippingPrice vendorLocation deliveredAt').populate('mainOrder', 'userLocation');
 
     const monthlyShipments = await Shipment.find({
       rider: req.rider._id,
       isDelivered: true,
       deliveredAt: { $gte: oneMonthAgo }
-    }).select('shippingPrice deliveredAt');
+    }).select('shippingPrice vendorLocation deliveredAt').populate('mainOrder', 'userLocation');
 
-    const weeklyEarnings = weeklyShipments.reduce((sum, shipment) => sum + (shipment.shippingPrice || 0), 0);
-    const monthlyEarnings = monthlyShipments.reduce((sum, shipment) => sum + (shipment.shippingPrice || 0), 0);
+    const weeklyEarnings = weeklyShipments.reduce(
+      (sum, shipment) => sum + calculateShipmentRiderEarning(shipment, shipment.mainOrder),
+      0,
+    );
+    const monthlyEarnings = monthlyShipments.reduce(
+      (sum, shipment) => sum + calculateShipmentRiderEarning(shipment, shipment.mainOrder),
+      0,
+    );
 
     // Get pending withdrawals
     const pendingWithdrawals = rider.withdrawalHistory?.filter(w => w.status === 'pending') || [];
@@ -1988,23 +2135,32 @@ exports.getDashboardStats = async (req, res) => {
       rider: req.rider._id,
       isDelivered: true,
       deliveredAt: { $gte: oneWeekAgo }
-    }).select('shippingPrice deliveredAt');
+    }).select('shippingPrice vendorLocation deliveredAt').populate('mainOrder', 'userLocation');
 
     const monthlyShipments = await Shipment.find({
       rider: req.rider._id,
       isDelivered: true,
       deliveredAt: { $gte: oneMonthAgo }
-    }).select('shippingPrice deliveredAt');
+    }).select('shippingPrice vendorLocation deliveredAt').populate('mainOrder', 'userLocation');
 
     const todayShipments = await Shipment.find({
       rider: req.rider._id,
       isDelivered: true,
       deliveredAt: { $gte: today }
-    }).select('shippingPrice deliveredAt');
+    }).select('shippingPrice vendorLocation deliveredAt').populate('mainOrder', 'userLocation');
 
-    const weeklyEarnings = weeklyShipments.reduce((sum, shipment) => sum + (shipment.shippingPrice || 0), 0);
-    const monthlyEarnings = monthlyShipments.reduce((sum, shipment) => sum + (shipment.shippingPrice || 0), 0);
-    const todayEarnings = todayShipments.reduce((sum, shipment) => sum + (shipment.shippingPrice || 0), 0);
+    const weeklyEarnings = weeklyShipments.reduce(
+      (sum, shipment) => sum + calculateShipmentRiderEarning(shipment, shipment.mainOrder),
+      0,
+    );
+    const monthlyEarnings = monthlyShipments.reduce(
+      (sum, shipment) => sum + calculateShipmentRiderEarning(shipment, shipment.mainOrder),
+      0,
+    );
+    const todayEarnings = todayShipments.reduce(
+      (sum, shipment) => sum + calculateShipmentRiderEarning(shipment, shipment.mainOrder),
+      0,
+    );
 
     // Calculate on-time delivery rate (example: deliveries within 2 hours of estimated time)
     const recentDeliveries = await Shipment.find({

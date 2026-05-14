@@ -79,7 +79,7 @@ router.get('/directions', protect, async (req, res) => {
           access_token: token,
           geometries: 'geojson',
           overview: 'full',
-          steps: false,
+          steps: true,
         },
         timeout: 10000,
       }
@@ -90,11 +90,25 @@ router.get('/directions', protect, async (req, res) => {
     const points = mapboxCoordinates
       .filter((point) => Array.isArray(point) && point.length >= 2)
       .map(([lng, lat]) => [lat, lng]);
+    const steps = (route?.legs || []).flatMap((leg, legIndex) =>
+      (leg?.steps || [])
+        .map((step) => ({
+          instruction: step?.maneuver?.instruction || '',
+          roadName: step?.name || '',
+          distanceMeters: step?.distance || 0,
+          durationSeconds: step?.duration || 0,
+          maneuverType: step?.maneuver?.type || '',
+          modifier: step?.maneuver?.modifier || '',
+          legIndex,
+        }))
+        .filter((step) => step.instruction)
+    );
 
     res.json({
       success: true,
       profile,
       points,
+      steps,
       distanceMeters: route?.distance || 0,
       durationSeconds: route?.duration || 0,
     });

@@ -18,6 +18,7 @@ const {
   // Order Management
   getAvailableOrders,
   claimOrder,
+  rejectAssignedOrder,
   verifyPickupOTP,
   verifyDeliveryOTP,
   getActiveDeliveries,
@@ -124,6 +125,13 @@ router.get('/orders/available', getAvailableOrders);
  * @access  Private (Rider only)
  */
 router.put('/orders/claim/:id', claimOrder);
+
+/**
+ * @route   PUT /api/riders/orders/reject/:id
+ * @desc    Reject an assigned order offer
+ * @access  Private (Rider only)
+ */
+router.put('/orders/reject/:id', rejectAssignedOrder);
 
 /**
  * @route   POST /api/riders/orders/verify-pickup
