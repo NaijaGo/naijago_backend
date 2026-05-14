@@ -36,13 +36,14 @@ const notifyVendorOfPaidShipment = async ({
   if (!vendorId) return;
 
   const itemCount = shipment.items.reduce((sum, item) => sum + Number(item.quantity || 0), 0);
+  const pickupCode = shipment._id.toString().slice(-6);
   const title = 'New Paid Order Received';
   const message = buildVendorOrderMessage({ order, shipment, paymentMethod });
   const notificationData = {
     type: 'new_paid_order_vendor',
     orderId: order._id.toString(),
     shipmentId: shipment._id.toString(),
-    pickupCode: shortShipmentId,
+    pickupCode,
     subtotal: shipment.subtotal,
     itemCount,
     paymentMethod,
