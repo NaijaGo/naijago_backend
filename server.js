@@ -684,6 +684,19 @@ io.on('connection', (socket) => {
       console.error('Failed to emit initial pharmacist status:', error);
     });
 
+  const resolveChatUserId = (payload = {}) => {
+    const eventToken = payload.authToken || payload.token;
+    if (!eventToken) return String(userId || '');
+
+    try {
+      const decoded = jwt.verify(eventToken, process.env.JWT_SECRET);
+      return String(decoded.id || userId || '');
+    } catch (error) {
+      console.error('Chat event token verification failed:', error.message);
+      return String(userId || '');
+    }
+  };
+
   const joinCustomerOrderTracking = async ({ orderId }) => {
     if (!orderId) return;
 
@@ -1744,10 +1757,11 @@ io.on('connection', (socket) => {
         });
       }
 
-      const isOwner = String(session.user) === String(userId);
+      const chatUserId = resolveChatUserId(payload);
+      const isOwner = String(session.user) === chatUserId;
       const isAssignedPharmacist =
-        session.pharmacist && String(session.pharmacist) === String(userId);
-      const canUsePharmacistTools = await isApprovedPharmacist(userId);
+        session.pharmacist && String(session.pharmacist) === chatUserId;
+      const canUsePharmacistTools = await isApprovedPharmacist(chatUserId);
 
       const canPreviewOpenSession = canUsePharmacistTools && !session.pharmacist;
 
@@ -1799,10 +1813,11 @@ io.on('connection', (socket) => {
         });
       }
 
-      const canUsePharmacistTools = await isApprovedPharmacist(userId);
+      const chatUserId = resolveChatUserId(payload);
+      const canUsePharmacistTools = await isApprovedPharmacist(chatUserId);
       const isAssignedPharmacist =
-        session.pharmacist && String(session.pharmacist) === String(userId);
-      const isOwner = String(session.user) === String(userId);
+        session.pharmacist && String(session.pharmacist) === chatUserId;
+      const isOwner = String(session.user) === chatUserId;
       const senderType = canUsePharmacistTools ? 'pharmacist' : 'user';
 
       if (senderType === 'pharmacist' && !isAssignedPharmacist) {
@@ -1819,7 +1834,7 @@ io.on('connection', (socket) => {
       const chatMessage = await ChatMessage.create({
         session: session._id,
         senderType,
-        sender: userId,
+        sender: chatUserId,
         message: cleanText,
       });
       const formatted = formatChatMessage(chatMessage);
@@ -1831,7 +1846,7 @@ io.on('connection', (socket) => {
           notifyOnlinePharmacists(session, cleanText);
         }
       } else if (senderType === 'pharmacist') {
-        notifyUserOfPharmacyMessage(session, cleanText, userId).catch((error) => {
+        notifyUserOfPharmacyMessage(session, cleanText, chatUserId).catch((error) => {
           console.error('Failed to notify user of pharmacy message:', error);
         });
       }
