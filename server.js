@@ -2057,6 +2057,18 @@ app.set('notifyCompany', (companyId, data) => {
 
 app.set('notifyRider', (riderId, data) => {
   broadcastToRider(riderId, 'notification', data);
+  broadcastToRider(riderId, 'rider_notification', data);
+
+  const type = data?.type ? String(data.type) : '';
+  if (type) {
+    broadcastToRider(riderId, type, data);
+  }
+
+  if (['delivery_offer', 'rider_order_assigned', 'order_assigned'].includes(type)) {
+    broadcastToRider(riderId, 'delivery_offer', data);
+    broadcastToRider(riderId, 'rider_order_assigned', data);
+    broadcastToRider(riderId, 'order_assigned', data);
+  }
 });
 
 app.set('notifyCompanyRider', (riderId, data) => {

@@ -668,13 +668,6 @@ exports.getAvailableOrders = async (req, res) => {
     // Get rider's current location for distance calculation
     const rider = await Rider.findById(req.rider._id);
     
-    if (!rider.isAvailable || !rider.isActive) {
-      return res.status(400).json({ 
-        success: false,
-        message: 'Please mark yourself as available and active to see orders' 
-      });
-    }
-
     // Check if rider is approved
     if (rider.status !== 'approved') {
       return res.status(400).json({
@@ -683,22 +676,41 @@ exports.getAvailableOrders = async (req, res) => {
       });
     }
 
+    const riderIsOnline = rider.isAvailable === true && rider.isActive === true;
+
     // Find paid MainOrders with at least one vendor-accepted or ready shipment.
-    // Accepted shipments let riders accept/reject the job before final pickup readiness.
+    // Assigned offers should still be visible so riders can accept/reject them.
+    // Unassigned open jobs are only shown while the rider is online/available.
+    const assignmentVisibilityFilter = riderIsOnline
+      ? {
+          $or: [
+            { assignedRider: req.rider._id },
+            {
+              $and: [
+                { $or: [{ assignedRider: null }, { assignedRider: { $exists: false } }] },
+                { $or: [{ rider: null }, { rider: { $exists: false } }] },
+              ],
+            },
+          ],
+        }
+      : { assignedRider: req.rider._id };
+
+    const shipmentVisibilityFilter = riderIsOnline
+      ? {
+          $or: [
+            { assignedRider: req.rider._id },
+            { assignedRider: null },
+            { assignedRider: { $exists: false } },
+          ],
+        }
+      : { assignedRider: req.rider._id };
+
     const availableOrders = await MainOrder.find({
       isPaid: true,
       mainOrderStatus: { $nin: ['delivered', 'completed', 'cancelled'] },
       isClaimed: false,
       assignmentRejectedBy: { $ne: req.rider._id },
-      $or: [
-        { assignedRider: req.rider._id },
-        {
-          $and: [
-            { $or: [{ assignedRider: null }, { assignedRider: { $exists: false } }] },
-            { $or: [{ rider: null }, { rider: { $exists: false } }] },
-          ],
-        },
-      ],
+      ...assignmentVisibilityFilter,
     })
     .populate('user', 'firstName lastName phoneNumber')
     .populate({
@@ -707,11 +719,7 @@ exports.getAvailableOrders = async (req, res) => {
         shipmentStatus: { $in: ['accepted', 'ready_for_pickup'] },
         isClaimed: false,
         assignmentRejectedBy: { $ne: req.rider._id },
-        $or: [
-          { assignedRider: req.rider._id },
-          { assignedRider: null },
-          { assignedRider: { $exists: false } },
-        ],
+        ...shipmentVisibilityFilter,
       },
       populate: [
         { 
