@@ -88,7 +88,7 @@ const notifyPharmacistsForSession = (app, session, textPreview) => {
   return onlinePharmacists.size > 0;
 };
 
-const getOnlinePharmacistList = async (app) => {
+const getOnlinePharmacistList = async (app, user = null) => {
   const onlinePharmacists = app?.get?.('onlinePharmacists');
   const socketIds = onlinePharmacists ? Array.from(onlinePharmacists.keys()) : [];
   if (socketIds.length === 0) return [];
@@ -100,18 +100,39 @@ const getOnlinePharmacistList = async (app) => {
     pharmacistStatus: 'approved',
     $or: [{ role: 'pharmacist' }, { pharmacistStatus: 'approved' }],
   })
-    .select('firstName lastName businessName phoneNumber businessSupportPhone isAvailable')
+    .select('firstName lastName businessName phoneNumber businessSupportPhone businessLocation isAvailable')
     .lean();
 
-  return pharmacists.map((user) => ({
-    id: String(user._id),
-    name:
-      user.businessName ||
-      [user.firstName, user.lastName].filter(Boolean).join(' ') ||
+  const userLocation = getDefaultDeliveryLocation(user);
+
+  return pharmacists
+    .map((pharmacist) => {
+      const latitude = Number(pharmacist.businessLocation?.latitude);
+      const longitude = Number(pharmacist.businessLocation?.longitude);
+      const hasLocation = Number.isFinite(latitude) && Number.isFinite(longitude);
+      const distance = userLocation && hasLocation
+        ? distanceKm(userLocation.latitude, userLocation.longitude, latitude, longitude)
+        : null;
+
+      return {
+        id: String(pharmacist._id),
+        name:
+      pharmacist.businessName ||
+      [pharmacist.firstName, pharmacist.lastName].filter(Boolean).join(' ') ||
       'Pharmacist',
-    phoneNumber: user.businessSupportPhone || user.phoneNumber || '',
-    hasSocket: onlinePharmacists?.has?.(String(user._id)) === true,
-  }));
+        phoneNumber: pharmacist.businessSupportPhone || pharmacist.phoneNumber || '',
+        hasSocket: onlinePharmacists?.has?.(String(pharmacist._id)) === true,
+        distanceKm: distance,
+        distanceLabel: distance == null ? 'Distance unavailable' : `${distance.toFixed(1)} km away`,
+        latitude: hasLocation ? latitude : null,
+        longitude: hasLocation ? longitude : null,
+      };
+    })
+    .sort((a, b) => {
+      const aDistance = a.distanceKm ?? Number.POSITIVE_INFINITY;
+      const bDistance = b.distanceKm ?? Number.POSITIVE_INFINITY;
+      return aDistance - bDistance;
+    });
 };
 
 const getOnlinePharmacistIds = (app) => {
@@ -292,6 +313,25 @@ exports.startChat = async (req, res) => {
     if (!user) {
       return res.status(404).json({ message: 'User not found.' });
     }
+    const requestedPharmacistId = String(req.body?.pharmacistId || '').trim();
+    let requestedPharmacist = null;
+    if (requestedPharmacistId) {
+      requestedPharmacist = await User.findOne({
+        _id: requestedPharmacistId,
+        isVendor: true,
+        vendorStatus: 'approved',
+        pharmacistStatus: 'approved',
+        $or: [{ role: 'pharmacist' }, { pharmacistStatus: 'approved' }],
+      }).select('_id');
+
+      const onlinePharmacists = req.app.get('onlinePharmacists');
+      if (!requestedPharmacist || !onlinePharmacists?.has?.(requestedPharmacistId)) {
+        return res.status(400).json({
+          message: 'Selected pharmacist is not available right now.',
+          code: 'PHARMACIST_UNAVAILABLE',
+        });
+      }
+    }
 
     // A user can only have one active consultation.
     const existing = await ChatSession.findOne({
@@ -299,6 +339,14 @@ exports.startChat = async (req, res) => {
       status: { $in: ['open', 'assigned'] },
     });
     if (hasExplicitPharmacyAccessGrant(existing)) {
+      if (
+        requestedPharmacist &&
+        (!existing.pharmacist || existing.status === 'open')
+      ) {
+        existing.pharmacist = requestedPharmacist._id;
+        existing.status = 'assigned';
+        await existing.save();
+      }
       return res.json(existing);
     }
 
@@ -312,7 +360,8 @@ exports.startChat = async (req, res) => {
       return res.status(402).json(pharmacyAccessRequiredResponse(consumption.access));
     }
 
-    const assignedPharmacist = await findBestPharmacistForUser(user, req.app);
+    const assignedPharmacist =
+      requestedPharmacist || await findBestPharmacistForUser(user, req.app);
     const accessGrant = buildPharmacyAccessGrant(access);
 
     if (existing) {
@@ -444,7 +493,10 @@ exports.getPharmacistQueue = async (req, res) => {
 
 exports.getOnlinePharmacists = async (req, res) => {
   try {
-    const pharmacists = await getOnlinePharmacistList(req.app);
+    const user = await User.findById(req.user._id)
+      .select('deliveryAddresses')
+      .lean();
+    const pharmacists = await getOnlinePharmacistList(req.app, user);
     res.json({
       success: true,
       online: pharmacists.length > 0,
