@@ -89,6 +89,7 @@ const notifyEligibleRidersForShipment = async ({
   mainOrder,
   radiusKm,
   limit,
+  markReady = true,
 }) => {
   if (!shipment || !mainOrder) return [];
 
@@ -118,6 +119,14 @@ const notifyEligibleRidersForShipment = async ({
     payoutBreakdown.amount || 0,
   ).toFixed(0)}.`;
 
+  const mainOrderSet = {
+    assignedRider: nearestRider._id,
+    assignedAt: new Date(),
+  };
+  if (markReady) {
+    mainOrderSet.shipmentStatus = 'ready_for_pickup';
+  }
+
   const assignedOrder = await MainOrder.findOneAndUpdate(
     {
       _id: mainOrder._id,
@@ -127,11 +136,7 @@ const notifyEligibleRidersForShipment = async ({
       assignmentRejectedBy: { $ne: nearestRider._id },
     },
     {
-      $set: {
-        assignedRider: nearestRider._id,
-        assignedAt: new Date(),
-        shipmentStatus: 'ready_for_pickup',
-      },
+      $set: mainOrderSet,
     },
     { new: true },
   );

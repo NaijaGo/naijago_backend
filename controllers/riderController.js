@@ -10,6 +10,7 @@ const { sendVerificationEmail } = require('../utils/emailHelper');
 const {
   MAX_ACTIVE_DELIVERIES,
   notifyAssignedRider,
+  notifyEligibleRidersForShipment,
   notifyRiderAssignmentOffer,
 } = require('../services/riderAssignmentService');
 const {
@@ -682,9 +683,8 @@ exports.getAvailableOrders = async (req, res) => {
       });
     }
 
-    // Find paid MainOrders with at least one shipment ready for rider pickup.
-    // Vendor apps move shipments to ready_for_pickup; riders should not see
-    // orders that vendors are still processing.
+    // Find paid MainOrders with at least one vendor-accepted or ready shipment.
+    // Accepted shipments let riders accept/reject the job before final pickup readiness.
     const availableOrders = await MainOrder.find({
       isPaid: true,
       mainOrderStatus: { $nin: ['delivered', 'completed', 'cancelled'] },
@@ -704,7 +704,7 @@ exports.getAvailableOrders = async (req, res) => {
     .populate({
       path: 'shipments',
       match: { 
-        shipmentStatus: 'ready_for_pickup',
+        shipmentStatus: { $in: ['accepted', 'ready_for_pickup'] },
         isClaimed: false,
         assignmentRejectedBy: { $ne: req.rider._id },
         $or: [
@@ -887,7 +887,11 @@ exports.claimOrder = async (req, res) => {
     const deliveryOTP = Math.floor(1000 + Math.random() * 9000).toString();
 
     const readyShipmentIds = mainOrder.shipments
-      .filter((shipment) => shipment.shipmentStatus === 'ready_for_pickup' && !shipment.isClaimed)
+      .filter(
+        (shipment) =>
+          ['accepted', 'ready_for_pickup'].includes(shipment.shipmentStatus) &&
+          !shipment.isClaimed,
+      )
       .map((shipment) => shipment._id);
 
     if (readyShipmentIds.length === 0) {
@@ -895,7 +899,7 @@ exports.claimOrder = async (req, res) => {
       session.endSession();
       return res.status(400).json({
         success: false,
-        message: 'No ready shipments are available for this order'
+        message: 'No accepted or ready shipments are available for this order'
       });
     }
 
@@ -947,7 +951,7 @@ exports.claimOrder = async (req, res) => {
     await Shipment.updateMany(
       {
         _id: { $in: readyShipmentIds },
-        shipmentStatus: 'ready_for_pickup',
+        shipmentStatus: { $in: ['accepted', 'ready_for_pickup'] },
         isClaimed: false
       },
       {
@@ -1114,8 +1118,13 @@ exports.rejectAssignedOrder = async (req, res) => {
       {
         _id: orderId,
         isClaimed: false,
-        assignedRider: riderId,
         mainOrderStatus: { $nin: ['delivered', 'completed', 'cancelled'] },
+        $or: [
+          { assignedRider: riderId },
+          { assignedRider: null },
+          { assignedRider: { $exists: false } },
+        ],
+        assignmentRejectedBy: { $ne: riderId },
       },
       {
         $unset: {
@@ -1134,7 +1143,7 @@ exports.rejectAssignedOrder = async (req, res) => {
       session.endSession();
       return res.status(404).json({
         success: false,
-        message: 'Assigned order not found or already claimed',
+        message: 'Order offer not found or already claimed',
       });
     }
 
@@ -1142,7 +1151,11 @@ exports.rejectAssignedOrder = async (req, res) => {
       {
         mainOrder: orderId,
         isClaimed: false,
-        assignedRider: riderId,
+        $or: [
+          { assignedRider: riderId },
+          { assignedRider: null },
+          { assignedRider: { $exists: false } },
+        ],
       },
       {
         $unset: {
@@ -1180,6 +1193,20 @@ exports.rejectAssignedOrder = async (req, res) => {
       orderId,
       riderId,
     });
+
+    const nextShipment = await Shipment.findOne({
+      mainOrder: orderId,
+      shipmentStatus: { $in: ['accepted', 'ready_for_pickup'] },
+      isClaimed: false,
+    });
+    if (nextShipment) {
+      await notifyEligibleRidersForShipment({
+        app: req.app,
+        shipment: nextShipment,
+        mainOrder: order,
+        markReady: nextShipment.shipmentStatus === 'ready_for_pickup',
+      });
+    }
 
     res.json({
       success: true,
@@ -1403,8 +1430,19 @@ exports.verifyDeliveryOTP = async (req, res) => {
       });
     }
 
+    const normalizedDeliveryCode = deliveryOTP
+      .toString()
+      .trim()
+      .replace(/\s+/g, '')
+      .toLowerCase();
+    const expectedDeliveryCode = mainOrder.deliveryOTP
+      ?.toString()
+      .trim()
+      .replace(/\s+/g, '')
+      .toLowerCase();
+
     // Verify OTP
-    if (mainOrder.deliveryOTP !== deliveryOTP) {
+    if (!expectedDeliveryCode || expectedDeliveryCode !== normalizedDeliveryCode) {
       await session.abortTransaction();
       session.endSession();
       return res.status(400).json({ 

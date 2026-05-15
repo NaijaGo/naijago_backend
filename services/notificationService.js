@@ -81,13 +81,19 @@ class NotificationService {
     }
 
     getPlatformOptions() {
+        const channelId =
+            process.env.ONESIGNAL_ANDROID_CHANNEL_ID ||
+            'ea2ee9a7-0988-429d-9e86-412d1668055e';
+
         return {
-            android_channel_id: 'ea2ee9a7-0988-429d-9e86-412d1668055e',
-            ios_sound: 'notification.wav',
-            android_sound: 'notification',
+            android_channel_id: channelId,
+            priority: 10,
+            ttl: 259200,
+            ios_sound: 'default',
+            android_sound: 'default',
             small_icon: 'ic_notification',
             large_icon: 'ic_launcher',
-            android_accent_color: 'FF4081',
+            android_accent_color: 'FF0B5FFF',
             ios_category: 'shopping'
         };
     }

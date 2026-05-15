@@ -1423,6 +1423,16 @@ router.put('/shipments/:id/accept', protect, authorizeRoles('vendor', 'admin'), 
         shipment.rejectionReason = undefined;
         await shipment.save();
 
+        const mainOrder = await MainOrder.findById(shipment.mainOrder);
+        if (mainOrder?.isPaid) {
+            await notifyEligibleRidersForShipment({
+                app: req.app,
+                shipment,
+                mainOrder,
+                markReady: false,
+            });
+        }
+
         const io = req.app.get('io');
         if (io) {
             io.emit(`order_${shipment.mainOrder}`, {
@@ -2581,7 +2591,13 @@ router.get('/:id', protect, async (req, res) => {
             return res.status(401).json({ message: 'Not authorized to view this order' });
         }
         
-        res.json(order);
+        const payload = order.toObject();
+        if (!isOwner && !isAdmin) {
+            delete payload.deliveryOTP;
+            delete payload.pickupOTP;
+        }
+
+        res.json(payload);
     } catch (error) {
         console.error('Error fetching single order:', error);
         if (error.kind === 'ObjectId') {
