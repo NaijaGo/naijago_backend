@@ -7,6 +7,7 @@ const {
   consumeOneTimeCreditIfNeeded,
 } = require('../services/pharmacySubscriptionService');
 const notificationService = require('../services/notificationService');
+const { isApprovedPharmacistUser } = require('../utils/pharmacistEligibility');
 // NOTE: axios and getAIResponse removed as core logic moves to server.js socket handler
 
 const formatChatMessage = (message) => ({
@@ -17,15 +18,6 @@ const formatChatMessage = (message) => ({
   text: message.message,
   createdAt: message.createdAt,
 });
-
-const isApprovedPharmacistUser = (user) =>
-  Boolean(
-    user &&
-      user.isVendor === true &&
-      user.vendorStatus === 'approved' &&
-      (user.role === 'pharmacist' || user.pharmacistStatus === 'approved') &&
-      user.pharmacistStatus === 'approved',
-  );
 
 const sendPharmacistPush = async ({ pharmacistId, session, textPreview }) => {
   if (!pharmacistId) return;

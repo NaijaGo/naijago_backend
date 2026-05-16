@@ -25,6 +25,7 @@ const {
 } = require('./services/riderAssignmentService');
 const notificationService = require('./services/notificationService');
 const { cleanupObsoleteIndexes } = require('./utils/dbIndexMaintenance');
+const { isApprovedPharmacistUser } = require('./utils/pharmacistEligibility');
 
 const app = express();
 app.set('trust proxy', true);
@@ -279,14 +280,7 @@ async function getApprovedPharmacist(userId) {
   const user = await User.findById(userId)
     .select('role isVendor vendorStatus pharmacistStatus isAvailable firstName lastName businessName')
     .lean();
-  const approved = Boolean(
-    user &&
-    user.isVendor === true &&
-    user.vendorStatus === 'approved' &&
-    (user.role === 'pharmacist' || user.pharmacistStatus === 'approved') &&
-    user.pharmacistStatus === 'approved'
-  );
-  return approved ? user : null;
+  return isApprovedPharmacistUser(user) ? user : null;
 }
 
 async function isApprovedPharmacist(userId) {

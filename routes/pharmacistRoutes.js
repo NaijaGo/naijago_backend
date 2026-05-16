@@ -6,6 +6,7 @@ const {
   getUserPharmacyAccess,
   purchasePharmacySubscription,
 } = require('../services/pharmacySubscriptionService');
+const { pharmacistAccessPayload } = require('../utils/pharmacistEligibility');
 
 const router = express.Router();
 
@@ -73,19 +74,19 @@ router.post('/request', protect, async (req, res) => {
 // @access  Private
 router.get('/status', protect, async (req, res) => {
   try {
-    const user = await User.findById(req.user._id).select('role pharmacistStatus pharmacistRequestDate pharmacistRejectionDate isVendor vendorStatus');
+    const user = await User.findById(req.user._id).select(
+      'role pharmacistStatus pharmacistRequestDate pharmacistRejectionDate isVendor vendorStatus',
+    );
 
     if (!user) {
       return res.status(404).json({ message: 'User not found.' });
     }
 
+    const access = pharmacistAccessPayload(user);
     res.status(200).json({
-      isPharmacist: user.role === 'pharmacist',
-      pharmacistStatus: user.role === 'pharmacist' ? 'approved' : user.pharmacistStatus,
+      ...access,
       pharmacistRequestDate: user.pharmacistRequestDate,
       pharmacistRejectionDate: user.pharmacistRejectionDate,
-      isVendor: user.isVendor,
-      vendorStatus: user.vendorStatus,
     });
   } catch (error) {
     console.error('Pharmacist status error:', error);
