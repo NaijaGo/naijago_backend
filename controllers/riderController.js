@@ -347,6 +347,176 @@ exports.loginRider = async (req, res) => {
 };
 
 /**
+ * @desc Request rider password reset email
+ */
+exports.forgotRiderPassword = async (req, res) => {
+  try {
+    const email = String(req.body.email || '').trim().toLowerCase();
+    if (!email) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please enter your rider account email.',
+      });
+    }
+
+    const genericMessage =
+      'If a rider account with that email exists, a password reset link has been sent.';
+    const rider = await Rider.findOne({ email });
+    if (!rider) {
+      return res.status(200).json({ success: true, message: genericMessage });
+    }
+
+    const resetToken = rider.generatePasswordResetToken();
+    await rider.save({ validateBeforeSave: false });
+
+    try {
+      await sendVerificationEmail(rider.email, resetToken, 'rider_password');
+    } catch (emailError) {
+      rider.passwordResetToken = undefined;
+      rider.passwordResetExpires = undefined;
+      await rider.save({ validateBeforeSave: false });
+      console.error('Rider password reset email failed:', emailError);
+      return res.status(500).json({
+        success: false,
+        message: 'Unable to send password reset email right now.',
+      });
+    }
+
+    return res.status(200).json({ success: true, message: genericMessage });
+  } catch (error) {
+    console.error('Rider forgot password error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Server error during password reset request.',
+    });
+  }
+};
+
+/**
+ * @desc Render rider password reset form
+ */
+exports.renderRiderResetPasswordForm = async (req, res) => {
+  const { token } = req.params;
+  if (!token) {
+    return res.status(400).send('<h1>Invalid Password Reset Link</h1>');
+  }
+
+  const hashedToken = crypto.createHash('sha256').update(token).digest('hex');
+  const rider = await Rider.findOne({
+    passwordResetToken: hashedToken,
+    passwordResetExpires: { $gt: Date.now() },
+  }).select('_id');
+
+  if (!rider) {
+    return res.status(400).send(
+      '<h1>Invalid or Expired Password Reset Link</h1><p>Please request a new password reset from the rider app.</p>',
+    );
+  }
+
+  return res.send(`
+    <!doctype html>
+    <html>
+      <head>
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>Reset Rider Password</title>
+        <style>
+          body { font-family: Arial, sans-serif; background:#f4f7fb; margin:0; padding:24px; color:#0f172a; }
+          .card { max-width:440px; margin:40px auto; background:white; border:1px solid #e2e8f0; border-radius:18px; padding:24px; box-shadow:0 14px 34px rgba(15,23,42,.08); }
+          h1 { margin:0 0 8px; color:#071A2F; font-size:24px; }
+          p { color:#64748b; line-height:1.5; }
+          label { display:block; margin:14px 0 6px; font-weight:700; }
+          input { width:100%; box-sizing:border-box; border:1px solid #cbd5e1; border-radius:12px; padding:14px; font-size:15px; }
+          button { width:100%; margin-top:18px; border:0; border-radius:12px; padding:15px; background:#16A34A; color:white; font-weight:800; font-size:15px; }
+          #message { margin-top:14px; font-weight:700; }
+        </style>
+      </head>
+      <body>
+        <div class="card">
+          <h1>Reset Rider Password</h1>
+          <p>Enter a new password for your NaijaGo rider account.</p>
+          <form id="resetForm">
+            <input type="hidden" id="token" value="${token}" />
+            <label>New password</label>
+            <input type="password" id="newPassword" minlength="6" required />
+            <label>Confirm password</label>
+            <input type="password" id="confirmPassword" minlength="6" required />
+            <button type="submit">Reset Password</button>
+          </form>
+          <div id="message"></div>
+        </div>
+        <script>
+          document.getElementById('resetForm').addEventListener('submit', async function (event) {
+            event.preventDefault();
+            const message = document.getElementById('message');
+            const newPassword = document.getElementById('newPassword').value;
+            const confirmPassword = document.getElementById('confirmPassword').value;
+            if (newPassword !== confirmPassword) {
+              message.style.color = '#dc2626';
+              message.textContent = 'Passwords do not match.';
+              return;
+            }
+            const response = await fetch('/api/riders/reset-password-submit', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ token: document.getElementById('token').value, newPassword })
+            });
+            const data = await response.json();
+            message.style.color = response.ok ? '#16A34A' : '#dc2626';
+            message.textContent = data.message || (response.ok ? 'Password reset successful.' : 'Password reset failed.');
+          });
+        </script>
+      </body>
+    </html>
+  `);
+};
+
+/**
+ * @desc Submit rider password reset
+ */
+exports.resetRiderPassword = async (req, res) => {
+  try {
+    const token = String(req.body.token || '').trim();
+    const newPassword = String(req.body.newPassword || '').trim();
+
+    if (!token || newPassword.length < 6) {
+      return res.status(400).json({
+        success: false,
+        message: 'Token and a password of at least 6 characters are required.',
+      });
+    }
+
+    const hashedToken = crypto.createHash('sha256').update(token).digest('hex');
+    const rider = await Rider.findOne({
+      passwordResetToken: hashedToken,
+      passwordResetExpires: { $gt: Date.now() },
+    }).select('+password');
+
+    if (!rider) {
+      return res.status(400).json({
+        success: false,
+        message: 'Password reset link is invalid or has expired.',
+      });
+    }
+
+    rider.password = newPassword;
+    rider.passwordResetToken = undefined;
+    rider.passwordResetExpires = undefined;
+    await rider.save();
+
+    return res.json({
+      success: true,
+      message: 'Password has been reset successfully. You can now log in.',
+    });
+  } catch (error) {
+    console.error('Rider reset password error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Server error during password reset.',
+    });
+  }
+};
+
+/**
  * @desc Get rider profile
  */
 exports.getRiderProfile = async (req, res) => {

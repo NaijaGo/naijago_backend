@@ -7,6 +7,9 @@ const {
   registerRider, 
   loginRider,
   verifyRiderEmail,
+  forgotRiderPassword,
+  renderRiderResetPasswordForm,
+  resetRiderPassword,
   
   // Profile Management
   getRiderProfile,
@@ -65,6 +68,27 @@ router.post('/login', loginRider);
  * @access  Public
  */
 router.get('/verify-email/:token', verifyRiderEmail);
+
+/**
+ * @route   POST /api/riders/forgot-password
+ * @desc    Send rider password reset email
+ * @access  Public
+ */
+router.post('/forgot-password', forgotRiderPassword);
+
+/**
+ * @route   GET /api/riders/reset-password-form/:token
+ * @desc    Show rider password reset form
+ * @access  Public
+ */
+router.get('/reset-password-form/:token', renderRiderResetPasswordForm);
+
+/**
+ * @route   POST /api/riders/reset-password-submit
+ * @desc    Reset rider password
+ * @access  Public
+ */
+router.post('/reset-password-submit', resetRiderPassword);
 
 // ============================================
 // PROTECTED ROUTES (Rider authentication required)

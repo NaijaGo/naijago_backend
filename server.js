@@ -684,17 +684,56 @@ io.on('connection', (socket) => {
       console.error('Failed to emit initial pharmacist status:', error);
     });
 
-  const resolveChatUserId = (payload = {}) => {
+  const resolveChatUserIdCandidates = (payload = {}) => {
+    const ids = [String(userId || '')].filter(Boolean);
     const eventToken = payload.authToken || payload.token;
-    if (!eventToken) return String(userId || '');
 
-    try {
-      const decoded = jwt.verify(eventToken, process.env.JWT_SECRET);
-      return String(decoded.id || userId || '');
-    } catch (error) {
-      console.error('Chat event token verification failed:', error.message);
-      return String(userId || '');
+    if (eventToken) {
+      try {
+        const decoded = jwt.verify(eventToken, process.env.JWT_SECRET);
+        if (decoded.id) ids.unshift(String(decoded.id));
+      } catch (error) {
+        console.error('Chat event token verification failed:', error.message);
+      }
     }
+
+    return [...new Set(ids)];
+  };
+
+  const resolveChatIdentity = async (payload = {}, session = {}) => {
+    const candidateIds = resolveChatUserIdCandidates(payload);
+    const ownerId = session.user ? String(session.user) : '';
+    const pharmacistId = session.pharmacist ? String(session.pharmacist) : '';
+
+    const ownerCandidate = candidateIds.find((id) => id === ownerId);
+    if (ownerCandidate) {
+      return { userId: ownerCandidate, isOwner: true, isAssignedPharmacist: false, canUsePharmacistTools: false, candidateIds };
+    }
+
+    const assignedCandidate = candidateIds.find((id) => id === pharmacistId);
+    if (assignedCandidate) {
+      return {
+        userId: assignedCandidate,
+        isOwner: false,
+        isAssignedPharmacist: true,
+        canUsePharmacistTools: await isApprovedPharmacist(assignedCandidate),
+        candidateIds,
+      };
+    }
+
+    for (const id of candidateIds) {
+      if (await isApprovedPharmacist(id)) {
+        return { userId: id, isOwner: false, isAssignedPharmacist: false, canUsePharmacistTools: true, candidateIds };
+      }
+    }
+
+    return {
+      userId: candidateIds[0] || '',
+      isOwner: false,
+      isAssignedPharmacist: false,
+      canUsePharmacistTools: false,
+      candidateIds,
+    };
   };
 
   const joinCustomerOrderTracking = async ({ orderId }) => {
@@ -1757,15 +1796,20 @@ io.on('connection', (socket) => {
         });
       }
 
-      const chatUserId = resolveChatUserId(payload);
-      const isOwner = String(session.user) === chatUserId;
-      const isAssignedPharmacist =
-        session.pharmacist && String(session.pharmacist) === chatUserId;
-      const canUsePharmacistTools = await isApprovedPharmacist(chatUserId);
+      const chatIdentity = await resolveChatIdentity(payload, session);
+      const { isOwner, isAssignedPharmacist, canUsePharmacistTools } = chatIdentity;
 
       const canPreviewOpenSession = canUsePharmacistTools && !session.pharmacist;
 
       if (!isOwner && !isAssignedPharmacist && !canPreviewOpenSession) {
+        console.warn('join_chat unauthorized', {
+          sessionId: String(session._id),
+          sessionUser: session.user ? String(session.user) : null,
+          sessionPharmacist: session.pharmacist ? String(session.pharmacist) : null,
+          socketUserId: String(userId || ''),
+          candidateIds: chatIdentity.candidateIds,
+          socketRole: userType,
+        });
         return cb && cb({ success: false, error: 'Not authorized for this chat' });
       }
 
@@ -1813,11 +1857,9 @@ io.on('connection', (socket) => {
         });
       }
 
-      const chatUserId = resolveChatUserId(payload);
-      const canUsePharmacistTools = await isApprovedPharmacist(chatUserId);
-      const isAssignedPharmacist =
-        session.pharmacist && String(session.pharmacist) === chatUserId;
-      const isOwner = String(session.user) === chatUserId;
+      const chatIdentity = await resolveChatIdentity(payload, session);
+      const chatUserId = chatIdentity.userId;
+      const { canUsePharmacistTools, isAssignedPharmacist, isOwner } = chatIdentity;
       const senderType = canUsePharmacistTools ? 'pharmacist' : 'user';
 
       if (senderType === 'pharmacist' && !isAssignedPharmacist) {
@@ -1828,6 +1870,14 @@ io.on('connection', (socket) => {
       }
 
       if (senderType === 'user' && !isOwner) {
+        console.warn('send_chat_message unauthorized', {
+          sessionId: String(session._id),
+          sessionUser: session.user ? String(session.user) : null,
+          sessionPharmacist: session.pharmacist ? String(session.pharmacist) : null,
+          socketUserId: String(userId || ''),
+          candidateIds: chatIdentity.candidateIds,
+          socketRole: userType,
+        });
         return cb && cb({ success: false, error: 'Not authorized for this chat' });
       }
 

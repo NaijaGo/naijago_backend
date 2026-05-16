@@ -6,7 +6,9 @@ const sendVerificationEmail = async (email, token, type, extraData = null) => {
     // Determine verification link based on type
     let verificationLink;
     
-    if (type === 'password') {
+    if (type === 'rider_password') {
+        verificationLink = `${BASE_URL}/api/riders/reset-password-form/${token}`;
+    } else if (type === 'password') {
         verificationLink = `${BASE_URL}/api/auth/reset-password-form/${token}`;
     } else if (type === 'rider') {
         // For company rider verification
@@ -310,6 +312,7 @@ const sendVerificationEmail = async (email, token, type, extraData = null) => {
             break;
 
         case 'password':
+        case 'rider_password':
             subject = 'NaijaGo: Password Reset';
             htmlContent = `
                 <div style="font-family: Arial, sans-serif; background-color: #f5f5f5; padding: 40px 20px; text-align: center;">
