@@ -4,6 +4,7 @@ const { protect, authorizeRoles } = require('../middleware/authMiddleware');
 const cloudinary = require('cloudinary').v2;
 const fileUpload = require('express-fileupload');
 const fs = require('fs'); // Moved to top so all routes can use it
+const path = require('path');
 
 // Cloudinary configuration
 cloudinary.config({
@@ -16,6 +17,20 @@ router.use(fileUpload({
   useTempFiles: true,
   tempFileDir: '/tmp/'
 }));
+
+const imageMimeByExtension = {
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.png': 'image/png',
+  '.webp': 'image/webp',
+};
+
+function normalizedImageMime(file) {
+  if (!file) return null;
+  if (file.mimetype?.startsWith('image/')) return file.mimetype;
+  if (file.mimetype !== 'application/octet-stream') return null;
+  return imageMimeByExtension[path.extname(file.name || '').toLowerCase()] || null;
+}
 
 // --- EXISTING ROUTES ---
 
@@ -67,7 +82,8 @@ router.post('/cloudinary/vendor-logo', protect, authorizeRoles('vendor'), async 
     }
 
     const file = req.files.image;
-    if (!file?.mimetype?.startsWith('image/')) {
+    const imageMime = normalizedImageMime(file);
+    if (!imageMime) {
       return res.status(400).json({ message: 'Only image files are allowed for store logos.' });
     }
 
@@ -103,7 +119,8 @@ router.post('/cloudinary/vendor-onboarding', protect, async (req, res) => {
       'application/pdf',
     ]);
 
-    if (!file?.mimetype || !allowedMimeTypes.has(file.mimetype)) {
+    const normalizedMime = normalizedImageMime(file) || file?.mimetype;
+    if (!normalizedMime || !allowedMimeTypes.has(normalizedMime)) {
       return res.status(400).json({ message: 'Only JPG, PNG, WEBP, or PDF files are allowed.' });
     }
 
@@ -115,7 +132,7 @@ router.post('/cloudinary/vendor-onboarding', protect, async (req, res) => {
     const result = await cloudinary.uploader.upload(file.tempFilePath, {
       folder: `vendor-onboarding/${req.user._id}/${purpose || 'document'}`,
       resource_type: 'auto',
-      transformation: file.mimetype.startsWith('image/')
+      transformation: normalizedMime.startsWith('image/')
         ? [
             { width: 1600, height: 1600, crop: 'limit' },
             { quality: 'auto', fetch_format: 'auto' },
