@@ -1,5 +1,7 @@
 const { Resend } = require('resend');
-const resend = new Resend(process.env.RESEND_API_KEY);
+const resend = process.env.RESEND_API_KEY
+    ? new Resend(process.env.RESEND_API_KEY)
+    : null;
 const BASE_URL = process.env.BASE_URL 
 
 const sendVerificationEmail = async (email, token, type, extraData = null) => {
@@ -355,6 +357,10 @@ const sendVerificationEmail = async (email, token, type, extraData = null) => {
     }
 
     try {
+        if (!resend) {
+            throw new Error('RESEND_API_KEY is not configured.');
+        }
+
         const { data, error } = await resend.emails.send({
             from: 'NaijaGo <noreply@naijagoapp.com>',
             to: email,
@@ -571,6 +577,10 @@ View your dashboard: ${BASE_URL}/company/dashboard
 
 Best regards,
 NaijaGo Settlements Team`;
+
+        if (!resend) {
+            throw new Error('RESEND_API_KEY is not configured.');
+        }
 
         const { data, error } = await resend.emails.send({
             from: 'NaijaGo Settlements <settlements@naijagoapp.com>',

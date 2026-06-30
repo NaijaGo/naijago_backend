@@ -199,14 +199,7 @@ const notifyUserOfPharmacyMessage = async (app, session, textPreview, pharmacist
   });
 };
 
-const buildQueueItem = async (session) => {
-  const latestMessage = await ChatMessage.findOne({
-    session: session._id,
-    senderType: 'user',
-  })
-    .sort({ createdAt: -1 })
-    .lean();
-
+const buildQueueItem = (session, latestMessage = null) => {
   return {
     sessionId: String(session._id),
     userId: String(session.user),
@@ -475,7 +468,32 @@ exports.getPharmacistQueue = async (req, res) => {
       .limit(50)
       .lean();
 
-    const queue = await Promise.all(sessions.map(buildQueueItem));
+    const sessionIds = sessions.map((session) => session._id);
+    const latestMessages = sessionIds.length
+      ? await ChatMessage.aggregate([
+          {
+            $match: {
+              session: { $in: sessionIds },
+              senderType: 'user',
+            },
+          },
+          { $sort: { createdAt: -1 } },
+          {
+            $group: {
+              _id: '$session',
+              message: { $first: '$message' },
+              createdAt: { $first: '$createdAt' },
+            },
+          },
+        ])
+      : [];
+    const latestBySession = new Map(
+      latestMessages.map((message) => [String(message._id), message]),
+    );
+
+    const queue = sessions.map((session) =>
+      buildQueueItem(session, latestBySession.get(String(session._id))),
+    );
     res.json({ success: true, queue });
   } catch (err) {
     console.error('Get pharmacist queue failed:', err);

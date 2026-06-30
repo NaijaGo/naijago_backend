@@ -1744,12 +1744,22 @@ router.put('/:id/pay', protect, async (req, res) => {
             });
         }
         console.log(`[PAY ENDPOINT] Idempotency check passed - no conflicting order found for tx_ref: ${transaction_id}`);
+        const flutterwaveSecretKey = process.env.FLUTTERWAVE_SECRET_KEY?.trim();
+        if (!flutterwaveSecretKey || !flutterwaveSecretKey.startsWith('FLWSECK-')) {
+            console.error('[PAY ENDPOINT] Flutterwave verification misconfigured: FLUTTERWAVE_SECRET_KEY is missing or is not a secret key.');
+            await session.abortTransaction();
+            session.endSession();
+            return res.status(500).json({
+                message: 'Payment verification is not configured correctly. Please contact support.'
+            });
+        }
+
         // Verify payment with Flutterwave
         console.log(`[PAY ENDPOINT] Verifying transaction with Flutterwave: ${transaction_id}`);
         const flwResponse = await axios.get(
-            `https://api.flutterwave.com/v3/transactions/verify_by_reference?tx_ref=${transaction_id}`,
+            `https://api.flutterwave.com/v3/transactions/verify_by_reference?tx_ref=${encodeURIComponent(transaction_id)}`,
             {
-                headers: { Authorization: `Bearer ${process.env.FLUTTERWAVE_SECRET_KEY}` }
+                headers: { Authorization: `Bearer ${flutterwaveSecretKey}` }
             }
         );
         const flwData = flwResponse.data;

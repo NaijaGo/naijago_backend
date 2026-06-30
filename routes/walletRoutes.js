@@ -16,7 +16,9 @@ const mongoose = require('mongoose');
 
 dotenv.config();
 
-const resend = new Resend(process.env.RESEND_API_KEY);
+const resend = process.env.RESEND_API_KEY
+    ? new Resend(process.env.RESEND_API_KEY)
+    : null;
 
 
 // @desc      Handle Flutterwave Webhook for payment events
@@ -360,6 +362,10 @@ router.post('/request-otp', dualProtect, async (req, res) => {
         user.otpExpires = otpExpires;
         await user.save();
 
+        if (!resend) {
+            return res.status(500).json({ message: 'Email service is not configured.' });
+        }
+
         // Send the OTP via Resend
         const { data, error } = await resend.emails.send({
             from: 'NaijaGo <noreply@naijagoapp.com>',
@@ -607,7 +613,8 @@ router.post('/withdraw', dualProtect, async (req, res) => {
 
         // 10. Send email confirmation
         try {
-            await resend.emails.send({
+            if (resend) {
+                await resend.emails.send({
                 from: 'NaijaGo <noreply@naijagoapp.com>',
                 to: [user.email],
                 subject: 'Withdrawal Request Received',
@@ -641,7 +648,10 @@ router.post('/withdraw', dualProtect, async (req, res) => {
                         </div>
                     </div>
                 `
-            });
+                });
+            } else {
+                console.warn('Withdrawal confirmation email skipped: RESEND_API_KEY is not configured.');
+            }
         } catch (emailError) {
             console.error('Withdrawal confirmation email error:', emailError);
         }

@@ -12,6 +12,7 @@ const Review = require('../models/Review');
 const DisputeRequest = require('../models/DisputeRequest');
 const ReturnRequest = require('../models/ReturnRequest');
 const rateLimit = require('express-rate-limit');
+const { ipKeyGenerator } = rateLimit;
 const notificationService = require('../services/notificationService');
 const {
     ensureReferralCode,
@@ -19,7 +20,9 @@ const {
 } = require('../services/referralService');
 
 const router = express.Router();
-const resend = new Resend(process.env.RESEND_API_KEY);
+const resend = process.env.RESEND_API_KEY
+    ? new Resend(process.env.RESEND_API_KEY)
+    : null;
 const BASE_URL = process.env.BASE_URL || 'http://localhost:5000';
 
 const parseCoordinate = (value) => {
@@ -40,7 +43,7 @@ const resendEmailLimiter = rateLimit({
   legacyHeaders: false,
   keyGenerator: (req) => {
     // Combine IP + email for better protection
-    return `${req.ip}:${req.body.email?.toLowerCase() || 'unknown'}`;
+    return `${ipKeyGenerator(req.ip)}:${req.body.email?.toLowerCase() || 'unknown'}`;
   }
 });
 
@@ -163,6 +166,10 @@ const sendVerificationEmail = async (email, token, type) => {
 
 
     try {
+        if (!resend) {
+            throw new Error('RESEND_API_KEY is not configured.');
+        }
+
         const { data, error } = await resend.emails.send({
             from: 'NaijaGo <noreply@naijagoapp.com>',
             to: email,
