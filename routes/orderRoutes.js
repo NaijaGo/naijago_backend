@@ -1756,12 +1756,35 @@ router.put('/:id/pay', protect, async (req, res) => {
 
         // Verify payment with Flutterwave
         console.log(`[PAY ENDPOINT] Verifying transaction with Flutterwave: ${transaction_id}`);
-        const flwResponse = await axios.get(
-            `https://api.flutterwave.com/v3/transactions/verify_by_reference?tx_ref=${encodeURIComponent(transaction_id)}`,
-            {
-                headers: { Authorization: `Bearer ${flutterwaveSecretKey}` }
+        let flwResponse;
+        let lastFlutterwaveError;
+        for (let attempt = 1; attempt <= 4; attempt += 1) {
+            try {
+                flwResponse = await axios.get(
+                    `https://api.flutterwave.com/v3/transactions/verify_by_reference?tx_ref=${encodeURIComponent(transaction_id)}`,
+                    {
+                        headers: { Authorization: `Bearer ${flutterwaveSecretKey}` }
+                    }
+                );
+                break;
+            } catch (verifyError) {
+                lastFlutterwaveError = verifyError;
+                const message = verifyError.response?.data?.message || '';
+                const retryableNotFound =
+                    verifyError.response?.status === 404 ||
+                    /no transaction was found/i.test(message);
+
+                if (!retryableNotFound || attempt === 4) {
+                    throw verifyError;
+                }
+
+                console.warn(`[PAY ENDPOINT] Flutterwave transaction not ready yet for ${transaction_id}; retry ${attempt}/3`);
+                await new Promise((resolve) => setTimeout(resolve, 1500));
             }
-        );
+        }
+        if (!flwResponse) {
+            throw lastFlutterwaveError || new Error('Flutterwave verification did not return a response');
+        }
         const flwData = flwResponse.data;
         console.log(`[PAY ENDPOINT] Flutterwave verify response - Status: ${flwData.status} | Data status: ${flwData.data?.status} | Amount: ${flwData.data?.amount} | tx_ref: ${flwData.data?.tx_ref}`);
         if (flwData.status !== "success" || flwData.data.status !== "successful") {
@@ -1837,6 +1860,15 @@ router.put('/:id/pay', protect, async (req, res) => {
     } catch (error) {
         await session.abortTransaction();
         session.endSession();
+        const flutterwaveMessage = error.response?.data?.message || '';
+        if (/no transaction was found/i.test(flutterwaveMessage)) {
+            console.warn(`[PAY ENDPOINT] Flutterwave could not find transaction after retries for order ${req.params.id}: ${flutterwaveMessage}`);
+            return res.status(400).json({
+                message: 'Payment was not confirmed by Flutterwave. Please wait a moment and try again.',
+                flutterwave: error.response?.data || null
+            });
+        }
+
         console.error(`[PAY ENDPOINT] CRITICAL ERROR for order ${req.params.id}:`, {
             message: error.message,
             stack: error.stack,
