@@ -636,8 +636,9 @@ function isWithinVendorOperatingHours(vendor = {}, date = new Date()) {
 }
 
 function formatRadius(value) {
-    const radius = Number(value || 15);
-    return Number.isFinite(radius) ? radius : 15;
+    const temporaryTestRadiusKm = 1000;
+    const radius = Number(value || temporaryTestRadiusKm);
+    return Number.isFinite(radius) ? Math.max(radius, temporaryTestRadiusKm) : temporaryTestRadiusKm;
 }
 
 function buildOrderItemFromProduct(item, product) {

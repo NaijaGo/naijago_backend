@@ -804,7 +804,7 @@ router.get('/restaurants', async (req, res) => {
         const { limit } = parsePagination(req.query, { defaultLimit: 100, maxLimit: 300 });
         const lat = req.query.lat !== undefined ? Number(req.query.lat) : null;
         const lng = req.query.lng !== undefined ? Number(req.query.lng) : null;
-        const radiusKm = req.query.radiusKm !== undefined ? Number(req.query.radiusKm) : 15;
+        const radiusKm = req.query.radiusKm !== undefined ? Number(req.query.radiusKm) : 1000;
         const mealType = String(req.query.mealType || '').toLowerCase();
         const openNow = toBoolean(req.query.openNow);
         const minPrice = req.query.minPrice !== undefined ? Number(req.query.minPrice) : null;
