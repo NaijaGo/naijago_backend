@@ -1,5 +1,6 @@
 // routes/orderRoutes.js
 const express = require('express');
+const crypto = require('crypto');
 const mongoose = require('mongoose');
 const router = express.Router();
 const MainOrder = require('../models/MainOrder');
@@ -21,6 +22,24 @@ const {
 } = require('../services/riderEarningsService');
 const { trackAnalyticsEvent } = require('../services/analyticsService');
 const { notifyEligibleRidersForShipment } = require('../services/riderAssignmentService');
+const {
+    buildPendingPaymentResult,
+    paymentMatchesOrder,
+} = require('../utils/flutterwavePayment');
+
+const buildFlutterwaveTxRef = (orderId) =>
+    `NGO_${orderId}_${crypto.randomBytes(12).toString('hex')}`;
+
+const verifyFlutterwaveTransaction = async (txRef) => {
+    const response = await axios.get(
+        'https://api.flutterwave.com/v3/transactions/verify_by_reference',
+        {
+            params: { tx_ref: txRef },
+            headers: { Authorization: `Bearer ${process.env.FLUTTERWAVE_SECRET_KEY}` },
+        }
+    );
+    return response.data;
+};
 
 const parsePagination = (query, defaults = {}) => {
     const maxLimit = defaults.maxLimit || 200;
@@ -148,6 +167,48 @@ async function consumeSubscriptionDeliveryIfNeeded({ buyer, mainOrder, session }
     mainOrder.subscriptionDeliveryConsumed = true;
     await buyer.save({ session });
     return buyer;
+}
+
+async function settleVerifiedFlutterwaveOrder({ order, buyer, verifiedTx, app, session, method }) {
+    order.isPaid = true;
+    order.paidAt = order.paidAt || new Date();
+    order.mainOrderStatus = 'processing';
+    order.paymentResult = {
+        ...(order.paymentResult || {}),
+        id: verifiedTx.id,
+        status: verifiedTx.status,
+        tx_ref: verifiedTx.tx_ref,
+        flw_ref: verifiedTx.flw_ref,
+        amount: verifiedTx.amount,
+        currency: verifiedTx.currency,
+        email_address: verifiedTx.customer?.email,
+        verifiedAt: new Date(),
+        verificationMethod: method,
+    };
+
+    await consumeSubscriptionDeliveryIfNeeded({ buyer, mainOrder: order, session });
+    const shipments = await Shipment.find({ mainOrder: order._id }).session(session);
+    const productUpdates = [];
+    for (const shipment of shipments) {
+        shipment.shipmentStatus = 'processing';
+        await shipment.save({ session });
+        await notifyVendorOfPaidShipment({
+            app,
+            order,
+            shipment,
+            paymentMethod: 'Flutterwave',
+            session,
+        });
+        for (const item of shipment.items) {
+            productUpdates.push(Product.findByIdAndUpdate(
+                item.product,
+                { $inc: { salesCount: item.quantity, stockQuantity: -item.quantity } },
+                { new: true, session }
+            ));
+        }
+    }
+    await Promise.all(productUpdates);
+    return order.save({ session });
 }
 
 // Category-based commission rates
@@ -1690,6 +1751,44 @@ router.put('/:id/pay/wallet', protect, async (req, res) => {
     }
 });
 
+router.post('/:id/payment-intent', protect, async (req, res) => {
+    try {
+        const order = await MainOrder.findById(req.params.id);
+        if (!order) return res.status(404).json({ message: 'Main Order not found' });
+        if (order.user.toString() !== req.user.id.toString()) {
+            return res.status(401).json({ message: 'Not authorized to pay for this order' });
+        }
+        if (order.isPaid) {
+            return res.status(200).json({ status: 'verified', orderId: order._id });
+        }
+        if (order.paymentMethod === 'Wallet') {
+            return res.status(400).json({ message: 'Wallet orders do not use Flutterwave.' });
+        }
+
+        const existingRef = order.paymentResult?.tx_ref;
+        const txRef = existingRef || buildFlutterwaveTxRef(order._id);
+        order.paymentResult = {
+            ...(order.paymentResult || {}),
+            tx_ref: txRef,
+            status: 'initiated',
+            expectedAmount: order.totalPrice,
+            currency: 'NGN',
+            initiatedAt: order.paymentResult?.initiatedAt || new Date(),
+        };
+        await order.save();
+        return res.status(existingRef ? 200 : 201).json({
+            orderId: order._id,
+            tx_ref: txRef,
+            amount: order.totalPrice,
+            currency: 'NGN',
+            status: order.paymentResult.status,
+        });
+    } catch (error) {
+        console.error('[PAYMENT INTENT] Error:', error);
+        return res.status(500).json({ message: 'Unable to prepare payment.' });
+    }
+});
+
 router.put('/:id/pay', protect, async (req, res) => {
     const session = await mongoose.startSession();
     session.startTransaction();
@@ -1705,9 +1804,9 @@ router.put('/:id/pay', protect, async (req, res) => {
         console.log(`[PAY ENDPOINT] Found order: ${mainOrder._id} | Current isPaid: ${mainOrder.isPaid} | Status: ${mainOrder.mainOrderStatus}`);
         if (mainOrder.isPaid) {
             console.warn(`[PAY ENDPOINT] WARNING: Order already paid - ID: ${mainOrder._id} | Paid at: ${mainOrder.paidAt}`);
-            await session.abortTransaction();
+            await session.commitTransaction();
             session.endSession();
-            return res.status(400).json({ message: 'Order is already paid' });
+            return res.status(200).json(mainOrder);
         }
         if (mainOrder.user.toString() !== req.user.id.toString()) {
             console.error(`[PAY ENDPOINT] Unauthorized attempt - Order user: ${mainOrder.user} | Request user: ${req.user.id}`);
@@ -1729,6 +1828,11 @@ router.put('/:id/pay', protect, async (req, res) => {
             return res.status(400).json({ message: 'Transaction ID is required' });
         }
         console.log(`[PAY ENDPOINT] Received tx_ref / transaction_id: ${transaction_id}`);
+        if (mainOrder.paymentResult?.tx_ref && mainOrder.paymentResult.tx_ref !== transaction_id) {
+            await session.abortTransaction();
+            session.endSession();
+            return res.status(400).json({ message: 'Transaction reference does not match this order.' });
+        }
         // ────────────────────────────────────────────────────────────────
         // Idempotency check: prevent replay of same tx_ref on different orders
         // ────────────────────────────────────────────────────────────────
@@ -1757,96 +1861,59 @@ router.put('/:id/pay', protect, async (req, res) => {
 
         // Verify payment with Flutterwave
         console.log(`[PAY ENDPOINT] Verifying transaction with Flutterwave: ${transaction_id}`);
-        let flwResponse;
-        let lastFlutterwaveError;
+        let flwData;
         for (let attempt = 1; attempt <= 4; attempt += 1) {
             try {
-                flwResponse = await axios.get(
-                    `https://api.flutterwave.com/v3/transactions/verify_by_reference?tx_ref=${encodeURIComponent(transaction_id)}`,
-                    {
-                        headers: { Authorization: `Bearer ${flutterwaveSecretKey}` }
-                    }
-                );
+                flwData = await verifyFlutterwaveTransaction(transaction_id);
                 break;
             } catch (verifyError) {
-                lastFlutterwaveError = verifyError;
                 const message = verifyError.response?.data?.message || '';
                 const retryableNotFound =
-                    verifyError.response?.status === 404 ||
+                    [400, 404].includes(verifyError.response?.status) ||
                     /no transaction was found/i.test(message);
 
-                if (!retryableNotFound || attempt === 4) {
+                if (!retryableNotFound) {
                     throw verifyError;
                 }
 
-                console.warn(`[PAY ENDPOINT] Flutterwave transaction not ready yet for ${transaction_id}; retry ${attempt}/3`);
-                await new Promise((resolve) => setTimeout(resolve, 1500));
+                if (attempt < 4) {
+                    console.warn(`[PAY ENDPOINT] Flutterwave transaction not ready yet for ${transaction_id}; retry ${attempt}/3`);
+                    await new Promise((resolve) => setTimeout(resolve, 1500));
+                } else {
+                    flwData = verifyError.response?.data || {
+                        status: 'pending',
+                        data: { status: 'pending', tx_ref: transaction_id },
+                    };
+                }
             }
         }
-        if (!flwResponse) {
-            throw lastFlutterwaveError || new Error('Flutterwave verification did not return a response');
-        }
-        const flwData = flwResponse.data;
         console.log(`[PAY ENDPOINT] Flutterwave verify response - Status: ${flwData.status} | Data status: ${flwData.data?.status} | Amount: ${flwData.data?.amount} | tx_ref: ${flwData.data?.tx_ref}`);
-        if (flwData.status !== "success" || flwData.data.status !== "successful") {
+        if (!paymentMatchesOrder(flwData, mainOrder, transaction_id)) {
             console.error(`[PAY ENDPOINT] VERIFICATION FAILED - Order: ${mainOrder._id} | tx_ref: ${transaction_id} | Flutterwave response:`, JSON.stringify(flwData, null, 2));
-            await MainOrder.deleteOne({ _id: mainOrder._id }, { session });
-            await Shipment.deleteMany({ mainOrder: mainOrder._id }, { session });
+            mainOrder.paymentResult = buildPendingPaymentResult(
+                mainOrder.paymentResult,
+                flwData,
+                transaction_id
+            );
+            await mainOrder.save({ session });
             await session.commitTransaction();
             session.endSession();
-            return res.status(400).json({
-                message: 'Payment verification failed and order has been removed.',
-                flutterwave: flwData
+            return res.status(202).json({
+                message: 'Payment is not confirmed yet. It will be checked again.',
+                status: mainOrder.paymentResult.status,
             });
         }
         console.log(`[PAY ENDPOINT] VERIFICATION SUCCESS - tx_ref: ${transaction_id} | Amount: ${flwData.data.amount} NGN | Customer: ${flwData.data.customer.email}`);
         // Verified — update MainOrder
-        mainOrder.isPaid = true;
-        mainOrder.paidAt = Date.now();
-        mainOrder.mainOrderStatus = 'processing';
-        mainOrder.paymentResult = {
-            id: flwData.data.id,
-            status: flwData.data.status,
-            tx_ref: flwData.data.tx_ref,
-            flw_ref: flwData.data.flw_ref,
-            amount: flwData.data.amount,
-            currency: flwData.data.currency,
-            email_address: flwData.data.customer.email,
-            verifiedAt: new Date(),
-            verificationMethod: 'direct_verify'
-        };
-        await consumeSubscriptionDeliveryIfNeeded({ buyer, mainOrder, session });
+        const updatedOrder = await settleVerifiedFlutterwaveOrder({
+            order: mainOrder,
+            buyer,
+            verifiedTx: flwData.data,
+            app: req.app,
+            session,
+            method: 'direct_verify',
+        });
         console.log(`[PAY ENDPOINT] Updated paymentResult for order ${mainOrder._id}:`, JSON.stringify(mainOrder.paymentResult, null, 2));
-        // Update shipments & stock
-        const shipments = await Shipment.find({ mainOrder: mainOrder._id }).session(session);
-        const productUpdates = [];
-        console.log(`[PAY ENDPOINT] Found ${shipments.length} shipments for order ${mainOrder._id}`);
-        for (const shipment of shipments) {
-            shipment.shipmentStatus = 'processing';
-            await shipment.save({ session });
-            console.log(`[PAY ENDPOINT] Shipment ${shipment._id} → status set to 'processing'`);
-            await notifyVendorOfPaidShipment({
-                app: req.app,
-                order: mainOrder,
-                shipment,
-                paymentMethod: 'Flutterwave',
-                session,
-            });
-            console.log(`[PAY ENDPOINT] Vendor notification sent for shipment ${shipment._id}`);
-            for (const item of shipment.items) {
-                const soldCount = item.quantity;
-                productUpdates.push(
-                    Product.findByIdAndUpdate(
-                        item.product,
-                        { $inc: { salesCount: soldCount, stockQuantity: -soldCount } },
-                        { new: true, session }
-                    )
-                );
-            }
-        }
-        await Promise.all(productUpdates);
-        console.log(`[PAY ENDPOINT] Stock updated for ${productUpdates.length} products`);
-        const updatedOrder = await mainOrder.save({ session });
         await session.commitTransaction();
         session.endSession();
 
@@ -2652,9 +2719,19 @@ router.get('/:id', protect, async (req, res) => {
 
 
 router.post('/webhooks/flutterwave', async (req, res) => {
-  // 1. Verify signature (Flutterwave sends this header)
-  const secretHash = req.headers['verif-hash'];
-  if (!secretHash || secretHash !== process.env.FLUTTERWAVE_WEBHOOK_SECRET) {
+  const webhookSecret = process.env.FLUTTERWAVE_WEBHOOK_SECRET;
+  const signature = req.headers['flutterwave-signature'];
+  const legacySignature = req.headers['verif-hash'];
+  const expectedSignature = webhookSecret && req.rawBody
+    ? crypto.createHmac('sha256', webhookSecret).update(req.rawBody).digest('base64')
+    : null;
+  const validHmac = Boolean(signature && expectedSignature)
+    && signature.length === expectedSignature.length
+    && crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expectedSignature));
+  const validLegacySignature = Boolean(
+    legacySignature && webhookSecret && legacySignature === webhookSecret
+  );
+  if (!validHmac && !validLegacySignature) {
     console.warn('Invalid Flutterwave webhook signature');
     return res.status(401).send('Signature mismatch');
   }
@@ -2662,13 +2739,15 @@ router.post('/webhooks/flutterwave', async (req, res) => {
   const event = req.body;
 
   // We only care about successful charge completions
-  if (event.event !== 'charge.completed' || !event.data) {
+  const eventType = event.type || event.event;
+  if (eventType !== 'charge.completed' || !event.data) {
     return res.sendStatus(200); // acknowledge but ignore
   }
 
   const tx = event.data;
+  const webhookTxRef = tx.tx_ref || tx.reference;
 
-  if (tx.status !== 'successful') {
+  if (!webhookTxRef || !['successful', 'succeeded'].includes(tx.status)) {
     console.log(`Webhook: non-successful charge → ${tx.status} for tx_ref ${tx.tx_ref}`);
     return res.sendStatus(200);
   }
@@ -2679,7 +2758,7 @@ router.post('/webhooks/flutterwave', async (req, res) => {
   try {
     // Find the order by the tx_ref we generated client-side
     const order = await MainOrder.findOne({
-      'paymentResult.tx_ref': tx.tx_ref,
+      'paymentResult.tx_ref': webhookTxRef,
       isPaid: false   // only process if not already marked paid
     }).session(session);
 
@@ -2689,51 +2768,25 @@ router.post('/webhooks/flutterwave', async (req, res) => {
       return res.sendStatus(200);
     }
 
-    // Mark as paid
-    order.isPaid = true;
-    order.paidAt = new Date();
-    order.mainOrderStatus = 'processing';
-    order.paymentResult = {
-      ...order.paymentResult,
-      id: tx.id,
-      status: tx.status,
-      tx_ref: tx.tx_ref,
-      flw_ref: tx.flw_ref,
-      amount: tx.amount,
-      currency: tx.currency,
-      email_address: tx.customer?.email,
-      verifiedVia: 'webhook'
-    };
-
-    // Update shipments + reduce stock
-    const shipments = await Shipment.find({ mainOrder: order._id }).session(session);
-    const productUpdates = [];
-
-    for (const shipment of shipments) {
-      shipment.shipmentStatus = 'processing';
-      await shipment.save({ session });
-
-      await notifyVendorOfPaidShipment({
-        app: req.app,
-        order,
-        shipment,
-        paymentMethod: 'Flutterwave',
-        session,
-      });
-
-      for (const item of shipment.items) {
-        productUpdates.push(
-          Product.findByIdAndUpdate(
-            item.product,
-            { $inc: { salesCount: item.quantity, stockQuantity: -item.quantity } },
-            { new: true, session }
-          )
-        );
-      }
+    const verified = await verifyFlutterwaveTransaction(webhookTxRef);
+    if (!paymentMatchesOrder(verified, order, webhookTxRef)) {
+      console.warn(`Webhook: verification mismatch for tx_ref ${webhookTxRef}`);
+      await session.commitTransaction();
+      return res.sendStatus(200);
     }
 
-    await Promise.all(productUpdates);
-    await order.save({ session });
+    const verifiedTx = verified.data;
+
+    const buyer = await User.findById(order.user).session(session);
+    if (!buyer) throw new Error('Buyer user account not found.');
+    await settleVerifiedFlutterwaveOrder({
+      order,
+      buyer,
+      verifiedTx,
+      app: req.app,
+      session,
+      method: 'webhook',
+    });
 
     await session.commitTransaction();
     console.log(`Webhook success: Order ${order._id} marked paid via webhook (tx_ref: ${tx.tx_ref})`);
@@ -2753,6 +2806,73 @@ router.post('/webhooks/flutterwave', async (req, res) => {
     session.endSession();
   }
 });
+
+let paymentRecoveryRunning = false;
+async function processPendingFlutterwavePayments(app) {
+  if (paymentRecoveryRunning || !process.env.FLUTTERWAVE_SECRET_KEY) return;
+  paymentRecoveryRunning = true;
+  try {
+    const candidates = await MainOrder.find({
+      isPaid: false,
+      mainOrderStatus: 'pending_payment',
+      'paymentResult.tx_ref': { $exists: true, $ne: '' },
+      'paymentResult.status': { $in: ['initiated', 'pending', 'unknown'] },
+    }).sort({ 'paymentResult.lastCheckedAt': 1, createdAt: 1 }).limit(20);
+
+    for (const candidate of candidates) {
+      const txRef = candidate.paymentResult?.tx_ref;
+      if (!txRef) continue;
+      const session = await mongoose.startSession();
+      session.startTransaction();
+      try {
+        const order = await MainOrder.findOne({ _id: candidate._id, isPaid: false }).session(session);
+        if (!order) {
+          await session.commitTransaction();
+          continue;
+        }
+        let verified;
+        try {
+          verified = await verifyFlutterwaveTransaction(txRef);
+        } catch (error) {
+          if (![400, 404].includes(error.response?.status)) throw error;
+        }
+        if (!verified || !paymentMatchesOrder(verified, order, txRef)) {
+          order.paymentResult = buildPendingPaymentResult(
+            order.paymentResult,
+            verified,
+            txRef
+          );
+          await order.save({ session });
+          await session.commitTransaction();
+          continue;
+        }
+        const buyer = await User.findById(order.user).session(session);
+        if (!buyer) throw new Error('Buyer user account not found.');
+        await settleVerifiedFlutterwaveOrder({
+          order,
+          buyer,
+          verifiedTx: verified.data,
+          app,
+          session,
+          method: 'scheduled_reconciliation',
+        });
+        await session.commitTransaction();
+        await grantReferralRewardForVerifiedUser(order.user);
+        console.log(`[PAYMENT RECOVERY] Order ${order._id} verified via ${txRef}`);
+      } catch (error) {
+        await session.abortTransaction();
+        console.error(`[PAYMENT RECOVERY] Failed for order ${candidate._id}:`, error.message);
+      } finally {
+        session.endSession();
+      }
+    }
+  } finally {
+    paymentRecoveryRunning = false;
+  }
+}
+
+router.processPendingFlutterwavePayments = processPendingFlutterwavePayments;
+router.paymentMatchesOrder = paymentMatchesOrder;
 
 
 

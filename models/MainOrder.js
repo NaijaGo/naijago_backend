@@ -152,6 +152,10 @@ MainOrderSchema.index({ user: 1, createdAt: -1 });
 MainOrderSchema.index({ rider: 1, createdAt: -1 });
 MainOrderSchema.index({ assignedRider: 1, isClaimed: 1, createdAt: -1 });
 MainOrderSchema.index({ isPaid: 1, mainOrderStatus: 1, createdAt: -1 });
+MainOrderSchema.index(
+    { 'paymentResult.tx_ref': 1 },
+    { unique: true, sparse: true, name: 'unique_flutterwave_tx_ref' }
+);
 MainOrderSchema.index({ isPaid: 1, shipmentStatus: 1, isClaimed: 1, rider: 1, createdAt: -1 });
 MainOrderSchema.index({ subscriptionFreeDeliveryApplied: 1, createdAt: -1 });
 MainOrderSchema.index({ vendorPaidAt: 1, createdAt: -1 });

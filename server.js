@@ -26,6 +26,7 @@ const {
 const notificationService = require('./services/notificationService');
 const { cleanupObsoleteIndexes } = require('./utils/dbIndexMaintenance');
 const { isApprovedPharmacistUser } = require('./utils/pharmacistEligibility');
+const orderRoutes = require('./routes/orderRoutes');
 
 const app = express();
 app.set('trust proxy', true);
@@ -35,7 +36,12 @@ const PORT = process.env.PORT || 5000;
 // Core middleware
 app.use(helmet());
 app.use(compression());
-app.use(express.json({ limit: '1mb' }));
+app.use(express.json({
+  limit: '1mb',
+  verify: (req, _res, buffer) => {
+    req.rawBody = Buffer.from(buffer);
+  },
+}));
 app.use(express.urlencoded({ extended: false, limit: '1mb' }));
 
 // CORS (tighten in prod)
@@ -65,7 +71,7 @@ app.use('/api/pharmacist', require('./routes/pharmacistRoutes'));
 app.use('/api/admin', require('./routes/adminRoutes'));
 app.use('/api/admin', require('./routes/adminCarouselRoutes'));
 app.use('/api/products', require('./routes/productRoutes'));
-app.use('/api/orders', require('./routes/orderRoutes'));
+app.use('/api/orders', orderRoutes);
 app.use('/api/reviews', require('./routes/reviewsRoutes'));
 app.use('/api/wallet', require('./routes/walletRoutes'));
 app.use('/api/subscriptions', require('./routes/subscriptionRoutes'));
@@ -2184,6 +2190,16 @@ const startServer = async () => {
       console.log(colors.green('⏰ Scheduled notification runner active.'));
     } else {
       console.log(colors.yellow('⏰ In-process scheduled notification runner disabled; use worker:scheduled-notifications.'));
+    }
+    if (process.env.DISABLE_PAYMENT_RECOVERY_RUNNER !== 'true') {
+      const runPaymentRecovery = () => {
+        orderRoutes.processPendingFlutterwavePayments(app).catch((error) => {
+          console.error(colors.red(`Payment recovery runner error: ${error.message}`));
+        });
+      };
+      runPaymentRecovery();
+      setInterval(runPaymentRecovery, Number(process.env.PAYMENT_RECOVERY_INTERVAL_MS || 300000));
+      console.log(colors.green('Flutterwave payment recovery runner active.'));
     }
     if (process.env.DISABLE_RIDER_ASSIGNMENT_TIMEOUT_RUNNER !== 'true') {
       const runAssignmentExpiry = () => {
