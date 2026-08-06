@@ -55,6 +55,14 @@ const UserSchema = new mongoose.Schema({
     type: String,
     sparse: true,
   },
+  pendingDeviceFingerprint: { type: String, sparse: true },
+  trustedDevices: [{
+    fingerprint: { type: String, required: true },
+    label: { type: String, default: 'NaijaGo device' },
+    platform: { type: String, default: 'unknown' },
+    verifiedAt: { type: Date, default: Date.now },
+    lastUsedAt: { type: Date, default: Date.now },
+  }],
   deviceVerificationToken: String,
   deviceVerificationExpires: Date,
 

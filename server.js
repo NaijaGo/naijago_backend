@@ -24,6 +24,8 @@ const {
   notifyRiderAssignmentOffer,
 } = require('./services/riderAssignmentService');
 const notificationService = require('./services/notificationService');
+const { publishAdminActivity } = require('./services/adminActivityService');
+const adminActivityMiddleware = require('./middleware/adminActivityMiddleware');
 const { cleanupObsoleteIndexes } = require('./utils/dbIndexMaintenance');
 const { isApprovedPharmacistUser } = require('./utils/pharmacistEligibility');
 const orderRoutes = require('./routes/orderRoutes');
@@ -43,6 +45,7 @@ app.use(express.json({
   },
 }));
 app.use(express.urlencoded({ extended: false, limit: '1mb' }));
+app.use(adminActivityMiddleware);
 
 // CORS (tighten in prod)
 app.use(
@@ -2111,6 +2114,8 @@ app.set('emitRiderUpdate', (riderId, data) => {
 app.set('notifyAdmin', (data) => {
   broadcastToAdmins('admin_notification', data);
 });
+
+app.set('publishAdminActivity', (data) => publishAdminActivity(app, data));
 
 app.set('notifyAdminRiderStatus', (data) => {
   broadcastToAdmins('rider_status_change', data);

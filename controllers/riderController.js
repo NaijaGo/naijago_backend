@@ -809,7 +809,7 @@ exports.updateRiderStatus = async (req, res) => {
           type: 'rider_online',
           riderId: req.rider._id.toString(),
         },
-      }).catch((error) => {
+      }, { audience: 'rider' }).catch((error) => {
         console.error(`Rider online push failed for ${req.rider._id}:`, error.message);
       });
     }
@@ -1210,7 +1210,7 @@ exports.claimOrder = async (req, res) => {
             orderId: mainOrder._id,
             pickupOTP,
           },
-        }).catch((error) => {
+        }, { audience: 'vendor' }).catch((error) => {
           console.error(`Vendor rider assignment push failed for ${vendorId}:`, error.message);
         })
       ),

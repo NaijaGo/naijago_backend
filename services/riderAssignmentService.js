@@ -300,7 +300,7 @@ const notifyAssignedRider = async ({ app, riderId, mainOrder, pickupOTP, deliver
       pickupOTP,
       deliveryOTP,
     },
-  }).catch((error) => {
+  }, { audience: 'rider' }).catch((error) => {
     console.error(`Rider push notification failed for ${riderId}:`, error.message);
   });
 };
@@ -347,7 +347,7 @@ const notifyRiderAssignmentOffer = async ({
     title: payload.title,
     message,
     data: payload,
-  }).catch((error) => {
+  }, { audience: 'rider' }).catch((error) => {
     console.error(`Rider assignment offer push failed for ${riderId}:`, error.message);
   });
 };

@@ -12,6 +12,7 @@ const AdminScheduledNotification = require('../models/AdminScheduledNotification
 const AdminNotificationTemplate = require('../models/AdminNotificationTemplate');
 const MarketingContactList = require('../models/MarketingContactList');
 const AnalyticsEvent = require('../models/AnalyticsEvent');
+const ActivityEvent = require('../models/ActivityEvent');
 const CompanyRider = require('../models/CompanyRider');
 const { protect } = require('../middleware/authMiddleware'); // Import the protect middleware
 const {
@@ -974,6 +975,73 @@ const summarizeBuiltInMarketingLists = async () => {
 };
 
 // --- Admin Routes ---
+
+router.get('/activity', protect, authorizeAdmin, async (req, res) => {
+    try {
+        const { page, limit, skip } = parsePagination(req.query, {
+            defaultLimit: 50,
+            maxLimit: 200,
+        });
+        const filter = {};
+        const category = String(req.query.category || '').trim().toLowerCase();
+        const severity = String(req.query.severity || '').trim().toLowerCase();
+        const eventType = String(req.query.eventType || '').trim().toLowerCase();
+        const unreadOnly = String(req.query.unreadOnly || '').toLowerCase() === 'true';
+
+        if (category && category !== 'all') filter.category = category;
+        if (severity && severity !== 'all') filter.severity = severity;
+        if (eventType) filter.eventType = eventType;
+        if (unreadOnly) filter.readBy = { $ne: req.user._id };
+
+        const [events, total, unread] = await Promise.all([
+            ActivityEvent.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
+            ActivityEvent.countDocuments(filter),
+            ActivityEvent.countDocuments({ readBy: { $ne: req.user._id } }),
+        ]);
+
+        res.json({ events, page, limit, total, unread });
+    } catch (error) {
+        console.error('Admin activity fetch failed:', error);
+        res.status(500).json({ message: 'Failed to load admin activity.' });
+    }
+});
+
+router.put('/activity/read-all', protect, authorizeAdmin, async (req, res) => {
+    try {
+        await ActivityEvent.updateMany(
+            { readBy: { $ne: req.user._id } },
+            { $addToSet: { readBy: req.user._id } },
+        );
+        res.json({ message: 'All activity marked as read.' });
+    } catch (error) {
+        console.error('Admin activity read-all failed:', error);
+        res.status(500).json({ message: 'Failed to update admin activity.' });
+    }
+});
+
+router.put('/activity/:eventId/read', protect, authorizeAdmin, async (req, res) => {
+    try {
+        const event = await ActivityEvent.findByIdAndUpdate(
+            req.params.eventId,
+            { $addToSet: { readBy: req.user._id } },
+            { new: true },
+        );
+        if (!event) return res.status(404).json({ message: 'Activity event not found.' });
+        res.json(event);
+    } catch (error) {
+        console.error('Admin activity read failed:', error);
+        res.status(500).json({ message: 'Failed to update admin activity.' });
+    }
+});
+
+router.get('/push-config', protect, authorizeAdmin, (req, res) => {
+    const appId = process.env.ADMIN_ONESIGNAL_APP_ID || '';
+    res.json({
+        enabled: Boolean(appId),
+        appId,
+        externalId: String(req.user._id),
+    });
+});
 
 router.get('/product-moderation', protect, authorizeAdmin, async (req, res) => {
     try {

@@ -299,6 +299,7 @@ const sendAdminInAppNotification = async ({
                         segment: normalizedSegment,
                     },
                 },
+                { audience: 'vendor' },
             )
             .catch((error) => {
                 console.error('Vendor OneSignal push failed:', error.message);
@@ -339,6 +340,7 @@ const sendAdminInAppNotification = async ({
                         segment: normalizedSegment,
                     },
                 },
+                { audience: 'rider' },
             )
             .catch((error) => {
                 console.error('Rider OneSignal push failed:', error.message);

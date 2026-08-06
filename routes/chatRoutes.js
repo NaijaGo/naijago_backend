@@ -4,6 +4,7 @@ const {
   claimSession,
   getOnlinePharmacists,
   getPharmacistQueue,
+  getSessionMessages,
   sendMessage,
   startChat,
   updatePharmacistAvailability,
@@ -14,6 +15,7 @@ const router = express.Router();
 
 router.post('/start', protect, startChat);
 router.post('/send', protect, sendMessage);
+router.get('/:sessionId/messages', protect, getSessionMessages);
 router.get('/pharmacists/online', protect, getOnlinePharmacists);
 router.get('/pharmacist/queue', protect, getPharmacistQueue);
 router.put('/pharmacist/status', protect, updatePharmacistAvailability);

@@ -114,7 +114,7 @@ const notifyVendorOfPaidShipment = async ({
         title,
         message: `New paid order #${order._id.toString().slice(-8)}: ${itemCount} item(s), ${formatMoney(shipment.subtotal)}.`,
         data: notificationData,
-      });
+      }, { audience: 'vendor' });
       await recordNotificationLog({
         ...logBase,
         channel: 'push',

@@ -3,11 +3,16 @@
 const express = require('express');
 const router = express.Router();
 const Product = require('../models/Product');
+const Shipment = require('../models/Shipment');
 const User = require('../models/User');
 const { protect, authorizeRoles } = require('../middleware/authMiddleware');
 const multer = require('multer');
 const cloudinary = require('../utils/cloudinary');
 const path = require('path');
+const {
+    buildHierarchicalCategoryFilter,
+    buildPriceFilter,
+} = require('../utils/productFilters');
 
 // =============================================================
 // MULTER CONFIG (MEMORY STORAGE)
@@ -148,15 +153,7 @@ const resolveProductLocation = (product) => {
 };
 
 const buildCategoryFilter = (category) => {
-    if (!category) return {};
-    if (String(category).toLowerCase() === 'restaurant') {
-        return {
-            category: {
-                $regex: /^(restaurant($| >)|.*\b(meal|fast food|local dishes|pastries|drinks|catering)\b.*)/i,
-            },
-        };
-    }
-    return { category: { $regex: new RegExp(`^${escapeRegex(category)}$`, 'i') } };
+    return buildHierarchicalCategoryFilter(category);
 };
 
 const escapeRegex = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -486,6 +483,14 @@ router.put(
                 });
             }
 
+            const hasOrders = await Shipment.exists({ 'items.product': product._id });
+            if (hasOrders) {
+                return res.status(409).json({
+                    code: 'PRODUCT_HAS_ORDERS',
+                    message: 'This product has order history and can no longer be edited. Archive it instead.',
+                });
+            }
+
             const vendor = await User.findById(req.user._id);
             const nextCategory = category || product.category;
             if (isMedicineCategory(nextCategory) && vendor?.role !== 'pharmacist') {
@@ -570,11 +575,11 @@ router.put(
             }
 
             // UPDATE FIELDS
-            product.name = name || product.name;
-            product.description = description || product.description;
-            product.price = price || product.price;
-            product.category = category || product.category;
-            product.stockQuantity = stockQuantity || product.stockQuantity;
+            if (name !== undefined) product.name = String(name).trim();
+            if (description !== undefined) product.description = String(description).trim();
+            if (price !== undefined) product.price = Number(price);
+            if (category !== undefined) product.category = String(category).trim();
+            if (stockQuantity !== undefined) product.stockQuantity = Number(stockQuantity);
             product.imageUrls = updatedImageUrls;
             product.sizeData = sizeData; // NEW: Update size data
             const nextProductLocation = buildProductLocation(req.body);
@@ -662,7 +667,18 @@ router.get('/myproducts', protect, async (req, res) => {
             .limit(limit)
             .lean();
 
-        res.status(200).json(products);
+        const productIds = products.map((product) => product._id);
+        const orderedProductIds = await Shipment.distinct('items.product', {
+            'items.product': { $in: productIds },
+        });
+        const orderedSet = new Set(orderedProductIds.map(String));
+        const productsWithOwnership = products.map((product) => ({
+            ...product,
+            hasOrders: orderedSet.has(String(product._id)),
+            ownershipLocked: orderedSet.has(String(product._id)),
+        }));
+
+        res.status(200).json(productsWithOwnership);
     } catch (error) {
         console.error('Error fetching vendor products:', error);
         res.status(500).json({ message: 'Server error fetching vendor products.' });
@@ -913,8 +929,10 @@ router.get('/:id', async (req, res) => {
 // @desc    Get all products (for homepage, public access)
 router.get('/', async (req, res) => {
   try {
-    const { limit } = parsePagination(req.query, { defaultLimit: 100, maxLimit: 300 });
+    const { page, limit, skip } = parsePagination(req.query, { defaultLimit: 50, maxLimit: 300 });
     const { category } = req.query;
+    const queryText = String(req.query.query || req.query.q || '').trim();
+    const sort = String(req.query.sort || 'newest').trim().toLowerCase();
     const lat = req.query.lat !== undefined ? Number(req.query.lat) : null;
     const lng = req.query.lng !== undefined ? Number(req.query.lng) : null;
     const radiusKm = req.query.radiusKm !== undefined ? Number(req.query.radiusKm) : null;
@@ -924,12 +942,45 @@ router.get('/', async (req, res) => {
       Object.assign(filter, buildCategoryFilter(category));
     }
 
+    const priceFilter = buildPriceFilter(req.query.minPrice, req.query.maxPrice);
+    if (priceFilter) filter.price = priceFilter;
+
+    const minimumRating = Number(req.query.minRating);
+    if (Number.isFinite(minimumRating) && minimumRating > 0) {
+      filter.averageRating = { $gte: Math.min(minimumRating, 5) };
+    }
+
+    if (String(req.query.inStock || '').toLowerCase() === 'true') {
+      filter.stockQuantity = { $gt: 0 };
+    }
+
+    if (queryText) {
+      const escapedQuery = escapeRegex(queryText);
+      filter.$or = [
+        { name: { $regex: escapedQuery, $options: 'i' } },
+        { description: { $regex: escapedQuery, $options: 'i' } },
+        { category: { $regex: escapedQuery, $options: 'i' } },
+        { restaurantName: { $regex: escapedQuery, $options: 'i' } },
+      ];
+    }
+
+    const sortSpec = sort === 'price_low'
+      ? { price: 1, createdAt: -1 }
+      : sort === 'price_high'
+      ? { price: -1, createdAt: -1 }
+      : sort === 'popular' || sort === 'most_sold'
+      ? { salesCount: -1, createdAt: -1 }
+      : sort === 'rating' || sort === 'best_rated'
+      ? { averageRating: -1, numReviews: -1, createdAt: -1 }
+      : { createdAt: -1 };
+    const canSortByCustomerLocation = Number.isFinite(lat) && Number.isFinite(lng);
+
     const products = await Product.find(filter)
-      .sort({ createdAt: -1 })
-      .limit(limit * 2)
+      .sort(sortSpec)
+      .skip(canSortByCustomerLocation ? 0 : skip)
+      .limit(canSortByCustomerLocation ? Math.min(skip + limit, 300) : limit)
       .populate('vendor', vendorPopulateFields)
       .lean();
-    const canSortByCustomerLocation = Number.isFinite(lat) && Number.isFinite(lng);
     const sortedProducts = canSortByCustomerLocation
       ? products
           .map((product) => {
@@ -960,7 +1011,13 @@ router.get('/', async (req, res) => {
 
     console.log(`Backend: Fetched ${products.length} products${category ? ` for category "${category}"` : ''}.`);
     
-    res.status(200).json(sortedProducts.slice(0, limit));
+    const responseProducts = canSortByCustomerLocation
+      ? sortedProducts.slice(skip, skip + limit)
+      : sortedProducts;
+    const total = await Product.countDocuments(filter);
+    res.set('X-Total-Count', String(total));
+    res.set('X-Page', String(page));
+    res.status(200).json(responseProducts);
   } catch (error) {
     console.error('Error fetching products:', error);
     res.status(500).json({ message: 'Server error fetching products.' });
@@ -1005,6 +1062,25 @@ router.get('/size/:type', async (req, res) => {
 // =============================================================
 // DELETE PRODUCT (UNCHANGED)
 // =============================================================
+router.patch('/:id/archive', protect, async (req, res) => {
+    try {
+        const product = await Product.findById(req.params.id);
+        if (!product) return res.status(404).json({ message: 'Product not found.' });
+        if (product.vendor.toString() !== req.user._id.toString() && !req.user.isAdmin) {
+            return res.status(401).json({ message: 'Not authorized to archive this product.' });
+        }
+        product.isActive = req.body.archived === false;
+        await product.save();
+        res.json({
+            message: product.isActive ? 'Product restored successfully.' : 'Product archived successfully.',
+            product,
+        });
+    } catch (error) {
+        console.error('Error archiving product:', error);
+        res.status(500).json({ message: 'Server error archiving product.' });
+    }
+});
+
 router.delete('/:id', protect, async (req, res) => {
     try {
         const product = await Product.findById(req.params.id);
@@ -1019,6 +1095,14 @@ router.delete('/:id', protect, async (req, res) => {
         ) {
             return res.status(401).json({
                 message: 'Not authorized to delete this product.',
+            });
+        }
+
+        const hasOrders = await Shipment.exists({ 'items.product': product._id });
+        if (hasOrders) {
+            return res.status(409).json({
+                code: 'PRODUCT_HAS_ORDERS',
+                message: 'Ordered products cannot be deleted. Archive this listing to preserve order history.',
             });
         }
 

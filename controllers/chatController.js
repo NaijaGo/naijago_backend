@@ -29,7 +29,32 @@ const sendPharmacistPush = async ({ pharmacistId, session, textPreview }) => {
       sessionId: String(session._id),
       userId: String(session.user),
     },
-  });
+  }, { audience: 'vendor' });
+};
+
+exports.getSessionMessages = async (req, res) => {
+  try {
+    const session = await ChatSession.findById(req.params.sessionId).lean();
+    if (!session) return res.status(404).json({ message: 'Chat session not found.' });
+
+    const requesterId = String(req.user?._id || '');
+    const isOwner = String(session.user) === requesterId;
+    const isAssignedPharmacist = session.pharmacist && String(session.pharmacist) === requesterId;
+    const canUsePharmacistTools = isApprovedPharmacistUser(req.user);
+    if (!isOwner && !isAssignedPharmacist && !canUsePharmacistTools) {
+      return res.status(403).json({ message: 'Not authorized for this chat.' });
+    }
+
+    const messages = await ChatMessage.find({
+      session: session._id,
+      senderType: { $ne: 'ai' },
+    }).sort({ createdAt: 1 }).lean();
+
+    res.json({ session, messages: messages.map(formatChatMessage) });
+  } catch (error) {
+    console.error('Chat history load failed:', error);
+    res.status(500).json({ message: 'Failed to load chat history.' });
+  }
 };
 
 const notifyPharmacistsForSession = (app, session, textPreview) => {

@@ -15,6 +15,13 @@ const rateLimit = require('express-rate-limit');
 const { ipKeyGenerator } = rateLimit;
 const notificationService = require('../services/notificationService');
 const {
+    addTrustedDevice,
+    beginDeviceVerification,
+    completeDeviceVerification,
+    isTrustedDevice,
+    normalizeFingerprint,
+} = require('../services/deviceTrustService');
+const {
     ensureReferralCode,
     findUserByReferralCode,
 } = require('../services/referralService');
@@ -625,6 +632,71 @@ router.post('/login', async (req, res) => {
       }
     };
 
+    const normalizedDeviceFingerprint = normalizeFingerprint(deviceFingerprint);
+    const loginPayload = (message) => ({
+      token: generateToken(user._id),
+      user: {
+        id: user._id,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        email: user.email,
+        phoneNumber: user.phoneNumber,
+        isEmailVerified: user.isEmailVerified,
+        isAdmin: user.isAdmin,
+        isVendor: user.isVendor,
+        vendorStatus: user.vendorStatus,
+      },
+      message,
+    });
+
+    if (user.isAdmin) {
+      if (normalizedDeviceFingerprint) {
+        user.deviceFingerprint = normalizedDeviceFingerprint;
+        user.isDeviceVerified = true;
+        addTrustedDevice(user, normalizedDeviceFingerprint, { label: 'Admin device' });
+      }
+      await sendWelcomePushIfNeeded();
+      await user.save();
+      return res.status(200).json(loginPayload('Admin login successful.'));
+    }
+
+    if (!normalizedDeviceFingerprint || normalizedDeviceFingerprint === 'unknown-device') {
+      return res.status(400).json({
+        code: 'INVALID_DEVICE_FINGERPRINT',
+        message: 'Unable to identify this device securely. Please update or restart the app and try again.',
+      });
+    }
+
+    if (!user.deviceFingerprint && !(user.trustedDevices || []).length) {
+      user.deviceFingerprint = normalizedDeviceFingerprint;
+      user.isDeviceVerified = true;
+      addTrustedDevice(user, normalizedDeviceFingerprint, { label: 'Original device' });
+      await sendWelcomePushIfNeeded();
+      await user.save();
+      return res.status(200).json(loginPayload('Login successful. Device registered securely.'));
+    }
+
+    if (!isTrustedDevice(user, normalizedDeviceFingerprint)) {
+      const verificationToken = beginDeviceVerification(user, normalizedDeviceFingerprint);
+      await user.save();
+      await sendVerificationEmail(user.email, verificationToken, 'device');
+      return res.status(403).json({
+        code: 'DEVICE_VERIFICATION_REQUIRED',
+        message: 'New device detected. Please check your email to verify this device.',
+        email: user.email.replace(/(^.).*(@.*$)/, '$1***$2'),
+      });
+    }
+
+    const trustedDevice = (user.trustedDevices || []).find(
+      (device) => device.fingerprint === normalizedDeviceFingerprint,
+    );
+    if (trustedDevice) trustedDevice.lastUsedAt = new Date();
+    user.deviceFingerprint = normalizedDeviceFingerprint;
+    user.isDeviceVerified = true;
+    await sendWelcomePushIfNeeded();
+    await user.save();
+    return res.status(200).json(loginPayload('Login successful from a verified device.'));
+
     // ✅ Admin bypass for convenience
     if (user.isAdmin) {
       if (deviceFingerprint && user.deviceFingerprint !== deviceFingerprint) {
@@ -864,8 +936,9 @@ router.get('/device/verify/:token', async (req, res) => {
         if (!user) {
             return res.status(400).send('Invalid or expired device verification token.');
         }
-        user.deviceVerificationToken = undefined;
-        user.deviceVerificationExpires = undefined;
+        if (!completeDeviceVerification(user)) {
+            return res.status(400).send('This verification request has no pending device. Please log in again.');
+        }
         await user.save();
         res.status(200).send('Device successfully verified! You can now close this page and log in to the app.');
     } catch (error) {
