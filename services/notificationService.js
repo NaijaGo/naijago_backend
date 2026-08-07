@@ -110,11 +110,13 @@ class NotificationService {
             process.env.ONESIGNAL_ANDROID_CHANNEL_ID ||
             'ea2ee9a7-0988-429d-9e86-412d1668055e';
         const sound = normalizedAudience === 'rider'
-            ? (process.env.RIDER_NOTIFICATION_SOUND || 'rider_alert')
+            ? (process.env.RIDER_NOTIFICATION_SOUND || 'rider_job_alert')
             : 'default';
 
         return {
-            android_channel_id: channelId,
+            ...(normalizedAudience === 'rider'
+                ? { existing_android_channel_id: 'naijago_rider_jobs_v1' }
+                : { android_channel_id: channelId }),
             priority: 10,
             ttl: 259200,
             ios_sound: sound === 'default' ? 'default' : `${sound}.wav`,
