@@ -1,8 +1,10 @@
-const OneSignal = require('onesignal-node');
+const axios = require('axios');
+
+const ONESIGNAL_NOTIFICATIONS_URL = 'https://api.onesignal.com/notifications';
 
 class NotificationService {
     constructor() {
-        this.clients = new Map();
+        this.httpClient = axios;
     }
 
     audienceConfig(audience = 'customer') {
@@ -19,16 +21,37 @@ class NotificationService {
         return Boolean(appId && apiKey);
     }
 
-    clientFor(audience = 'customer') {
+    async createNotification(audience = 'customer', notification) {
         const normalized = String(audience || 'customer').toLowerCase();
-        if (this.clients.has(normalized)) return this.clients.get(normalized);
         const { appId, apiKey } = this.audienceConfig(normalized);
         if (!appId || !apiKey) {
             throw new Error(`OneSignal is not configured for audience: ${normalized}`);
         }
-        const client = new OneSignal.Client(appId, apiKey);
-        this.clients.set(normalized, client);
-        return client;
+
+        const normalizedApiKey = String(apiKey).replace(/^Key\s+/i, '').trim();
+        const response = await this.httpClient.post(
+            ONESIGNAL_NOTIFICATIONS_URL,
+            { app_id: appId, ...notification },
+            {
+                headers: {
+                    Authorization: `Key ${normalizedApiKey}`,
+                    'Content-Type': 'application/json',
+                },
+                timeout: 15000,
+            },
+        );
+
+        return { body: response.data, statusCode: response.status };
+    }
+
+    logSendError(context, error) {
+        const status = error?.response?.status;
+        const responseData = error?.response?.data;
+        console.error(context, {
+            message: error?.message || String(error),
+            ...(status ? { status } : {}),
+            ...(responseData ? { response: responseData } : {}),
+        });
     }
 
     /**
@@ -43,18 +66,19 @@ class NotificationService {
                 headings: {
                     en: notificationData.title || 'Naijago Shopping'
                 },
-                include_external_user_ids: [userId],
+                include_aliases: { external_id: [String(userId)] },
+                target_channel: 'push',
                 data: notificationData.data || {},
                 ios_badgeType: 'Increase',
                 ios_badgeCount: 1,
                 ...this.getPlatformOptions(options.audience)
             };
 
-            const response = await this.clientFor(options.audience).createNotification(notification);
+            const response = await this.createNotification(options.audience, notification);
             console.log('Notification sent:', response.body);
             return response;
         } catch (error) {
-            console.error('Error sending notification:', error);
+            this.logSendError('Error sending notification', error);
             throw error;
         }
     }
@@ -67,16 +91,17 @@ class NotificationService {
             const notification = {
                 contents: { en: notificationData.message },
                 headings: { en: notificationData.title || 'Naijago Shopping' },
-                include_external_user_ids: userIds,
+                include_aliases: { external_id: userIds.map(String) },
+                target_channel: 'push',
                 data: notificationData.data || {},
                 ...this.getPlatformOptions(options.audience)
             };
 
-            const response = await this.clientFor(options.audience).createNotification(notification);
+            const response = await this.createNotification(options.audience, notification);
             console.log(`Sent to ${userIds.length} users`);
             return response;
         } catch (error) {
-            console.error('Error sending bulk notifications:', error);
+            this.logSendError('Error sending bulk notifications', error);
             throw error;
         }
     }
@@ -90,15 +115,16 @@ class NotificationService {
                 contents: { en: notificationData.message },
                 headings: { en: notificationData.title || 'Naijago Shopping' },
                 included_segments: [segment],
+                target_channel: 'push',
                 data: notificationData.data || {},
                 ...this.getPlatformOptions(options.audience)
             };
 
-            const response = await this.clientFor(options.audience).createNotification(notification);
+            const response = await this.createNotification(options.audience, notification);
             console.log(`Sent to segment: ${segment}`);
             return response;
         } catch (error) {
-            console.error('Error sending segment notification:', error);
+            this.logSendError('Error sending segment notification', error);
             throw error;
         }
     }
