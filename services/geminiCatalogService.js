@@ -61,7 +61,7 @@ Do not invent brands, model names, specifications, certifications, availability,
       generationConfig: {
         temperature: 0.2,
         responseFormat: {
-          text: { mimeType: 'application/json', schema: productSchema },
+          text: { mimeType: 'APPLICATION_JSON', schema: productSchema },
         },
       },
     },
