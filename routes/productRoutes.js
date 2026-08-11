@@ -417,6 +417,16 @@ router.post(
             if (requestedSellerType === 'vendor' && !requestedSellerId) {
                 return res.status(400).json({ message: 'A seller is required for vendor products.' });
             }
+            if (isAdmin && requestedSellerType === 'vendor') {
+                const approvedSeller = await User.exists({
+                    _id: requestedSellerId,
+                    isVendor: true,
+                    vendorStatus: 'approved',
+                });
+                if (!approvedSeller) {
+                    return res.status(400).json({ message: 'Select an approved vendor.' });
+                }
+            }
             const parseJsonField = (value, fallback) => {
                 if (value == null || value === '') return fallback;
                 if (typeof value !== 'string') return value;
@@ -693,7 +703,7 @@ router.put(
 
             const vendor = await User.findById(req.user._id);
             const nextCategory = category || product.category;
-            if (isMedicineCategory(nextCategory) && vendor?.role !== 'pharmacist') {
+            if (!isAdmin && isMedicineCategory(nextCategory) && vendor?.role !== 'pharmacist') {
                 return res.status(403).json({
                     message: 'Medicine listings are only available to approved pharmacist vendors.',
                 });
@@ -1153,6 +1163,52 @@ router.get('/restaurants', async (req, res) => {
     }
 });
 
+// Admin catalogue inventory, including draft/disabled/out-of-stock products.
+router.get('/admin/catalog', protect, authorizeRoles('admin'), async (req, res) => {
+    try {
+        const { page, limit, skip } = parsePagination(req.query, { defaultLimit: 50, maxLimit: 300 });
+        const filter = {};
+        const queryText = String(req.query.q || '').trim();
+        if (req.query.status && req.query.status !== 'all') filter.productStatus = req.query.status;
+        if (req.query.sellerType && req.query.sellerType !== 'all') filter.sellerType = req.query.sellerType;
+        if (req.query.category) Object.assign(filter, buildCategoryFilter(req.query.category));
+        if (queryText) {
+            const value = { $regex: escapeRegex(queryText), $options: 'i' };
+            filter.$or = [
+                { name: value }, { description: value }, { brand: value },
+                { category: value }, { subcategory: value }, { searchTags: value }, { sku: value },
+            ];
+        }
+        const [products, total] = await Promise.all([
+            Product.find(filter)
+                .populate('vendor', vendorPopulateFields)
+                .sort({ updatedAt: -1, createdAt: -1 })
+                .skip(skip)
+                .limit(limit)
+                .lean(),
+            Product.countDocuments(filter),
+        ]);
+        const orderedProductIds = await Shipment.distinct('items.product', {
+            'items.product': { $in: products.map((product) => product._id) },
+        });
+        const orderedSet = new Set(orderedProductIds.map(String));
+        const enriched = (await attachPrimaryOffers(products)).map((product) => ({
+            ...product,
+            hasOrders: orderedSet.has(String(product._id)),
+        }));
+        res.json({
+            products: enriched,
+            page,
+            limit,
+            total,
+            pages: Math.ceil(total / limit),
+        });
+    } catch (error) {
+        console.error('Admin catalogue fetch failed:', error);
+        res.status(500).json({ message: 'Unable to load the product catalogue.' });
+    }
+});
+
 // @desc    Get a single product by ID
 router.get('/:id', async (req, res) => {
     try {
@@ -1315,11 +1371,17 @@ router.patch('/:id/archive', protect, async (req, res) => {
     try {
         const product = await Product.findById(req.params.id);
         if (!product) return res.status(404).json({ message: 'Product not found.' });
-        if (product.vendor.toString() !== req.user._id.toString() && !req.user.isAdmin) {
+        if (String(product.sellerId || product.vendor || '') !== req.user._id.toString() && req.user.role !== 'admin') {
             return res.status(401).json({ message: 'Not authorized to archive this product.' });
         }
-        product.isActive = req.body.archived === false;
+        product.productStatus = req.body.archived === false
+            ? (product.stockQuantity > 0 ? 'active' : 'out_of_stock')
+            : 'disabled';
         await product.save();
+        await ProductOffer.updateMany(
+            { product: product._id },
+            { $set: { status: product.productStatus, updatedBy: req.user._id } },
+        );
         res.json({
             message: product.isActive ? 'Product restored successfully.' : 'Product archived successfully.',
             product,
@@ -1339,7 +1401,7 @@ router.delete('/:id', protect, async (req, res) => {
         }
 
         if (
-            product.vendor.toString() !== req.user._id.toString() &&
+            String(product.sellerId || product.vendor || '') !== req.user._id.toString() &&
             req.user.role !== 'admin'
         ) {
             return res.status(401).json({
@@ -1355,6 +1417,7 @@ router.delete('/:id', protect, async (req, res) => {
             });
         }
 
+        await ProductOffer.deleteMany({ product: product._id });
         await product.deleteOne();
 
         res.status(200).json({ message: 'Product deleted successfully.' });

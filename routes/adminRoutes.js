@@ -5,6 +5,7 @@ const User = require('../models/User'); // Import the User model
 const Dispute = require('../models/DisputeRequest'); // Import the Dispute model
 const Rider = require('../models/Rider');
 const Product = require('../models/Product');
+const ProductOffer = require('../models/ProductOffer');
 const MainOrder = require('../models/MainOrder');
 const Shipment = require('../models/Shipment');
 const NotificationLog = require('../models/NotificationLog');
@@ -1073,11 +1074,18 @@ router.put('/product-moderation/:productId', protect, authorizeAdmin, async (req
         }
 
         product.moderationStatus = status;
-        product.isActive = status === 'approved';
+        product.productStatus = status === 'approved'
+            ? (product.stockQuantity > 0 ? 'active' : 'out_of_stock')
+            : status === 'pending' ? 'draft' : 'disabled';
+        product.isActive = product.productStatus === 'active';
         product.moderationNote = String(req.body.note || '').trim();
         product.reviewedAt = new Date();
         product.reviewedBy = req.user._id;
         await product.save();
+        await ProductOffer.updateMany(
+            { product: product._id },
+            { $set: { status: product.productStatus, updatedBy: req.user._id } },
+        );
         await product.populate('vendor', 'businessName phoneNumber businessLocation');
 
         res.status(200).json({
