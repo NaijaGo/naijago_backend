@@ -47,6 +47,17 @@ const responseText = (data) =>
   data?.candidates?.flatMap((candidate) => candidate.content?.parts || [])
     .find((part) => typeof part.text === 'string')?.text || data?.output_text || '';
 
+const groundedSourceUrls = (data) => {
+  const urls = [];
+  for (const candidate of data?.candidates || []) {
+    for (const chunk of candidate?.groundingMetadata?.groundingChunks || []) {
+      const uri = chunk?.web?.uri;
+      if (typeof uri === 'string' && /^https:\/\//i.test(uri)) urls.push(uri);
+    }
+  }
+  return [...new Set(urls)];
+};
+
 async function generateCatalogDrafts({ category, subcategory, count, market = 'Nigeria' }) {
   const apiKey = requireApiKey();
   const safeCount = Math.min(Math.max(Number(count) || 5, 1), 20);
@@ -71,10 +82,19 @@ Do not invent brands, model names, specifications, certifications, availability,
   if (!text) throw new Error('Gemini returned no catalogue data.');
   const parsed = JSON.parse(text);
   const products = Array.isArray(parsed.products) ? parsed.products.slice(0, safeCount) : [];
+  const groundedUrls = groundedSourceUrls(response.data);
   return {
     model: textModel,
     products: products.map((product) => ({
       ...product,
+      category,
+      subcategory: subcategory || product.subcategory,
+      // Never expose URLs invented inside model-generated JSON. Only citations
+      // emitted by the Google Search grounding layer are accepted as evidence.
+      sourceUrls: groundedUrls,
+      verificationNotes: groundedUrls.length
+        ? product.verificationNotes
+        : `${product.verificationNotes} No grounded source URL was returned; independently verify this product before use.`,
       sellerType: 'naijago',
       productStatus: 'draft',
       source: 'ai_assisted',

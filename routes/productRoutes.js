@@ -154,7 +154,20 @@ const resolveProductLocation = (product) => {
 };
 
 const buildCategoryFilter = (category) => {
-    return buildHierarchicalCategoryFilter(category);
+    const normalized = String(category || '').trim();
+    const parts = normalized.split('>').map((part) => part.trim()).filter(Boolean);
+    if (parts.length < 2) return buildHierarchicalCategoryFilter(normalized);
+    const parent = parts[0];
+    const child = parts.slice(1).join(' > ');
+    return {
+        $or: [
+            buildHierarchicalCategoryFilter(normalized),
+            {
+                category: { $regex: new RegExp(`^${escapeRegex(parent)}$`, 'i') },
+                subcategory: { $regex: new RegExp(`^${escapeRegex(child)}$`, 'i') },
+            },
+        ],
+    };
 };
 
 const attachPrimaryOffers = async (products) => {
