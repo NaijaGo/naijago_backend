@@ -197,6 +197,15 @@ const attachPrimaryOffers = async (products) => {
 
 const escapeRegex = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
+const allowedGeneratedImageUrl = (value) => {
+    try {
+        const url = new URL(String(value || ''));
+        return url.protocol === 'https:' && url.hostname === 'res.cloudinary.com';
+    } catch (_) {
+        return false;
+    }
+};
+
 const distanceKm = (lat1, lon1, lat2, lon2) => {
     const toRad = (degrees) => degrees * Math.PI / 180;
     const earthRadiusKm = 6371;
@@ -307,6 +316,9 @@ router.post(
             variants,
             sellerType,
             sellerId,
+            source,
+            aiMetadata,
+            provenance,
             size_data // NEW: Size data from Flutter
         } = req.body;
 
@@ -344,18 +356,22 @@ router.post(
             const uploadedImages = [];
 
             // Main image required
-            if (!req.files.mainImage) {
+            if (!req.files.mainImage && !allowedGeneratedImageUrl(req.body.generatedImageUrl)) {
                 return res.status(400).json({ message: 'Main product image required.' });
             }
 
-            const mainImageFile = req.files.mainImage[0];
-            const mainImageUpload = await cloudinary.uploader.upload(
-                `data:${mainImageFile.mimetype};base64,${mainImageFile.buffer.toString(
-                    'base64'
-                )}`,
-                { folder: 'naijago_products' }
-            );
-            uploadedImages.push(mainImageUpload.secure_url);
+            if (req.files.mainImage) {
+                const mainImageFile = req.files.mainImage[0];
+                const mainImageUpload = await cloudinary.uploader.upload(
+                    `data:${mainImageFile.mimetype};base64,${mainImageFile.buffer.toString(
+                        'base64'
+                    )}`,
+                    { folder: 'naijago_products' }
+                );
+                uploadedImages.push(mainImageUpload.secure_url);
+            } else {
+                uploadedImages.push(req.body.generatedImageUrl);
+            }
 
             // Extra images (optional)
             if (req.files.extraImages && req.files.extraImages.length > 0) {
@@ -464,7 +480,9 @@ router.post(
                 productLocation: buildProductLocation(req.body),
                 is_flashsale: is_flashsale === 'true',
                 productStatus: requestedStatus,
-                source: isAdmin ? 'admin' : 'vendor',
+                source: isAdmin && source === 'ai_assisted' ? 'ai_assisted' : isAdmin ? 'admin' : 'vendor',
+                aiMetadata: isAdmin ? parseJsonField(aiMetadata, {}) : {},
+                provenance: isAdmin ? parseJsonField(provenance, {}) : {},
                 isActive: requestedStatus === 'active' && (!requiresModeration || isAdmin),
                 moderationStatus: requiresModeration && !isAdmin ? 'pending' : 'approved',
                 restaurantName: isRestaurantCategory(category) ? String(restaurantName).trim() : undefined,
@@ -517,6 +535,9 @@ router.post(
                 isPrimary: true,
                 createdBy: req.user._id,
             });
+            if (isAdmin && product.provenance?.verifiedAt) {
+                product.provenance.verifiedBy = req.user._id;
+            }
 
             if (vendor) {
                 vendor.totalProducts = (vendor.totalProducts || 0) + 1;
@@ -676,6 +697,9 @@ router.put(
             searchTags,
             specifications,
             variants,
+            source,
+            aiMetadata,
+            provenance,
             size_data // NEW: Size data from Flutter
         } = req.body;
 
@@ -806,6 +830,14 @@ router.put(
             }
             if (variants !== undefined) {
                 product.variants = typeof variants === 'string' ? JSON.parse(variants || '[]') : variants;
+            }
+            if (isAdmin && source !== undefined) product.source = source;
+            if (isAdmin && aiMetadata !== undefined) {
+                product.aiMetadata = typeof aiMetadata === 'string' ? JSON.parse(aiMetadata || '{}') : aiMetadata;
+            }
+            if (isAdmin && provenance !== undefined) {
+                product.provenance = typeof provenance === 'string' ? JSON.parse(provenance || '{}') : provenance;
+                if (product.provenance?.verifiedAt) product.provenance.verifiedBy = req.user._id;
             }
             if (stockQuantity !== undefined) product.stockQuantity = Number(stockQuantity);
             if (productStatus !== undefined) product.productStatus = productStatus;

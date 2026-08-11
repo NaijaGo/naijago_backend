@@ -63,3 +63,18 @@ test('NaijaGo offer allows nullable seller and vendor offer does not', async () 
   });
   await assert.rejects(vendorOffer.validate(), /Vendor offers require a sellerId/);
 });
+
+test('AI-assisted product cannot activate before human and image-rights verification', async () => {
+  const product = new Product({
+    ...baseProduct(),
+    source: 'ai_assisted',
+    productStatus: 'active',
+    provenance: { imageRightsConfirmed: false },
+  });
+  await assert.rejects(product.validate(), /human verification and confirmed image rights/);
+
+  product.provenance.imageRightsConfirmed = true;
+  product.provenance.verifiedAt = new Date();
+  await product.validate();
+  assert.equal(product.isActive, true);
+});

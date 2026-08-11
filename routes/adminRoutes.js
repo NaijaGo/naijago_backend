@@ -6,6 +6,7 @@ const Dispute = require('../models/DisputeRequest'); // Import the Dispute model
 const Rider = require('../models/Rider');
 const Product = require('../models/Product');
 const ProductOffer = require('../models/ProductOffer');
+const cloudinary = require('../utils/cloudinary');
 const MainOrder = require('../models/MainOrder');
 const Shipment = require('../models/Shipment');
 const NotificationLog = require('../models/NotificationLog');
@@ -35,6 +36,10 @@ const {
     notifyRiderAssignmentOffer,
 } = require('../services/riderAssignmentService');
 const { sendMarketingCampaign } = require('../services/marketingCampaignService');
+const {
+    generateCatalogDrafts,
+    generateCatalogImage,
+} = require('../services/geminiCatalogService');
 const {
     ADMIN_NOTIFICATION_SEGMENTS: SERVICE_NOTIFICATION_SEGMENTS,
     exportRecipients,
@@ -1058,6 +1063,61 @@ router.get('/product-moderation', protect, authorizeAdmin, async (req, res) => {
     } catch (error) {
         console.error('Error fetching product moderation queue:', error);
         res.status(500).json({ message: 'Failed to fetch product moderation queue.' });
+    }
+});
+
+router.get('/catalog-ai/config', protect, authorizeAdmin, (req, res) => {
+    res.json({
+        enabled: Boolean(process.env.GEMINI_API_KEY),
+        catalogModel: process.env.GEMINI_CATALOG_MODEL || 'gemini-3.6-flash',
+        imageModel: process.env.GEMINI_IMAGE_MODEL || 'gemini-3.1-flash-image',
+        maxDraftsPerRequest: 20,
+    });
+});
+
+router.post('/catalog-ai/drafts', protect, authorizeAdmin, async (req, res) => {
+    try {
+        const category = String(req.body.category || '').trim();
+        if (!category) return res.status(400).json({ message: 'Category is required.' });
+        const result = await generateCatalogDrafts({
+            category,
+            subcategory: String(req.body.subcategory || '').trim(),
+            count: req.body.count,
+            market: String(req.body.market || 'Nigeria').trim(),
+        });
+        res.json({
+            ...result,
+            reviewRequired: true,
+            publishRequirements: [
+                'Confirm the exact real product and supplier availability.',
+                'Confirm selling price and physical stock.',
+                'Confirm specifications, fulfilment location, and image rights.',
+            ],
+        });
+    } catch (error) {
+        console.error('Gemini catalogue draft generation failed:', error.response?.data || error.message);
+        res.status(502).json({ message: error.message || 'Unable to generate catalogue drafts.' });
+    }
+});
+
+router.post('/catalog-ai/image', protect, authorizeAdmin, async (req, res) => {
+    try {
+        const prompt = String(req.body.prompt || '').trim();
+        if (!prompt) return res.status(400).json({ message: 'Image prompt is required.' });
+        const generated = await generateCatalogImage({ prompt });
+        const uploaded = await cloudinary.uploader.upload(
+            `data:${generated.mimeType};base64,${generated.data}`,
+            { folder: 'naijago_ai_catalog_drafts', resource_type: 'image' },
+        );
+        res.json({
+            imageUrl: uploaded.secure_url,
+            model: generated.model,
+            aiGenerated: true,
+            reviewRequired: true,
+        });
+    } catch (error) {
+        console.error('Gemini catalogue image generation failed:', error.response?.data || error.message);
+        res.status(502).json({ message: error.message || 'Unable to generate catalogue image.' });
     }
 });
 

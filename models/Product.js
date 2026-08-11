@@ -296,6 +296,13 @@ productSchema.pre('validate', function normalizeSeller(next) {
   if (this.discountPrice != null && this.discountPrice >= this.price) {
     return next(new Error('Discount price must be lower than the regular price.'));
   }
+  if (
+    this.source === 'ai_assisted' &&
+    this.productStatus === 'active' &&
+    (!this.provenance?.verifiedAt || this.provenance?.imageRightsConfirmed !== true)
+  ) {
+    return next(new Error('AI-assisted products require human verification and confirmed image rights before activation.'));
+  }
   if (this.productStatus === 'out_of_stock') this.stockQuantity = 0;
   if (this.stockQuantity <= 0 && this.productStatus === 'active') {
     this.productStatus = 'out_of_stock';
