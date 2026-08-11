@@ -6,6 +6,7 @@ const router = express.Router();
 const MainOrder = require('../models/MainOrder');
 const Shipment = require('../models/Shipment');
 const Product = require('../models/Product');
+const ProductOffer = require('../models/ProductOffer');
 const User = require('../models/User');
 const Rider = require('../models/Rider');
 const CompanyDelivery = require('../models/CompanyDelivery');
@@ -205,6 +206,13 @@ async function settleVerifiedFlutterwaveOrder({ order, buyer, verifiedTx, app, s
                 { $inc: { salesCount: item.quantity, stockQuantity: -item.quantity } },
                 { new: true, session }
             ));
+            if (item.offer) {
+                productUpdates.push(ProductOffer.findOneAndUpdate(
+                    { _id: item.offer, stockQuantity: { $gte: item.quantity } },
+                    { $inc: { stockQuantity: -item.quantity } },
+                    { new: true, session, runValidators: true },
+                ));
+            }
         }
     }
     await Promise.all(productUpdates);
@@ -703,14 +711,24 @@ function formatRadius(value) {
 }
 
 function buildOrderItemFromProduct(item, product) {
+    const authoritativePrice = Number(item.authoritativePrice ?? product.discountPrice ?? product.price);
     return {
         product: item.product,
+        offer: item.offer || null,
+        variantId: item.variantId || null,
+        sku: item.sku || product.sku || '',
         name: item.name || product.name,
         image: product.imageUrls?.[0],
         quantity: item.quantity,
-        price: product.price,
+        price: authoritativePrice,
         selectedSize: item.selectedSize || null,
         category: product.category || 'Uncategorized',
+        productSnapshot: {
+            brand: product.brand || '',
+            description: product.description || '',
+            subcategory: product.subcategory || '',
+            attributes: item.variantAttributes || {},
+        },
         restaurantName: product.restaurantName || undefined,
         foodInformation: product.foodInformation || undefined,
         foodCategory: product.foodCategory || undefined,
@@ -793,7 +811,7 @@ router.post('/summary', protect, async (req, res) => {
     }
     
     try {
-        const vendorCartMap = new Map();
+        const sellerCartMap = new Map();
         let totalSubtotal = 0;
         let totalPlatformFees = 0;
         const deliveryFeeSettings = await getDeliveryFeeSettings();
@@ -802,10 +820,8 @@ router.post('/summary', protect, async (req, res) => {
         // 1. Group items by vendor and calculate subtotal for each vendor
         for (const item of cartItems) {
             // Fetch product, vendor, and category data
-            const [product, vendorUser] = await Promise.all([
-                Product.findById(item.product, 'name price imageUrls vendor category restaurantName foodInformation foodCategory orderStartTime orderEndTime medicineAccess isOverTheCounter requiresPrescription requiresPharmacistApproval'),
-                User.findById(item.vendor, 'businessName businessLocation')
-            ]);
+            const product = await Product.findById(item.product)
+                .populate('vendor', 'businessName businessLocation');
             
             if (!product) {
                 return res.status(404).json({ message: `Product not found: ${item.name}` });
@@ -823,13 +839,34 @@ router.post('/summary', protect, async (req, res) => {
                 });
             }
             
-            const vendorId = product.vendor.toString(); 
-
-            if (!vendorUser || !vendorUser.businessLocation) {
-                 return res.status(404).json({ message: `Vendor or location not found for product: ${item.name}` });
+            const selectedOffer = item.offer
+                ? await ProductOffer.findOne({ _id: item.offer, product: product._id, status: 'active' })
+                    .populate('sellerId', 'businessName businessLocation')
+                : await ProductOffer.findOne({ product: product._id, isPrimary: true, status: 'active' })
+                    .populate('sellerId', 'businessName businessLocation');
+            const sellerType = selectedOffer?.sellerType || (product.vendor ? 'vendor' : product.sellerType || 'naijago');
+            const sellerId = selectedOffer?.sellerId?._id || selectedOffer?.sellerId || product.sellerId || product.vendor?._id || null;
+            const sellerName = sellerType === 'naijago'
+                ? 'NaijaGo'
+                : selectedOffer?.sellerId?.businessName || product.vendor?.businessName || 'Vendor';
+            const sellerLocation = selectedOffer?.fulfilmentLocation?.latitude
+                ? selectedOffer.fulfilmentLocation
+                : sellerType === 'vendor'
+                    ? selectedOffer?.sellerId?.businessLocation || product.vendor?.businessLocation
+                    : product.productLocation;
+            if (!sellerLocation?.latitude || !sellerLocation?.longitude) {
+                return res.status(400).json({
+                    message: `A fulfilment location must be configured for ${product.name}.`,
+                });
+            }
+            const sellerKey = sellerType === 'naijago' ? 'naijago' : `vendor:${sellerId}`;
+            const unitPrice = Number(selectedOffer?.discountPrice ?? selectedOffer?.price ?? product.discountPrice ?? product.price);
+            const availableStock = Number(selectedOffer?.stockQuantity ?? product.stockQuantity);
+            if (availableStock < Number(item.quantity || 1)) {
+                return res.status(400).json({ message: `Insufficient stock for ${product.name}. Available: ${availableStock}` });
             }
 
-            const itemPrice = product.price * item.quantity;
+            const itemPrice = unitPrice * item.quantity;
             totalSubtotal += itemPrice;
 
             // Get category-based commission rate
@@ -838,16 +875,18 @@ router.post('/summary', protect, async (req, res) => {
             const itemCommission = itemPrice * commissionRate;
             totalPlatformFees += itemCommission;
 
-            if (!vendorCartMap.has(vendorId)) {
-                vendorCartMap.set(vendorId, {
-                    vendorId: vendorId,
-                    vendorName: vendorUser.businessName,
+            if (!sellerCartMap.has(sellerKey)) {
+                sellerCartMap.set(sellerKey, {
+                    sellerType,
+                    sellerId,
+                    vendorId: sellerId || '',
+                    vendorName: sellerName,
                     vendorLocation: {
-                        latitude: vendorUser.businessLocation.latitude,
-                        longitude: vendorUser.businessLocation.longitude,
-                        formattedAddress: vendorUser.businessLocation.formattedAddress,
-                        address: vendorUser.businessLocation.address,
-                        addressLine: vendorUser.businessLocation.addressLine,
+                        latitude: sellerLocation.latitude,
+                        longitude: sellerLocation.longitude,
+                        formattedAddress: sellerLocation.formattedAddress,
+                        address: sellerLocation.address,
+                        addressLine: sellerLocation.addressLine,
                     },
                     items: [],
                     subtotal: 0,
@@ -856,9 +895,13 @@ router.post('/summary', protect, async (req, res) => {
                 });
             }
             
-            const vendorData = vendorCartMap.get(vendorId);
+            const vendorData = sellerCartMap.get(sellerKey);
             vendorData.items.push({
-                ...buildOrderItemFromProduct(item, product),
+                ...buildOrderItemFromProduct({
+                    ...item,
+                    offer: selectedOffer?._id || null,
+                    authoritativePrice: unitPrice,
+                }, product),
                 commissionRate: commissionRate, // Store individual commission rate
                 itemCommission: itemCommission, // Store calculated commission
             });
@@ -874,7 +917,7 @@ router.post('/summary', protect, async (req, res) => {
         let totalShippingPrice = 0;
         let originalShippingPrice = 0;
 
-        for (const data of vendorCartMap.values()) {
+        for (const data of sellerCartMap.values()) {
             const vendorLocation = data.vendorLocation;
             
             // Calculate Distance (Haversine)
@@ -897,6 +940,9 @@ router.post('/summary', protect, async (req, res) => {
             originalShippingPrice += shippingPrice;
 
             shipmentSummaries.push({
+                sellerType: data.sellerType,
+                sellerId: data.sellerId,
+                sellerName: data.vendorName,
                 vendorId: data.vendorId,
                 vendorName: data.vendorName,
                 vendorLocation: vendorLocation, 
@@ -1053,6 +1099,8 @@ router.post('/', protect, async (req, res) => {
             let summaryPlatformFee = 0;
             let summaryVendorLocation = summary.vendorLocation || {};
             let summaryVendorId = summary.vendor || summary.vendorId;
+            let summarySellerType = summary.sellerType || (summaryVendorId ? 'vendor' : 'naijago');
+            let summarySellerId = summary.sellerId || summaryVendorId || null;
             if (!Array.isArray(summary.items) || summary.items.length === 0) {
                 await session.abortTransaction();
                 session.endSession();
@@ -1068,10 +1116,14 @@ router.post('/', protect, async (req, res) => {
                     session.endSession();
                     return res.status(404).json({ message: `Product not found: ${item.name}` });
                 }
-                if (product.stockQuantity < item.quantity) {
+                const selectedOffer = item.offer
+                    ? await ProductOffer.findOne({ _id: item.offer, product: product._id, status: 'active' }).session(session)
+                    : await ProductOffer.findOne({ product: product._id, isPrimary: true, status: 'active' }).session(session);
+                const availableStock = Number(selectedOffer?.stockQuantity ?? product.stockQuantity);
+                if (availableStock < item.quantity) {
                     await session.abortTransaction();
                     session.endSession();
-                    return res.status(400).json({ message: `Insufficient stock for ${product.name}. Available: ${product.stockQuantity}` });
+                    return res.status(400).json({ message: `Insufficient stock for ${product.name}. Available: ${availableStock}` });
                 }
                 if (isRestrictedMedicine(product)) {
                     await session.abortTransaction();
@@ -1118,19 +1170,30 @@ router.post('/', protect, async (req, res) => {
                 if (!summaryVendorLocation?.latitude && product.vendor?.businessLocation) {
                     summaryVendorLocation = product.vendor.businessLocation;
                 }
+                if (!summaryVendorLocation?.latitude && product.productLocation?.latitude) {
+                    summaryVendorLocation = product.productLocation;
+                }
                 if (!summaryVendorId && product.vendor?._id) {
                     summaryVendorId = product.vendor._id;
                 }
+                summarySellerType = selectedOffer?.sellerType || (product.vendor ? 'vendor' : product.sellerType || summarySellerType);
+                summarySellerId = selectedOffer?.sellerId || product.sellerId || summarySellerId;
 
                 const safeQuantity = Math.max(1, Number(item.quantity || 1));
                 const commissionRate = getCommissionRateForCategory(product.category || 'Uncategorized');
-                const itemSubtotal = Number(product.price || 0) * safeQuantity;
+                const authoritativePrice = Number(selectedOffer?.discountPrice ?? selectedOffer?.price ?? product.discountPrice ?? product.price ?? 0);
+                const itemSubtotal = authoritativePrice * safeQuantity;
                 const itemCommission = itemSubtotal * commissionRate;
 
                 summarySubtotal += itemSubtotal;
                 summaryPlatformFee += itemCommission;
 
-                Object.assign(item, buildOrderItemFromProduct({ ...item, quantity: safeQuantity }, product), {
+                Object.assign(item, buildOrderItemFromProduct({
+                    ...item,
+                    quantity: safeQuantity,
+                    offer: selectedOffer?._id || null,
+                    authoritativePrice,
+                }, product), {
                     commissionRate,
                     itemCommission: parseFloat(itemCommission.toFixed(2)),
                 });
@@ -1159,6 +1222,9 @@ router.post('/', protect, async (req, res) => {
 
             summary.vendor = summaryVendorId;
             summary.vendorId = summaryVendorId;
+            summary.sellerType = summarySellerType;
+            summary.sellerId = summarySellerId;
+            summary.sellerName = summary.sellerName || (summarySellerType === 'naijago' ? 'NaijaGo' : summary.vendorName || 'Vendor');
             summary.vendorLocation = summaryVendorLocation;
             summary.subtotal = parseFloat(summarySubtotal.toFixed(2));
             summary.platformFee = parseFloat(summaryPlatformFee.toFixed(2));
@@ -1252,16 +1318,23 @@ router.post('/', protect, async (req, res) => {
 
             const newShipment = new Shipment({
                 mainOrder: createdMainOrder._id,
-                vendor: summaryVendorId,
+                sellerType: summary.sellerType || (summaryVendorId ? 'vendor' : 'naijago'),
+                sellerId: summary.sellerId || summaryVendorId || null,
+                sellerName: summary.sellerName || summary.vendorName || 'NaijaGo',
+                vendor: summary.sellerType === 'naijago' ? null : summaryVendorId,
                 vendorLocation,
                 items: summary.items.map(item => ({
                     product: item.product,
+                    offer: item.offer || null,
+                    variantId: item.variantId || null,
+                    sku: item.sku || '',
                     name: item.name,
                     image: item.image,
                     quantity: item.quantity,
                     price: item.price,
                     selectedSize: item.selectedSize || null,
                     category: item.category, // Store category
+                    productSnapshot: item.productSnapshot || {},
                     commissionRate: item.commissionRate, // Store individual item commission rate
                     restaurantName: item.restaurantName,
                     foodInformation: item.foodInformation,
@@ -1718,13 +1791,22 @@ router.put('/:id/pay/wallet', protect, async (req, res) => {
             // Stock updates
             for (const item of shipment.items) {
                 const soldCount = item.quantity;
-                productUpdates.push(
-                    Product.findByIdAndUpdate(
+                    productUpdates.push(
+                        Product.findByIdAndUpdate(
                         item.product,
                         { $inc: { salesCount: soldCount, stockQuantity: -soldCount } },
                         { new: true, session }
-                    )
-                );
+                        )
+                    );
+                    if (item.offer) {
+                        productUpdates.push(
+                            ProductOffer.findOneAndUpdate(
+                                { _id: item.offer, stockQuantity: { $gte: soldCount } },
+                                { $inc: { stockQuantity: -soldCount } },
+                                { new: true, session, runValidators: true },
+                            )
+                        );
+                    }
             }
         }
         await Promise.all(productUpdates);

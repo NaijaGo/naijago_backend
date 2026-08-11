@@ -11,6 +11,15 @@ const ShipmentItemSchema = new mongoose.Schema({
     image: { type: String, required: true },
     quantity: { type: Number, required: true, min: 1 },
     price: { type: Number, required: true, min: 0 }, // Price at time of order
+    offer: { type: mongoose.Schema.Types.ObjectId, ref: 'ProductOffer', default: null },
+    variantId: { type: mongoose.Schema.Types.ObjectId, default: null },
+    sku: { type: String, trim: true, default: '' },
+    productSnapshot: {
+        brand: { type: String, trim: true, default: '' },
+        description: { type: String, default: '' },
+        subcategory: { type: String, default: '' },
+        attributes: { type: Map, of: String, default: {} },
+    },
     selectedSize: {  // NEW FIELD: Store selected size/variant
         type: mongoose.Schema.Types.Mixed, // Can be String, Object, or null
         default: null,
@@ -46,15 +55,33 @@ const ShipmentSchema = new mongoose.Schema({
         index: true
     },
     
-    // The specific vendor fulfilling this package
+    // Seller snapshot is immutable order history. Vendor remains for legacy
+    // settlement queries and is nullable for NaijaGo-fulfilled shipments.
+    sellerType: {
+        type: String,
+        enum: ['naijago', 'vendor'],
+        required: true,
+        default: 'vendor',
+        index: true,
+    },
+    sellerId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+        default: null,
+        index: true,
+    },
+    sellerName: { type: String, trim: true, default: 'NaijaGo' },
+
+    // The specific vendor fulfilling this package (legacy compatibility)
     vendor: { 
         type: mongoose.Schema.Types.ObjectId,
         ref: 'User', 
-        required: true,
+        required: false,
+        default: null,
     },
     vendorLocation: { // Vendor's coordinates
-        latitude: { type: Number, required: true },
-        longitude: { type: Number, required: true },
+        latitude: { type: Number },
+        longitude: { type: Number },
         formattedAddress: { type: String, trim: true },
         address: { type: String, trim: true },
         addressLine: { type: String, trim: true },
@@ -120,6 +147,7 @@ ShipmentSchema.index({ company: 1, mainOrder: 1 });
 ShipmentSchema.index({ deliveredAt: 1, company: 1 });
 ShipmentSchema.index({ mainOrder: 1, shipmentStatus: 1 });
 ShipmentSchema.index({ vendor: 1, createdAt: -1 });
+ShipmentSchema.index({ sellerType: 1, sellerId: 1, createdAt: -1 });
 ShipmentSchema.index({ vendor: 1, shipmentStatus: 1, createdAt: -1 });
 ShipmentSchema.index({ vendor: 1, vendorPaidAt: 1 });
 ShipmentSchema.index({ rider: 1, shipmentStatus: 1, createdAt: -1 });

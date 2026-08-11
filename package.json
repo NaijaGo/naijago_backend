@@ -4,6 +4,7 @@
   "main": "index.js",
   "scripts": {
     "test": "node --test",
+    "catalog:migrate": "node scripts/migrateCatalogSellers.js",
     "start": "nodemon server.js",
     "worker:scheduled-notifications": "node workers/scheduledNotificationWorker.js"
   },

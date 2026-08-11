@@ -9,6 +9,8 @@ const productSchema = mongoose.Schema(
       required: true,
       trim: true,
     },
+    slug: { type: String, trim: true, lowercase: true, index: true },
+    brand: { type: String, trim: true, default: '' },
     description: {
       type: String,
       required: true,
@@ -22,11 +24,26 @@ const productSchema = mongoose.Schema(
       type: String,
       required: true,
     },
+    subcategory: { type: String, trim: true, default: '', index: true },
+    searchTags: [{ type: String, trim: true, lowercase: true }],
+    sku: { type: String, trim: true, uppercase: true },
+    gtin: { type: String, trim: true },
+    discountPrice: { type: Number, default: null, min: 0 },
     stockQuantity: {
       type: Number,
       required: true,
       default: 0,
     },
+    variants: [{
+      sku: { type: String, trim: true, uppercase: true },
+      name: { type: String, trim: true },
+      attributes: { type: Map, of: String, default: {} },
+      price: { type: Number, min: 0 },
+      discountPrice: { type: Number, min: 0, default: null },
+      stockQuantity: { type: Number, min: 0, default: 0 },
+      imageUrls: [{ type: String, trim: true }],
+      isActive: { type: Boolean, default: true },
+    }],
 
     // ------------------------------
     // SIZE DATA FOR MULTIPLE SIZES
@@ -92,11 +109,33 @@ const productSchema = mongoose.Schema(
     },
     // ------------------------------
 
+    // Durable seller fields. `vendor` remains temporarily for old clients.
+    sellerType: {
+      type: String,
+      enum: ['naijago', 'vendor'],
+      default: 'naijago',
+      required: true,
+      index: true,
+    },
+    sellerId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+      index: true,
+    },
     vendor: {
       type: mongoose.Schema.Types.ObjectId,
-      required: true,
+      required: false,
       ref: 'User',
+      default: null,
     },
+    sellerHistory: [{
+      sellerType: { type: String, enum: ['naijago', 'vendor'], required: true },
+      sellerId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+      changedAt: { type: Date, default: Date.now },
+      changedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+      reason: { type: String, trim: true, default: '' },
+    }],
     productLocation: {
       latitude: { type: Number },
       longitude: { type: Number },
@@ -165,6 +204,35 @@ const productSchema = mongoose.Schema(
       type: Boolean,
       default: true,
     },
+    productStatus: {
+      type: String,
+      enum: ['active', 'out_of_stock', 'disabled', 'draft'],
+      default: 'active',
+      index: true,
+    },
+    specifications: { type: Map, of: String, default: {} },
+    source: {
+      type: String,
+      enum: ['vendor', 'naijago_catalog', 'admin', 'import', 'ai_assisted'],
+      default: 'vendor',
+    },
+    provenance: {
+      sourceName: { type: String, trim: true, default: '' },
+      sourceUrl: { type: String, trim: true, default: '' },
+      supplierReference: { type: String, trim: true, default: '' },
+      imageRightsConfirmed: { type: Boolean, default: false },
+      verifiedAt: { type: Date, default: null },
+      verifiedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    },
+    aiMetadata: {
+      assisted: { type: Boolean, default: false },
+      provider: { type: String, trim: true, default: '' },
+      model: { type: String, trim: true, default: '' },
+      generationId: { type: String, trim: true, default: '' },
+      generatedAt: { type: Date, default: null },
+      reviewedAt: { type: Date, default: null },
+      reviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    },
     moderationStatus: {
       type: String,
       enum: ['approved', 'pending', 'rejected'],
@@ -214,13 +282,39 @@ productSchema.virtual('availableSizes').get(function () {
 productSchema.set('toJSON', { virtuals: true });
 productSchema.set('toObject', { virtuals: true });
 
+productSchema.pre('validate', function normalizeSeller(next) {
+  if (this.vendor && !this.sellerId) this.sellerId = this.vendor;
+  if (this.sellerId && !this.vendor) this.vendor = this.sellerId;
+  if (this.sellerId || this.vendor) this.sellerType = 'vendor';
+
+  if (this.sellerType === 'naijago') {
+    this.sellerId = null;
+    this.vendor = null;
+  } else if (!this.sellerId) {
+    return next(new Error('Vendor products require a sellerId.'));
+  }
+  if (this.discountPrice != null && this.discountPrice >= this.price) {
+    return next(new Error('Discount price must be lower than the regular price.'));
+  }
+  if (this.productStatus === 'out_of_stock') this.stockQuantity = 0;
+  if (this.stockQuantity <= 0 && this.productStatus === 'active') {
+    this.productStatus = 'out_of_stock';
+  }
+  this.isActive = this.productStatus === 'active' && this.moderationStatus === 'approved';
+  next();
+});
+
 productSchema.index({ vendor: 1, createdAt: -1 });
+productSchema.index({ sellerType: 1, sellerId: 1, createdAt: -1 });
+productSchema.index({ category: 1, subcategory: 1, productStatus: 1, createdAt: -1 });
+productSchema.index({ sku: 1 }, { unique: true, sparse: true });
+productSchema.index({ gtin: 1 }, { unique: true, sparse: true });
 productSchema.index({ vendor: 1, isActive: 1, createdAt: -1 });
 productSchema.index({ isActive: 1, category: 1, createdAt: -1 });
 productSchema.index({ isActive: 1, is_flashsale: 1, createdAt: -1 });
 productSchema.index({ moderationStatus: 1, createdAt: -1 });
 productSchema.index({ salesCount: -1, createdAt: -1 });
-productSchema.index({ name: 'text', description: 'text', category: 'text', restaurantName: 'text' });
+productSchema.index({ name: 'text', description: 'text', brand: 'text', category: 'text', subcategory: 'text', searchTags: 'text', restaurantName: 'text' });
 
 const Product = mongoose.model('Product', productSchema);
 

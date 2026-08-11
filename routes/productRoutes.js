@@ -3,6 +3,7 @@
 const express = require('express');
 const router = express.Router();
 const Product = require('../models/Product');
+const ProductOffer = require('../models/ProductOffer');
 const Shipment = require('../models/Shipment');
 const User = require('../models/User');
 const { protect, authorizeRoles } = require('../middleware/authMiddleware');
@@ -156,6 +157,44 @@ const buildCategoryFilter = (category) => {
     return buildHierarchicalCategoryFilter(category);
 };
 
+const attachPrimaryOffers = async (products) => {
+    const list = Array.isArray(products) ? products : [products];
+    const productIds = list.filter(Boolean).map((product) => product._id);
+    if (!productIds.length) return Array.isArray(products) ? [] : products;
+    const offers = await ProductOffer.find({
+        product: { $in: productIds },
+        status: { $in: ['active', 'out_of_stock'] },
+    })
+        .populate('sellerId', vendorPopulateFields)
+        .sort({ isPrimary: -1, price: 1 })
+        .lean();
+    const byProduct = new Map();
+    for (const offer of offers) {
+        const key = String(offer.product);
+        if (!byProduct.has(key)) byProduct.set(key, []);
+        byProduct.get(key).push(offer);
+    }
+    const enriched = list.map((product) => {
+        const availableOffers = byProduct.get(String(product._id)) || [];
+        const selectedOffer = availableOffers.find((offer) => offer.isPrimary) || availableOffers[0] || null;
+        return {
+            ...product,
+            offers: availableOffers,
+            selectedOffer,
+            sellerType: selectedOffer?.sellerType || (product.vendor ? 'vendor' : product.sellerType || 'naijago'),
+            sellerId: selectedOffer?.sellerId?._id || selectedOffer?.sellerId || product.sellerId || product.vendor?._id || product.vendor || null,
+            sellerName: selectedOffer?.sellerType === 'naijago'
+                ? 'NaijaGo'
+                : selectedOffer?.sellerId?.businessName || product.vendor?.businessName || 'Vendor',
+            effectivePrice: selectedOffer?.discountPrice ?? selectedOffer?.price ?? product.discountPrice ?? product.price,
+            price: selectedOffer?.price ?? product.price,
+            discountPrice: selectedOffer?.discountPrice ?? product.discountPrice ?? null,
+            stockQuantity: selectedOffer?.stockQuantity ?? product.stockQuantity,
+        };
+    });
+    return Array.isArray(products) ? enriched : enriched[0];
+};
+
 const escapeRegex = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 const distanceKm = (lat1, lon1, lat2, lon2) => {
@@ -236,7 +275,7 @@ const matchesRestaurantMeal = (product, mealType = '') => {
 router.post(
     '/',
     protect,
-    authorizeRoles('vendor'),
+    authorizeRoles('vendor', 'admin'),
     multiUpload,
     async (req, res) => {
         console.log('POST /api/products hit');
@@ -257,10 +296,21 @@ router.post(
             isOverTheCounter,
             requiresPrescription,
             requiresPharmacistApproval,
+            brand,
+            subcategory,
+            discountPrice,
+            productStatus,
+            sku,
+            gtin,
+            searchTags,
+            specifications,
+            variants,
+            sellerType,
+            sellerId,
             size_data // NEW: Size data from Flutter
         } = req.body;
 
-        if (!name || !description || !price || !category || !stockQuantity) {
+        if (!name || !description || price === undefined || !category || stockQuantity === undefined) {
             return res.status(400).json({
                 message:
                     'Please enter all product details (name, description, price, category, stock quantity).',
@@ -268,14 +318,15 @@ router.post(
         }
 
         try {
-            const vendor = await User.findById(req.user._id);
-            if (!vendor || !vendor.isVendor || vendor.vendorStatus !== 'approved') {
+            const isAdmin = req.user.role === 'admin';
+            const vendor = isAdmin ? null : await User.findById(req.user._id);
+            if (!isAdmin && (!vendor || !vendor.isVendor || vendor.vendorStatus !== 'approved')) {
                 return res.status(403).json({
                     message: 'Only approved vendors can add products.',
                 });
             }
 
-            if (isMedicineCategory(category) && vendor.role !== 'pharmacist') {
+            if (!isAdmin && isMedicineCategory(category) && vendor.role !== 'pharmacist') {
                 return res.status(403).json({
                     message: 'Medicine listings are only available to approved pharmacist vendors.',
                 });
@@ -359,19 +410,53 @@ router.post(
             }
 
             const requiresModeration = requiresProductModeration(category);
+            const requestedSellerType = isAdmin && sellerType === 'vendor' ? 'vendor' : isAdmin ? 'naijago' : 'vendor';
+            const requestedSellerId = requestedSellerType === 'vendor'
+                ? (isAdmin ? sellerId : req.user._id)
+                : null;
+            if (requestedSellerType === 'vendor' && !requestedSellerId) {
+                return res.status(400).json({ message: 'A seller is required for vendor products.' });
+            }
+            const parseJsonField = (value, fallback) => {
+                if (value == null || value === '') return fallback;
+                if (typeof value !== 'string') return value;
+                try { return JSON.parse(value); } catch (_) { return fallback; }
+            };
+            const parsedTags = Array.isArray(searchTags)
+                ? searchTags
+                : String(searchTags || '').split(',').map((tag) => tag.trim()).filter(Boolean);
+            const requestedStatus = productStatus || (requiresModeration && !isAdmin ? 'draft' : 'active');
             const product = new Product({
                 name,
                 description,
-                price,
+                brand,
+                price: Number(price),
+                discountPrice: discountPrice === undefined || discountPrice === '' ? null : Number(discountPrice),
                 category,
-                stockQuantity,
+                subcategory: subcategory || '',
+                searchTags: parsedTags,
+                sku,
+                gtin,
+                specifications: parseJsonField(specifications, {}),
+                variants: parseJsonField(variants, []),
+                stockQuantity: Number(stockQuantity),
                 imageUrls: uploadedImages,
                 sizeData, // NEW: Add size data to product
-                vendor: req.user._id,
+                sellerType: requestedSellerType,
+                sellerId: requestedSellerId,
+                vendor: requestedSellerId,
+                sellerHistory: [{
+                    sellerType: requestedSellerType,
+                    sellerId: requestedSellerId,
+                    changedBy: req.user._id,
+                    reason: 'Product created',
+                }],
                 productLocation: buildProductLocation(req.body),
                 is_flashsale: is_flashsale === 'true',
-                isActive: !requiresModeration,
-                moderationStatus: requiresModeration ? 'pending' : 'approved',
+                productStatus: requestedStatus,
+                source: isAdmin ? 'admin' : 'vendor',
+                isActive: requestedStatus === 'active' && (!requiresModeration || isAdmin),
+                moderationStatus: requiresModeration && !isAdmin ? 'pending' : 'approved',
                 restaurantName: isRestaurantCategory(category) ? String(restaurantName).trim() : undefined,
                 foodInformation: isRestaurantCategory(category)
                     ? String(foodInformation || description).trim()
@@ -401,6 +486,28 @@ router.post(
 
             const createdProduct = await product.save();
 
+            await ProductOffer.create({
+                product: createdProduct._id,
+                sellerType: requestedSellerType,
+                sellerId: requestedSellerId,
+                sku: createdProduct.sku || undefined,
+                price: createdProduct.price,
+                discountPrice: createdProduct.discountPrice,
+                stockQuantity: createdProduct.stockQuantity,
+                status: createdProduct.productStatus,
+                fulfilmentLocation: createdProduct.productLocation,
+                variants: (createdProduct.variants || []).map((variant) => ({
+                    productVariantId: variant._id,
+                    sku: variant.sku,
+                    price: variant.price ?? createdProduct.price,
+                    discountPrice: variant.discountPrice,
+                    stockQuantity: variant.stockQuantity,
+                    isActive: variant.isActive,
+                })),
+                isPrimary: true,
+                createdBy: req.user._id,
+            });
+
             if (vendor) {
                 vendor.totalProducts = (vendor.totalProducts || 0) + 1;
                 vendor.productsUnsold =
@@ -421,6 +528,89 @@ router.post(
             res.status(500).json({ message: 'Server error adding product.' });
         }
     }
+);
+
+// Change the active seller without replacing the catalogue product or order history.
+router.patch(
+    '/:id/seller',
+    protect,
+    authorizeRoles('admin'),
+    async (req, res) => {
+        const session = await Product.startSession();
+        session.startTransaction();
+        try {
+            const nextSellerType = req.body.sellerType === 'vendor' ? 'vendor' : 'naijago';
+            const nextSellerId = nextSellerType === 'vendor' ? req.body.sellerId : null;
+            if (nextSellerType === 'vendor' && !nextSellerId) {
+                await session.abortTransaction();
+                return res.status(400).json({ message: 'sellerId is required for vendor ownership.' });
+            }
+            if (nextSellerId) {
+                const seller = await User.findOne({
+                    _id: nextSellerId,
+                    isVendor: true,
+                    vendorStatus: 'approved',
+                }).session(session);
+                if (!seller) {
+                    await session.abortTransaction();
+                    return res.status(400).json({ message: 'Select an approved vendor.' });
+                }
+            }
+
+            const product = await Product.findById(req.params.id).session(session);
+            if (!product) {
+                await session.abortTransaction();
+                return res.status(404).json({ message: 'Product not found.' });
+            }
+
+            await ProductOffer.updateMany(
+                { product: product._id, isPrimary: true },
+                { $set: { isPrimary: false, status: 'disabled', updatedBy: req.user._id } },
+                { session },
+            );
+            await ProductOffer.findOneAndUpdate(
+                { product: product._id, sellerType: nextSellerType, sellerId: nextSellerId },
+                {
+                    $set: {
+                        price: Number(req.body.price ?? product.price),
+                        discountPrice: req.body.discountPrice ?? product.discountPrice,
+                        stockQuantity: Number(req.body.stockQuantity ?? product.stockQuantity),
+                        status: req.body.productStatus || product.productStatus,
+                        fulfilmentLocation: req.body.fulfilmentLocation || product.productLocation,
+                        isPrimary: true,
+                        updatedBy: req.user._id,
+                    },
+                    $setOnInsert: { createdBy: req.user._id },
+                },
+                { upsert: true, new: true, runValidators: true, session },
+            );
+
+            product.sellerType = nextSellerType;
+            product.sellerId = nextSellerId;
+            product.vendor = nextSellerId;
+            product.sellerHistory.push({
+                sellerType: nextSellerType,
+                sellerId: nextSellerId,
+                changedBy: req.user._id,
+                reason: String(req.body.reason || 'Seller reassigned').trim(),
+            });
+            if (req.body.price !== undefined) product.price = Number(req.body.price);
+            if (req.body.discountPrice !== undefined) product.discountPrice = req.body.discountPrice;
+            if (req.body.stockQuantity !== undefined) product.stockQuantity = Number(req.body.stockQuantity);
+            if (req.body.productStatus !== undefined) product.productStatus = req.body.productStatus;
+            await product.save({ session });
+
+            await session.commitTransaction();
+            await product.populate('vendor', vendorPopulateFields);
+            return res.json({ message: 'Product seller updated.', product });
+        } catch (error) {
+            await session.abortTransaction().catch(() => {});
+            console.error('Product seller update failed:', error);
+            return res.status(500).json({ message: error.message || 'Unable to update product seller.' });
+        } finally {
+            session.endSession();
+        }
+    },
 );
 
 // Helper function to get default unit for size type
@@ -446,7 +636,7 @@ function getDefaultUnit(type) {
 router.put(
     '/:id',
     protect,
-    authorizeRoles('vendor'),
+    authorizeRoles('vendor', 'admin'),
     multiUpload,
     async (req, res) => {
         console.log('PUT /api/products/:id hit');
@@ -467,6 +657,15 @@ router.put(
             isOverTheCounter,
             requiresPrescription,
             requiresPharmacistApproval,
+            brand,
+            subcategory,
+            discountPrice,
+            productStatus,
+            sku,
+            gtin,
+            searchTags,
+            specifications,
+            variants,
             size_data // NEW: Size data from Flutter
         } = req.body;
 
@@ -477,14 +676,15 @@ router.put(
                 return res.status(404).json({ message: 'Product not found.' });
             }
 
-            if (product.vendor.toString() !== req.user._id.toString()) {
+            const isAdmin = req.user.role === 'admin';
+            if (!isAdmin && String(product.sellerId || product.vendor || '') !== req.user._id.toString()) {
                 return res.status(401).json({
                     message: 'Not authorized to update this product.',
                 });
             }
 
             const hasOrders = await Shipment.exists({ 'items.product': product._id });
-            if (hasOrders) {
+            if (hasOrders && !isAdmin) {
                 return res.status(409).json({
                     code: 'PRODUCT_HAS_ORDERS',
                     message: 'This product has order history and can no longer be edited. Archive it instead.',
@@ -578,8 +778,27 @@ router.put(
             if (name !== undefined) product.name = String(name).trim();
             if (description !== undefined) product.description = String(description).trim();
             if (price !== undefined) product.price = Number(price);
+            if (discountPrice !== undefined) product.discountPrice = discountPrice === '' ? null : Number(discountPrice);
+            if (brand !== undefined) product.brand = String(brand).trim();
             if (category !== undefined) product.category = String(category).trim();
+            if (subcategory !== undefined) product.subcategory = String(subcategory).trim();
+            if (sku !== undefined) product.sku = String(sku).trim();
+            if (gtin !== undefined) product.gtin = String(gtin).trim();
+            if (searchTags !== undefined) {
+                product.searchTags = Array.isArray(searchTags)
+                    ? searchTags
+                    : String(searchTags).split(',').map((tag) => tag.trim()).filter(Boolean);
+            }
+            if (specifications !== undefined) {
+                product.specifications = typeof specifications === 'string'
+                    ? JSON.parse(specifications || '{}')
+                    : specifications;
+            }
+            if (variants !== undefined) {
+                product.variants = typeof variants === 'string' ? JSON.parse(variants || '[]') : variants;
+            }
             if (stockQuantity !== undefined) product.stockQuantity = Number(stockQuantity);
+            if (productStatus !== undefined) product.productStatus = productStatus;
             product.imageUrls = updatedImageUrls;
             product.sizeData = sizeData; // NEW: Update size data
             const nextProductLocation = buildProductLocation(req.body);
@@ -632,6 +851,26 @@ router.put(
             }
 
             const updatedProduct = await product.save();
+            await ProductOffer.findOneAndUpdate(
+                {
+                    product: updatedProduct._id,
+                    sellerType: updatedProduct.sellerType,
+                    sellerId: updatedProduct.sellerId || null,
+                },
+                {
+                    $set: {
+                        sku: updatedProduct.sku || undefined,
+                        price: updatedProduct.price,
+                        discountPrice: updatedProduct.discountPrice,
+                        stockQuantity: updatedProduct.stockQuantity,
+                        status: updatedProduct.productStatus,
+                        fulfilmentLocation: updatedProduct.productLocation,
+                        updatedBy: req.user._id,
+                    },
+                    $setOnInsert: { isPrimary: true, createdBy: req.user._id },
+                },
+                { upsert: true, new: true, runValidators: true },
+            );
             await updatedProduct.populate('vendor', vendorPopulateFields);
 
             res.status(200).json({
@@ -768,14 +1007,19 @@ router.get('/search', async (req, res) => {
       $or: [
         { name: { $regex: searchTerm, $options: 'i' } },
         { description: { $regex: searchTerm, $options: 'i' } },
+        { brand: { $regex: searchTerm, $options: 'i' } },
+        { category: { $regex: searchTerm, $options: 'i' } },
+        { subcategory: { $regex: searchTerm, $options: 'i' } },
+        { searchTags: { $regex: searchTerm, $options: 'i' } },
       ]
     })
       .populate('vendor', vendorPopulateFields)
-      .limit(50);
+      .limit(50)
+      .lean();
 
     console.log(`Search for "${searchTerm}" → found ${products.length} products`);
 
-    res.status(200).json(products);
+    res.status(200).json(await attachPrimaryOffers(products));
   } catch (error) {
     console.error('Search error:', error);
     res.status(500).json({ message: 'Error performing search' });
@@ -912,11 +1156,11 @@ router.get('/restaurants', async (req, res) => {
 // @desc    Get a single product by ID
 router.get('/:id', async (req, res) => {
     try {
-        const product = await Product.findById(req.params.id).populate('vendor', vendorPopulateFields);
+        const product = await Product.findById(req.params.id).populate('vendor', vendorPopulateFields).lean();
         if (!product) {
             return res.status(404).json({ message: 'Product not found.' });
         }
-        res.status(200).json(product);
+        res.status(200).json(await attachPrimaryOffers(product));
     } catch (error) {
         console.error('Error fetching single product:', error);
         if (error.name === 'CastError') {
@@ -930,7 +1174,7 @@ router.get('/:id', async (req, res) => {
 router.get('/', async (req, res) => {
   try {
     const { page, limit, skip } = parsePagination(req.query, { defaultLimit: 50, maxLimit: 300 });
-    const { category } = req.query;
+    const { category, subcategory, brand } = req.query;
     const queryText = String(req.query.query || req.query.q || '').trim();
     const sort = String(req.query.sort || 'newest').trim().toLowerCase();
     const lat = req.query.lat !== undefined ? Number(req.query.lat) : null;
@@ -941,6 +1185,8 @@ router.get('/', async (req, res) => {
     if (category) {
       Object.assign(filter, buildCategoryFilter(category));
     }
+    if (subcategory) filter.subcategory = { $regex: `^${escapeRegex(subcategory)}$`, $options: 'i' };
+    if (brand) filter.brand = { $regex: `^${escapeRegex(brand)}$`, $options: 'i' };
 
     const priceFilter = buildPriceFilter(req.query.minPrice, req.query.maxPrice);
     if (priceFilter) filter.price = priceFilter;
@@ -959,7 +1205,10 @@ router.get('/', async (req, res) => {
       filter.$or = [
         { name: { $regex: escapedQuery, $options: 'i' } },
         { description: { $regex: escapedQuery, $options: 'i' } },
+        { brand: { $regex: escapedQuery, $options: 'i' } },
         { category: { $regex: escapedQuery, $options: 'i' } },
+        { subcategory: { $regex: escapedQuery, $options: 'i' } },
+        { searchTags: { $regex: escapedQuery, $options: 'i' } },
         { restaurantName: { $regex: escapedQuery, $options: 'i' } },
       ];
     }
@@ -1017,7 +1266,7 @@ router.get('/', async (req, res) => {
     const total = await Product.countDocuments(filter);
     res.set('X-Total-Count', String(total));
     res.set('X-Page', String(page));
-    res.status(200).json(responseProducts);
+    res.status(200).json(await attachPrimaryOffers(responseProducts));
   } catch (error) {
     console.error('Error fetching products:', error);
     res.status(500).json({ message: 'Server error fetching products.' });
