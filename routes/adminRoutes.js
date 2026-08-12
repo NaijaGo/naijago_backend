@@ -1117,7 +1117,12 @@ router.post('/catalog-ai/image', protect, authorizeAdmin, async (req, res) => {
         });
     } catch (error) {
         console.error('Gemini catalogue image generation failed:', error.response?.data || error.message);
-        res.status(502).json({ message: error.message || 'Unable to generate catalogue image.' });
+        const timedOut = error.code === 'ECONNABORTED' || String(error.message || '').includes('timeout');
+        res.status(timedOut ? 504 : 502).json({
+            message: timedOut
+                ? 'Image generation is taking too long. Please retry once or upload a real product photo.'
+                : error.message || 'Unable to generate catalogue image.',
+        });
     }
 });
 

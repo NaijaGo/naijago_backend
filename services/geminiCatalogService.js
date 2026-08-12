@@ -122,7 +122,7 @@ async function generateCatalogImage({ prompt }) {
       input: `${prompt}\nSquare 1:1 professional ecommerce catalogue image, centered product, neutral light background, accurate proportions, no extra objects, no invented labels or readable brand text. This is an AI-assisted draft and must be checked against the real product before publishing.`,
       response_format: { type: 'image', mime_type: 'image/jpeg', aspect_ratio: '1:1', image_size: '1K' },
     },
-    { headers: { 'x-goog-api-key': apiKey, 'Content-Type': 'application/json' }, timeout: 120000 },
+    { headers: { 'x-goog-api-key': apiKey, 'Content-Type': 'application/json' }, timeout: 300000 },
   );
   const image = findOutputImage(response.data);
   if (!image) throw new Error('Gemini returned no product image.');
