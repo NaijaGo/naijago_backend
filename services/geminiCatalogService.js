@@ -43,6 +43,24 @@ const requireApiKey = () => {
   return apiKey;
 };
 
+const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+async function postGemini(url, body, options, { attempts = 3 } = {}) {
+  let lastError;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await axios.post(url, body, options);
+    } catch (error) {
+      lastError = error;
+      const status = error.response?.status;
+      const retryable = status === 429 || status === 500 || status === 502 || status === 503 || status === 504;
+      if (!retryable || attempt === attempts) throw error;
+      await wait(attempt * 2500);
+    }
+  }
+  throw lastError;
+}
+
 const responseText = (data) =>
   data?.candidates?.flatMap((candidate) => candidate.content?.parts || [])
     .find((part) => typeof part.text === 'string')?.text || data?.output_text || '';
@@ -64,7 +82,7 @@ async function generateCatalogDrafts({ category, subcategory, count, market = 'N
   const prompt = `Research and propose ${safeCount} REAL, currently identifiable retail products for NaijaGo in ${market}.
 Category: ${category}. Subcategory: ${subcategory || 'Choose the most relevant subcategory'}.
 Do not invent brands, model names, specifications, certifications, availability, or prices. Prefer manufacturer and reputable retailer sources. Return only products you can identify with evidence. Prices are estimates only and must be marked for admin verification. Every product will remain a disabled draft until a human confirms supplier availability, exact identity, price, stock, fulfilment location, and image licensing.`;
-  const response = await axios.post(
+  const response = await postGemini(
     `${GEMINI_BASE_URL}/models/${encodeURIComponent(textModel)}:generateContent`,
     {
       contents: [{ parts: [{ text: prompt }] }],
@@ -115,7 +133,7 @@ const findOutputImage = (data) => {
 
 async function generateCatalogImage({ prompt }) {
   const apiKey = requireApiKey();
-  const response = await axios.post(
+  const response = await postGemini(
     `${GEMINI_BASE_URL}/interactions`,
     {
       model: imageModel,
@@ -123,6 +141,7 @@ async function generateCatalogImage({ prompt }) {
       response_format: { type: 'image', mime_type: 'image/jpeg', aspect_ratio: '1:1', image_size: '1K' },
     },
     { headers: { 'x-goog-api-key': apiKey, 'Content-Type': 'application/json' }, timeout: 300000 },
+    { attempts: 2 },
   );
   const image = findOutputImage(response.data);
   if (!image) throw new Error('Gemini returned no product image.');

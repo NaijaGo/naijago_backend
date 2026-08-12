@@ -1096,7 +1096,16 @@ router.post('/catalog-ai/drafts', protect, authorizeAdmin, async (req, res) => {
         });
     } catch (error) {
         console.error('Gemini catalogue draft generation failed:', error.response?.data || error.message);
-        res.status(502).json({ message: error.message || 'Unable to generate catalogue drafts.' });
+        const status = error.response?.status;
+        const busy = status === 429 || status === 503;
+        const timedOut = error.code === 'ECONNABORTED' || String(error.message || '').includes('timeout');
+        res.status(busy ? 503 : timedOut ? 504 : 502).json({
+            message: busy
+                ? 'The AI catalogue service is busy right now. Please wait a minute and try again.'
+                : timedOut
+                    ? 'Catalogue research is taking too long. Please retry with fewer products.'
+                    : 'Unable to generate catalogue drafts right now. Please try again.',
+        });
     }
 });
 
