@@ -27,4 +27,20 @@ const buildPriceFilter = (minPrice, maxPrice) => {
   return filter;
 };
 
-module.exports = { buildHierarchicalCategoryFilter, buildPriceFilter, escapeRegex };
+const buildEffectivePriceExpression = (minPrice, maxPrice) => {
+  const range = buildPriceFilter(minPrice, maxPrice);
+  if (!range) return undefined;
+  const effectivePrice = {
+    $cond: [
+      { $and: [{ $ne: ['$discountPrice', null] }, { $gt: ['$price', '$discountPrice'] }] },
+      '$discountPrice',
+      '$price',
+    ],
+  };
+  const conditions = [];
+  if (range.$gte !== undefined) conditions.push({ $gte: [effectivePrice, range.$gte] });
+  if (range.$lte !== undefined) conditions.push({ $lte: [effectivePrice, range.$lte] });
+  return conditions.length === 1 ? conditions[0] : { $and: conditions };
+};
+
+module.exports = { buildHierarchicalCategoryFilter, buildPriceFilter, buildEffectivePriceExpression, escapeRegex };

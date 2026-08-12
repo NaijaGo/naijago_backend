@@ -13,7 +13,7 @@ const cloudinary = require('../utils/cloudinary');
 const path = require('path');
 const {
     buildHierarchicalCategoryFilter,
-    buildPriceFilter,
+    buildEffectivePriceExpression,
 } = require('../utils/productFilters');
 
 // =============================================================
@@ -1313,8 +1313,8 @@ router.get('/', async (req, res) => {
     if (subcategory) filter.subcategory = { $regex: `^${escapeRegex(subcategory)}$`, $options: 'i' };
     if (brand) filter.brand = { $regex: `^${escapeRegex(brand)}$`, $options: 'i' };
 
-    const priceFilter = buildPriceFilter(req.query.minPrice, req.query.maxPrice);
-    if (priceFilter) filter.price = priceFilter;
+    const effectivePriceExpression = buildEffectivePriceExpression(req.query.minPrice, req.query.maxPrice);
+    if (effectivePriceExpression) filter.$expr = effectivePriceExpression;
 
     const minimumRating = Number(req.query.minRating);
     if (Number.isFinite(minimumRating) && minimumRating > 0) {
