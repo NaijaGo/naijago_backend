@@ -170,6 +170,32 @@ async function consumeSubscriptionDeliveryIfNeeded({ buyer, mainOrder, session }
     return buyer;
 }
 
+async function decrementPaidItemInventory({ item, session }) {
+    const quantity = Math.max(1, Number(item.quantity || 1));
+    const product = await Product.findOneAndUpdate(
+        { _id: item.product, stockQuantity: { $gte: quantity } },
+        { $inc: { salesCount: quantity, stockQuantity: -quantity } },
+        { new: true, session, runValidators: true },
+    );
+    if (!product) {
+        const error = new Error(`Insufficient stock for ${item.name || 'a product'}.`);
+        error.statusCode = 409;
+        throw error;
+    }
+    if (item.offer) {
+        const offer = await ProductOffer.findOneAndUpdate(
+            { _id: item.offer, stockQuantity: { $gte: quantity } },
+            { $inc: { stockQuantity: -quantity } },
+            { new: true, session, runValidators: true },
+        );
+        if (!offer) {
+            const error = new Error(`The selected offer for ${item.name || 'a product'} is out of stock.`);
+            error.statusCode = 409;
+            throw error;
+        }
+    }
+}
+
 async function settleVerifiedFlutterwaveOrder({ order, buyer, verifiedTx, app, session, method }) {
     order.isPaid = true;
     order.paidAt = order.paidAt || new Date();
@@ -189,33 +215,14 @@ async function settleVerifiedFlutterwaveOrder({ order, buyer, verifiedTx, app, s
 
     await consumeSubscriptionDeliveryIfNeeded({ buyer, mainOrder: order, session });
     const shipments = await Shipment.find({ mainOrder: order._id }).session(session);
-    const productUpdates = [];
     for (const shipment of shipments) {
         shipment.shipmentStatus = 'processing';
         await shipment.save({ session });
-        await notifyVendorOfPaidShipment({
-            app,
-            order,
-            shipment,
-            paymentMethod: 'Flutterwave',
-            session,
-        });
         for (const item of shipment.items) {
-            productUpdates.push(Product.findByIdAndUpdate(
-                item.product,
-                { $inc: { salesCount: item.quantity, stockQuantity: -item.quantity } },
-                { new: true, session }
-            ));
-            if (item.offer) {
-                productUpdates.push(ProductOffer.findOneAndUpdate(
-                    { _id: item.offer, stockQuantity: { $gte: item.quantity } },
-                    { $inc: { stockQuantity: -item.quantity } },
-                    { new: true, session, runValidators: true },
-                ));
-            }
+            await decrementPaidItemInventory({ item, session });
         }
+        await notifyVendorOfPaidShipment({ app, order, shipment, paymentMethod: 'Flutterwave', session });
     }
-    await Promise.all(productUpdates);
     return order.save({ session });
 }
 
@@ -1775,41 +1782,15 @@ router.put('/:id/pay/wallet', protect, async (req, res) => {
 
         // 6. Process shipments
         const shipments = await Shipment.find({ mainOrder: mainOrder._id }).session(session);
-        const productUpdates = [];
         for (const shipment of shipments) {
             shipment.shipmentStatus = 'processing';
             await shipment.save({ session });
 
-            await notifyVendorOfPaidShipment({
-                app: req.app,
-                order: mainOrder,
-                shipment,
-                paymentMethod: 'Wallet',
-                session,
-            });
-
-            // Stock updates
             for (const item of shipment.items) {
-                const soldCount = item.quantity;
-                    productUpdates.push(
-                        Product.findByIdAndUpdate(
-                        item.product,
-                        { $inc: { salesCount: soldCount, stockQuantity: -soldCount } },
-                        { new: true, session }
-                        )
-                    );
-                    if (item.offer) {
-                        productUpdates.push(
-                            ProductOffer.findOneAndUpdate(
-                                { _id: item.offer, stockQuantity: { $gte: soldCount } },
-                                { $inc: { stockQuantity: -soldCount } },
-                                { new: true, session, runValidators: true },
-                            )
-                        );
-                    }
+                await decrementPaidItemInventory({ item, session });
             }
+            await notifyVendorOfPaidShipment({ app: req.app, order: mainOrder, shipment, paymentMethod: 'Wallet', session });
         }
-        await Promise.all(productUpdates);
        
         const updatedOrder = await mainOrder.save({ session });
         await session.commitTransaction();
@@ -1829,7 +1810,7 @@ router.put('/:id/pay/wallet', protect, async (req, res) => {
         await session.abortTransaction();
         session.endSession();
         console.error('Error processing wallet payment for order:', error.message);
-        res.status(500).json({ message: 'Server Error', error: error.message });
+        res.status(error.statusCode || 500).json({ message: error.statusCode ? error.message : 'Unable to process wallet payment.' });
     }
 });
 
@@ -2024,9 +2005,8 @@ router.put('/:id/pay', protect, async (req, res) => {
             stack: error.stack,
             flutterwaveError: error.response?.data || null
         });
-        res.status(500).json({
-            message: 'Server Error during payment confirmation',
-            error: error.message
+        res.status(error.statusCode || 500).json({
+            message: error.statusCode ? error.message : 'Unable to confirm payment right now.'
         });
     }
 });
