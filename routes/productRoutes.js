@@ -6,6 +6,7 @@ const Product = require('../models/Product');
 const ProductOffer = require('../models/ProductOffer');
 const Shipment = require('../models/Shipment');
 const User = require('../models/User');
+const AppSetting = require('../models/AppSetting');
 const { protect, authorizeRoles } = require('../middleware/authMiddleware');
 const multer = require('multer');
 const cloudinary = require('../utils/cloudinary');
@@ -45,6 +46,19 @@ const multiUpload = upload.fields([
     { name: 'mainImage', maxCount: 1 },
     { name: 'extraImages', maxCount: 10 },
 ]);
+
+const NAIJAGO_CATALOG_SETTINGS_KEY = 'naijago_catalog';
+
+const generateProductSku = async ({ category, brand }) => {
+    const clean = (value, length) => String(value || 'GEN').replace(/[^a-z0-9]/gi, '').toUpperCase().slice(0, length) || 'GEN';
+    const prefix = `NG-${clean(category, 4)}-${clean(brand, 4)}`;
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+        const suffix = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`.toUpperCase();
+        const candidate = `${prefix}-${suffix}`;
+        if (!await Product.exists({ sku: candidate })) return candidate;
+    }
+    throw new Error('Unable to create a unique product SKU.');
+};
 
 const vendorPopulateFields = 'businessName businessLocation phoneNumber businessLogoUrl businessWhatsAppNumber businessSupportPhone deliveryRadiusKm prepTimeMinutes isTemporarilyClosed temporaryClosureReason operatingHours';
 
@@ -465,6 +479,16 @@ router.post(
                 ? searchTags
                 : String(searchTags || '').split(',').map((tag) => tag.trim()).filter(Boolean);
             const requestedStatus = productStatus || (requiresModeration && !isAdmin ? 'draft' : 'active');
+            let productLocation = buildProductLocation(req.body);
+            if (requestedSellerType === 'naijago' && (!productLocation?.formattedAddress || !Number.isFinite(productLocation?.latitude) || !Number.isFinite(productLocation?.longitude))) {
+                const settings = await AppSetting.findOne({ key: NAIJAGO_CATALOG_SETTINGS_KEY }).select('naijagoWarehouse').lean();
+                const warehouse = settings?.naijagoWarehouse;
+                if (warehouse?.formattedAddress && Number.isFinite(warehouse.latitude) && Number.isFinite(warehouse.longitude)) productLocation = warehouse;
+            }
+            if (requestedSellerType === 'naijago' && (!productLocation?.formattedAddress || !Number.isFinite(productLocation?.latitude) || !Number.isFinite(productLocation?.longitude))) {
+                return res.status(400).json({ message: 'Set the default NaijaGo warehouse before creating NaijaGo products.' });
+            }
+            const resolvedSku = String(sku || '').trim().toUpperCase() || await generateProductSku({ category, brand });
             const product = new Product({
                 name,
                 description,
@@ -474,7 +498,7 @@ router.post(
                 category,
                 subcategory: subcategory || '',
                 searchTags: parsedTags,
-                sku,
+                sku: resolvedSku,
                 gtin,
                 specifications: parseJsonField(specifications, {}),
                 variants: parseJsonField(variants, []),
@@ -490,7 +514,7 @@ router.post(
                     changedBy: req.user._id,
                     reason: 'Product created',
                 }],
-                productLocation: buildProductLocation(req.body),
+                productLocation,
                 is_flashsale: is_flashsale === 'true',
                 productStatus: requestedStatus,
                 source: isAdmin && source === 'ai_assisted' ? 'ai_assisted' : isAdmin ? 'admin' : 'vendor',

@@ -1075,6 +1075,39 @@ router.get('/catalog-ai/config', protect, authorizeAdmin, (req, res) => {
     });
 });
 
+const NAIJAGO_CATALOG_SETTINGS_KEY = 'naijago_catalog';
+
+router.get('/catalog/settings', protect, authorizeAdmin, async (req, res) => {
+    try {
+        const settings = await AppSetting.findOne({ key: NAIJAGO_CATALOG_SETTINGS_KEY }).select('naijagoWarehouse').lean();
+        res.json({ warehouse: settings?.naijagoWarehouse || null });
+    } catch (error) {
+        console.error('NaijaGo catalogue settings fetch failed:', error);
+        res.status(500).json({ message: 'Unable to load the NaijaGo warehouse settings.' });
+    }
+});
+
+router.put('/catalog/settings', protect, authorizeAdmin, async (req, res) => {
+    try {
+        const formattedAddress = String(req.body.formattedAddress || '').trim();
+        const latitude = Number(req.body.latitude);
+        const longitude = Number(req.body.longitude);
+        if (!formattedAddress) return res.status(400).json({ message: 'Warehouse address is required.' });
+        if (!Number.isFinite(latitude) || latitude < -90 || latitude > 90) return res.status(400).json({ message: 'Enter a valid warehouse latitude.' });
+        if (!Number.isFinite(longitude) || longitude < -180 || longitude > 180) return res.status(400).json({ message: 'Enter a valid warehouse longitude.' });
+        const warehouse = { formattedAddress, latitude, longitude };
+        await AppSetting.findOneAndUpdate(
+            { key: NAIJAGO_CATALOG_SETTINGS_KEY },
+            { $set: { naijagoWarehouse: warehouse, updatedBy: req.user._id } },
+            { upsert: true, new: true, setDefaultsOnInsert: true },
+        );
+        res.json({ message: 'Default NaijaGo warehouse saved.', warehouse });
+    } catch (error) {
+        console.error('NaijaGo catalogue settings update failed:', error);
+        res.status(500).json({ message: 'Unable to save the NaijaGo warehouse settings.' });
+    }
+});
+
 router.post('/catalog-ai/drafts', protect, authorizeAdmin, async (req, res) => {
     try {
         const category = String(req.body.category || '').trim();

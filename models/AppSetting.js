@@ -243,6 +243,11 @@ const AppSettingSchema = new mongoose.Schema(
       ],
       default: [],
     },
+    naijagoWarehouse: {
+      formattedAddress: { type: String, trim: true, default: '' },
+      latitude: { type: Number, default: null },
+      longitude: { type: Number, default: null },
+    },
   },
   {
     timestamps: true,
