@@ -1827,6 +1827,8 @@ io.on('connection', (socket) => {
 
       return cb && cb({
         success: true,
+        actorRole: isOwner ? 'user' : 'pharmacist',
+        actorId: chatIdentity.userId,
         session,
         messages: messages.map(formatChatMessage),
       });
@@ -1904,7 +1906,12 @@ io.on('connection', (socket) => {
         });
       }
 
-      return cb && cb({ success: true, message: formatted });
+      return cb && cb({
+        success: true,
+        actorRole: senderType,
+        actorId: chatUserId,
+        message: formatted,
+      });
     } catch (error) {
       console.error('send_chat_message error:', error);
       return cb && cb({ success: false, error: 'failed to send' });
