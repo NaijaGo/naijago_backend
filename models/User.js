@@ -130,6 +130,40 @@ const UserSchema = new mongoose.Schema({
     max: 240,
     default: 30,
   },
+  pickupEnabled: {
+    type: Boolean,
+    default: false,
+  },
+  pickupSettings: {
+    shopName: { type: String, trim: true, default: '' },
+    phoneNumber: { type: String, trim: true, default: '' },
+    instructions: { type: String, trim: true, maxlength: 500, default: '' },
+    estimatedPreparationMinutes: {
+      type: Number,
+      min: 0,
+      max: 1440,
+      default: 30,
+    },
+    maximumConcurrentOrders: {
+      type: Number,
+      min: 1,
+      max: 1000,
+      default: 20,
+    },
+    hours: [
+      {
+        day: {
+          type: String,
+          enum: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'],
+          required: true,
+        },
+        isOpen: { type: Boolean, default: true },
+        openTime: { type: String, default: '09:00' },
+        closeTime: { type: String, default: '19:00' },
+        _id: false,
+      },
+    ],
+  },
   isTemporarilyClosed: {
     type: Boolean,
     default: false,

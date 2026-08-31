@@ -75,6 +75,7 @@ app.use('/api/admin', require('./routes/adminRoutes'));
 app.use('/api/admin', require('./routes/adminCarouselRoutes'));
 app.use('/api/products', require('./routes/productRoutes'));
 app.use('/api/orders', orderRoutes);
+app.use('/api/pickup', require('./routes/pickupRoutes'));
 app.use('/api/reviews', require('./routes/reviewsRoutes'));
 app.use('/api/wallet', require('./routes/walletRoutes'));
 app.use('/api/subscriptions', require('./routes/subscriptionRoutes'));

@@ -26,11 +26,19 @@ const ShipmentItemSchema = new mongoose.Schema({
     },
     category: { type: String },
     commissionRate: { type: Number, default: 0 },
+    commissionType: {
+        type: String,
+        enum: ['percentage', 'fixed_per_unit'],
+        default: 'percentage',
+    },
+    commissionKoboPerUnit: { type: Number, default: 0, min: 0 },
+    itemCommission: { type: Number, default: 0, min: 0 },
     restaurantName: { type: String },
     foodInformation: { type: String },
     foodCategory: { type: String },
     orderStartTime: { type: String },
     orderEndTime: { type: String },
+    customerNote: { type: String, trim: true, maxlength: 500, default: '' },
     medicineAccess: { type: String },
     isOverTheCounter: { type: Boolean, default: false },
     requiresPrescription: { type: Boolean, default: false },
@@ -121,12 +129,56 @@ const ShipmentSchema = new mongoose.Schema({
     
     shipmentStatus: { // Individual tracking status for this package
         type: String, 
-        enum: ['processing', 'accepted', 'rejected', 'ready_for_pickup', 'out_for_delivery', 'delivered', 'returned', 'cancelled'],
+        enum: [
+            'processing',
+            'accepted',
+            'preparing',
+            'ready_for_pickup',
+            'ready_for_customer_pickup',
+            'out_for_delivery',
+            'picked_up',
+            'delivered',
+            'returned',
+            'cancelled',
+        ],
         default: 'processing',
     },
     acceptedAt: { type: Date },
     rejectedAt: { type: Date },
     rejectionReason: { type: String, trim: true, maxlength: 300 },
+
+    fulfillmentMethod: {
+        type: String,
+        enum: ['delivery', 'pickup'],
+        default: 'delivery',
+        required: true,
+        index: true,
+    },
+    pickupDetails: {
+        location: {
+            shopName: { type: String, trim: true, default: '' },
+            formattedAddress: { type: String, trim: true, default: '' },
+            latitude: { type: Number, default: null },
+            longitude: { type: Number, default: null },
+            phoneNumber: { type: String, trim: true, default: '' },
+            instructions: { type: String, trim: true, default: '' },
+        },
+        selectedTime: { type: Date, default: null },
+        estimatedReadyAt: { type: Date, default: null },
+        readyAt: { type: Date, default: null },
+        verifiedAt: { type: Date, default: null },
+        verificationMethod: {
+            type: String,
+            enum: ['qr', 'code', null],
+            default: null,
+        },
+        verifiedBy: {
+            type: mongoose.Schema.Types.ObjectId,
+            ref: 'User',
+            default: null,
+        },
+        failedVerificationAttempts: { type: Number, default: 0, min: 0 },
+    },
     
     // Security Codes (OTP)
     pickupOTP: { type: String },   // Generated when rider claims
@@ -149,6 +201,7 @@ ShipmentSchema.index({ mainOrder: 1, shipmentStatus: 1 });
 ShipmentSchema.index({ vendor: 1, createdAt: -1 });
 ShipmentSchema.index({ sellerType: 1, sellerId: 1, createdAt: -1 });
 ShipmentSchema.index({ vendor: 1, shipmentStatus: 1, createdAt: -1 });
+ShipmentSchema.index({ vendor: 1, fulfillmentMethod: 1, shipmentStatus: 1, createdAt: -1 });
 ShipmentSchema.index({ vendor: 1, vendorPaidAt: 1 });
 ShipmentSchema.index({ rider: 1, shipmentStatus: 1, createdAt: -1 });
 ShipmentSchema.index({ assignedRider: 1, isClaimed: 1, createdAt: -1 });

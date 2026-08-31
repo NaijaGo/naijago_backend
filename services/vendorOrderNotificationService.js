@@ -13,13 +13,16 @@ const buildItemSummary = (items = []) =>
 const buildVendorOrderMessage = ({ order, shipment, paymentMethod = 'Payment' }) => {
   const shortOrderId = order._id.toString().slice(-8);
   const shortShipmentId = shipment._id.toString().slice(-6);
+  const isCustomerPickup = shipment.fulfillmentMethod === 'pickup';
   return [
-    'New paid order on NaijaGo',
+    isCustomerPickup ? 'New paid pickup order on NaijaGo' : 'New paid order on NaijaGo',
     `Order: #${shortOrderId}`,
-    `Pickup code: #${shortShipmentId}`,
+    ...(isCustomerPickup ? [] : [`Rider pickup reference: #${shortShipmentId}`]),
     `Items: ${buildItemSummary(shipment.items)}`,
     `Subtotal: ${formatMoney(shipment.subtotal)}`,
-    `Shipping: ${formatMoney(shipment.shippingPrice)}`,
+    isCustomerPickup
+      ? 'Fulfilment: Customer pickup'
+      : `Shipping: ${formatMoney(shipment.shippingPrice)}`,
     `Payment: ${paymentMethod}`,
     'Please open your vendor dashboard and start preparing this order.',
   ].join('\n');
@@ -37,16 +40,22 @@ const notifyVendorOfPaidShipment = async ({
 
   const itemCount = shipment.items.reduce((sum, item) => sum + Number(item.quantity || 0), 0);
   const pickupCode = shipment._id.toString().slice(-6);
-  const title = 'New Paid Order Received';
+  const isCustomerPickup = shipment.fulfillmentMethod === 'pickup';
+  const title = isCustomerPickup
+    ? 'New Pickup Order'
+    : 'New Paid Order Received';
   const message = buildVendorOrderMessage({ order, shipment, paymentMethod });
   const notificationData = {
-    type: 'new_paid_order_vendor',
+    type: isCustomerPickup
+      ? 'new_pickup_order_vendor'
+      : 'new_paid_order_vendor',
     orderId: order._id.toString(),
     shipmentId: shipment._id.toString(),
     pickupCode,
     subtotal: shipment.subtotal,
     itemCount,
     paymentMethod,
+    fulfillmentMethod: shipment.fulfillmentMethod || 'delivery',
     timestamp: Date.now(),
   };
 
@@ -57,7 +66,7 @@ const notifyVendorOfPaidShipment = async ({
         notifications: {
           $each: [
             {
-              type: 'new_order',
+              type: isCustomerPickup ? 'new_pickup_order' : 'new_order',
               message,
               read: false,
               relatedModel: 'Shipment',
@@ -112,7 +121,9 @@ const notifyVendorOfPaidShipment = async ({
     if (appOrderAlertsEnabled) {
       const providerResponse = await notificationService.sendToUser(vendorId, {
         title,
-        message: `New paid order #${order._id.toString().slice(-8)}: ${itemCount} item(s), ${formatMoney(shipment.subtotal)}.`,
+        message: isCustomerPickup
+          ? `New pickup order #${order._id.toString().slice(-8)}: ${itemCount} item(s), ${formatMoney(shipment.subtotal)}.`
+          : `New paid order #${order._id.toString().slice(-8)}: ${itemCount} item(s), ${formatMoney(shipment.subtotal)}.`,
         data: notificationData,
       }, { audience: 'vendor' });
       await recordNotificationLog({

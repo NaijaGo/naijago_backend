@@ -7,6 +7,7 @@ const MainOrder = require('../models/MainOrder');
 const Shipment = require('../models/Shipment');
 const Product = require('../models/Product');
 const ProductOffer = require('../models/ProductOffer');
+const AppSetting = require('../models/AppSetting');
 const User = require('../models/User');
 const Rider = require('../models/Rider');
 const CompanyDelivery = require('../models/CompanyDelivery');
@@ -30,6 +31,53 @@ const {
 
 const buildFlutterwaveTxRef = (orderId) =>
     `NGO_${orderId}_${crypto.randomBytes(12).toString('hex')}`;
+
+const getCostLowCommissionConfig = async (session = null) => {
+    const query = AppSetting.findOne({ key: 'cost_low_store' })
+        .select('costLowStore')
+        .lean();
+    if (session) query.session(session);
+    const settings = await query;
+    return {
+        vendorId: settings?.costLowStore?.vendorId
+            ? String(settings.costLowStore.vendorId)
+            : '',
+        commissionKoboPerUnit: Math.max(
+            0,
+            Number(settings?.costLowStore?.commissionKoboPerUnit ?? 5700),
+        ),
+    };
+};
+
+const calculateItemCommission = ({
+    sellerType,
+    sellerId,
+    itemSubtotal,
+    quantity,
+    category,
+    costLowConfig,
+}) => {
+    const isCostLow =
+        sellerType === 'vendor' &&
+        costLowConfig.vendorId &&
+        String(sellerId || '') === costLowConfig.vendorId;
+    if (isCostLow) {
+        const commissionKoboPerUnit = costLowConfig.commissionKoboPerUnit;
+        return {
+            commissionType: 'fixed_per_unit',
+            commissionRate: 0,
+            commissionKoboPerUnit,
+            itemCommission: (commissionKoboPerUnit * quantity) / 100,
+        };
+    }
+    const commissionRate = getCommissionRateForCategory(category);
+    return {
+        commissionType: 'percentage',
+        commissionRate,
+        commissionKoboPerUnit: 0,
+        itemCommission: itemSubtotal * commissionRate,
+    };
+};
 
 const verifyFlutterwaveTransaction = async (txRef) => {
     const response = await axios.get(
@@ -515,6 +563,7 @@ const CATEGORY_COMMISSION_RATES = {
     'Jewelry & Watches': 0.12,
     'Fragrances': 0.12,
     'Health & Beauty': 0.06,
+    'Cosmetics & Beauty': 0.06,
 
     // Home & Living
     'Home & Kitchen': 0.07,
@@ -601,6 +650,7 @@ function getCommissionRateForCategory(category) {
         'Automobiles': 0.08,
         'Automobile': 0.08,
         'Health & Beauty': 0.06,
+        'Cosmetics & Beauty': 0.06,
         'Fragrance': 0.12,
         'Fragrances': 0.12,
         'Groceries': 0.05,
@@ -741,6 +791,7 @@ function buildOrderItemFromProduct(item, product) {
         foodCategory: product.foodCategory || undefined,
         orderStartTime: product.orderStartTime || undefined,
         orderEndTime: product.orderEndTime || undefined,
+        customerNote: item.customerNote || '',
         medicineAccess: product.medicineAccess || undefined,
         isOverTheCounter: product.isOverTheCounter === true,
         requiresPrescription: product.requiresPrescription === true,
@@ -808,7 +859,12 @@ router.get('/', protect, async (req, res) => {
 // @route   POST /api/orders/calculate_summary
 // @access  Private
 router.post('/summary', protect, async (req, res) => {
-    const { cartItems, shippingAddress, userLocation } = req.body;
+    const {
+        cartItems,
+        shippingAddress,
+        userLocation,
+        fulfillmentSelections = {},
+    } = req.body;
 
     if (!cartItems || cartItems.length === 0) {
         return res.status(400).json({ message: 'No items in cart for summary calculation' });
@@ -822,13 +878,17 @@ router.post('/summary', protect, async (req, res) => {
         let totalSubtotal = 0;
         let totalPlatformFees = 0;
         const deliveryFeeSettings = await getDeliveryFeeSettings();
+        const costLowConfig = await getCostLowCommissionConfig();
         let matchedDeliveryZone = null;
 
         // 1. Group items by vendor and calculate subtotal for each vendor
         for (const item of cartItems) {
             // Fetch product, vendor, and category data
             const product = await Product.findById(item.product)
-                .populate('vendor', 'businessName businessLocation');
+                .populate(
+                    'vendor',
+                    'businessName businessLocation phoneNumber businessSupportPhone pickupEnabled pickupSettings',
+                );
             
             if (!product) {
                 return res.status(404).json({ message: `Product not found: ${item.name}` });
@@ -848,9 +908,9 @@ router.post('/summary', protect, async (req, res) => {
             
             const selectedOffer = item.offer
                 ? await ProductOffer.findOne({ _id: item.offer, product: product._id, status: 'active' })
-                    .populate('sellerId', 'businessName businessLocation')
+                    .populate('sellerId', 'businessName businessLocation phoneNumber businessSupportPhone pickupEnabled pickupSettings')
                 : await ProductOffer.findOne({ product: product._id, isPrimary: true, status: 'active' })
-                    .populate('sellerId', 'businessName businessLocation');
+                    .populate('sellerId', 'businessName businessLocation phoneNumber businessSupportPhone pickupEnabled pickupSettings');
             const sellerType = selectedOffer?.sellerType || (product.vendor ? 'vendor' : product.sellerType || 'naijago');
             const sellerId = selectedOffer?.sellerId?._id || selectedOffer?.sellerId || product.sellerId || product.vendor?._id || null;
             const sellerName = sellerType === 'naijago'
@@ -867,6 +927,22 @@ router.post('/summary', protect, async (req, res) => {
                 });
             }
             const sellerKey = sellerType === 'naijago' ? 'naijago' : `vendor:${sellerId}`;
+            const sellerVendor = sellerType === 'vendor'
+                ? selectedOffer?.sellerId || product.vendor
+                : null;
+            const requestedSelection =
+                fulfillmentSelections[sellerKey] ||
+                fulfillmentSelections[String(sellerId || '')] ||
+                {};
+            const fulfillmentMethod =
+                String(requestedSelection.method || '').toLowerCase() === 'pickup'
+                    ? 'pickup'
+                    : 'delivery';
+            if (fulfillmentMethod === 'pickup' && !sellerVendor?.pickupEnabled) {
+                return res.status(400).json({
+                    message: `${sellerName} does not currently offer customer pickup.`,
+                });
+            }
             const unitPrice = Number(selectedOffer?.discountPrice ?? selectedOffer?.price ?? product.discountPrice ?? product.price);
             const availableStock = Number(selectedOffer?.stockQuantity ?? product.stockQuantity);
             if (availableStock < Number(item.quantity || 1)) {
@@ -878,8 +954,15 @@ router.post('/summary', protect, async (req, res) => {
 
             // Get category-based commission rate
             const productCategory = product.category || 'Uncategorized';
-            const commissionRate = getCommissionRateForCategory(productCategory);
-            const itemCommission = itemPrice * commissionRate;
+            const commission = calculateItemCommission({
+                sellerType,
+                sellerId,
+                itemSubtotal: itemPrice,
+                quantity: Number(item.quantity || 1),
+                category: productCategory,
+                costLowConfig,
+            });
+            const { commissionRate, itemCommission } = commission;
             totalPlatformFees += itemCommission;
 
             if (!sellerCartMap.has(sellerKey)) {
@@ -899,6 +982,51 @@ router.post('/summary', protect, async (req, res) => {
                     subtotal: 0,
                     platformFee: 0,
                     commissionRate: 0,
+                    pickupAvailable: sellerVendor?.pickupEnabled === true,
+                    pickupOption: sellerVendor
+                        ? {
+                            location: {
+                                shopName: sellerVendor.pickupSettings?.shopName || sellerName,
+                                formattedAddress: sellerLocation.formattedAddress || '',
+                                latitude: sellerLocation.latitude,
+                                longitude: sellerLocation.longitude,
+                                phoneNumber:
+                                    sellerVendor.pickupSettings?.phoneNumber ||
+                                    sellerVendor.businessSupportPhone ||
+                                    sellerVendor.phoneNumber ||
+                                    '',
+                                instructions: sellerVendor.pickupSettings?.instructions || '',
+                            },
+                            estimatedPreparationMinutes:
+                                Number(
+                                    sellerVendor.pickupSettings
+                                        ?.estimatedPreparationMinutes,
+                                ) || 30,
+                            hours: sellerVendor.pickupSettings?.hours || [],
+                        }
+                        : null,
+                    fulfillmentMethod,
+                    pickupDetails: fulfillmentMethod === 'pickup'
+                        ? {
+                            location: {
+                                shopName: sellerVendor?.pickupSettings?.shopName || sellerName,
+                                formattedAddress: sellerLocation.formattedAddress || '',
+                                latitude: sellerLocation.latitude,
+                                longitude: sellerLocation.longitude,
+                                phoneNumber:
+                                    sellerVendor?.pickupSettings?.phoneNumber ||
+                                    sellerVendor?.businessSupportPhone ||
+                                    sellerVendor?.phoneNumber ||
+                                    '',
+                                instructions: sellerVendor?.pickupSettings?.instructions || '',
+                            },
+                            estimatedPreparationMinutes:
+                                Number(sellerVendor?.pickupSettings?.estimatedPreparationMinutes) ||
+                                30,
+                            hours: sellerVendor?.pickupSettings?.hours || [],
+                            selectedTime: requestedSelection.selectedTime || null,
+                        }
+                        : null,
                 });
             }
             
@@ -909,8 +1037,10 @@ router.post('/summary', protect, async (req, res) => {
                     offer: selectedOffer?._id || null,
                     authoritativePrice: unitPrice,
                 }, product),
-                commissionRate: commissionRate, // Store individual commission rate
-                itemCommission: itemCommission, // Store calculated commission
+                commissionRate,
+                commissionType: commission.commissionType,
+                commissionKoboPerUnit: commission.commissionKoboPerUnit,
+                itemCommission,
             });
             
             vendorData.subtotal += itemPrice;
@@ -928,20 +1058,26 @@ router.post('/summary', protect, async (req, res) => {
             const vendorLocation = data.vendorLocation;
             
             // Calculate Distance (Haversine)
-            const distanceKm = calculateDistance(
-                vendorLocation.latitude,
-                vendorLocation.longitude,
-                userLocation.latitude,
-                userLocation.longitude
-            );
-            
-            const deliveryFeeQuote = buildDeliveryFeeQuote({
-                shippingAddress,
-                distanceKm,
-                settings: deliveryFeeSettings,
-            });
-            const shippingPrice = deliveryFeeQuote.amount;
-            matchedDeliveryZone = matchedDeliveryZone || deliveryFeeQuote.zone;
+            const isPickup = data.fulfillmentMethod === 'pickup';
+            const distanceKm = isPickup
+                ? 0
+                : calculateDistance(
+                    vendorLocation.latitude,
+                    vendorLocation.longitude,
+                    userLocation.latitude,
+                    userLocation.longitude,
+                );
+            const deliveryFeeQuote = isPickup
+                ? { amount: 0, source: 'customer_pickup', zone: null }
+                : buildDeliveryFeeQuote({
+                    shippingAddress,
+                    distanceKm,
+                    settings: deliveryFeeSettings,
+                });
+            const shippingPrice = isPickup ? 0 : deliveryFeeQuote.amount;
+            if (!isPickup) {
+                matchedDeliveryZone = matchedDeliveryZone || deliveryFeeQuote.zone;
+            }
             
             totalShippingPrice += shippingPrice;
             originalShippingPrice += shippingPrice;
@@ -954,6 +1090,10 @@ router.post('/summary', protect, async (req, res) => {
                 vendorName: data.vendorName,
                 vendorLocation: vendorLocation, 
                 vendorZone: vendorLocation.formattedAddress || vendorLocation.address || vendorLocation.addressLine || '',
+                pickupAvailable: data.pickupAvailable,
+                pickupOption: data.pickupOption,
+                fulfillmentMethod: data.fulfillmentMethod,
+                pickupDetails: data.pickupDetails,
                 subtotal: parseFloat(data.subtotal.toFixed(2)),
                 shippingPrice: shippingPrice,
                 originalShippingPrice: shippingPrice,
@@ -1095,6 +1235,7 @@ router.post('/', protect, async (req, res) => {
 
         // --- Step 1: Stock Check (Must check stock for ALL items across ALL shipments) ---
         const deliveryFeeSettings = await getDeliveryFeeSettings();
+        const costLowConfig = await getCostLowCommissionConfig(session);
         let recalculatedSubtotal = 0;
         let recalculatedPlatformFees = 0;
         let recalculatedShippingPrice = 0;
@@ -1108,6 +1249,53 @@ router.post('/', protect, async (req, res) => {
             let summaryVendorId = summary.vendor || summary.vendorId;
             let summarySellerType = summary.sellerType || (summaryVendorId ? 'vendor' : 'naijago');
             let summarySellerId = summary.sellerId || summaryVendorId || null;
+            const fulfillmentMethod =
+                String(summary.fulfillmentMethod || '').toLowerCase() === 'pickup'
+                    ? 'pickup'
+                    : 'delivery';
+            let pickupVendor = null;
+            if (fulfillmentMethod === 'pickup') {
+                if (summarySellerType !== 'vendor' || !summarySellerId) {
+                    await session.abortTransaction();
+                    session.endSession();
+                    return res.status(400).json({
+                        message: 'Customer pickup is currently available only from configured vendor shops.',
+                    });
+                }
+                pickupVendor = await User.findOne({
+                    _id: summarySellerId,
+                    isVendor: true,
+                    vendorStatus: 'approved',
+                    pickupEnabled: true,
+                })
+                    .select('businessName businessLocation phoneNumber businessSupportPhone pickupSettings')
+                    .session(session);
+                if (!pickupVendor) {
+                    await session.abortTransaction();
+                    session.endSession();
+                    return res.status(400).json({
+                        message: 'This vendor is not currently accepting pickup orders.',
+                    });
+                }
+                const maximumConcurrentOrders = Math.max(
+                    Number(pickupVendor.pickupSettings?.maximumConcurrentOrders) || 20,
+                    1,
+                );
+                const activePickupOrders = await Shipment.countDocuments({
+                    vendor: pickupVendor._id,
+                    fulfillmentMethod: 'pickup',
+                    shipmentStatus: {
+                        $in: ['processing', 'accepted', 'preparing', 'ready_for_customer_pickup'],
+                    },
+                }).session(session);
+                if (activePickupOrders >= maximumConcurrentOrders) {
+                    await session.abortTransaction();
+                    session.endSession();
+                    return res.status(409).json({
+                        message: 'This shop has reached its pickup capacity. Please choose delivery or try a later pickup time.',
+                    });
+                }
+            }
             if (!Array.isArray(summary.items) || summary.items.length === 0) {
                 await session.abortTransaction();
                 session.endSession();
@@ -1187,10 +1375,17 @@ router.post('/', protect, async (req, res) => {
                 summarySellerId = selectedOffer?.sellerId || product.sellerId || summarySellerId;
 
                 const safeQuantity = Math.max(1, Number(item.quantity || 1));
-                const commissionRate = getCommissionRateForCategory(product.category || 'Uncategorized');
                 const authoritativePrice = Number(selectedOffer?.discountPrice ?? selectedOffer?.price ?? product.discountPrice ?? product.price ?? 0);
                 const itemSubtotal = authoritativePrice * safeQuantity;
-                const itemCommission = itemSubtotal * commissionRate;
+                const commission = calculateItemCommission({
+                    sellerType: summarySellerType,
+                    sellerId: summarySellerId,
+                    itemSubtotal,
+                    quantity: safeQuantity,
+                    category: product.category || 'Uncategorized',
+                    costLowConfig,
+                });
+                const { commissionRate, itemCommission } = commission;
 
                 summarySubtotal += itemSubtotal;
                 summaryPlatformFee += itemCommission;
@@ -1202,11 +1397,14 @@ router.post('/', protect, async (req, res) => {
                     authoritativePrice,
                 }, product), {
                     commissionRate,
+                    commissionType: commission.commissionType,
+                    commissionKoboPerUnit: commission.commissionKoboPerUnit,
                     itemCommission: parseFloat(itemCommission.toFixed(2)),
                 });
             }
 
             const distanceKm =
+                fulfillmentMethod === 'delivery' &&
                 userLocation?.latitude &&
                 userLocation?.longitude &&
                 summaryVendorLocation?.latitude &&
@@ -1219,19 +1417,52 @@ router.post('/', protect, async (req, res) => {
                     )
                     : 0;
 
-            const deliveryFeeQuote = buildDeliveryFeeQuote({
-                shippingAddress,
-                distanceKm,
-                settings: deliveryFeeSettings,
-            });
-            const shippingPrice = deliveryFeeQuote.amount;
-            matchedDeliveryZone = matchedDeliveryZone || deliveryFeeQuote.zone;
+            const deliveryFeeQuote = fulfillmentMethod === 'pickup'
+                ? { amount: 0, source: 'customer_pickup', zone: null }
+                : buildDeliveryFeeQuote({
+                    shippingAddress,
+                    distanceKm,
+                    settings: deliveryFeeSettings,
+                });
+            const shippingPrice =
+                fulfillmentMethod === 'pickup' ? 0 : deliveryFeeQuote.amount;
+            if (fulfillmentMethod === 'delivery') {
+                matchedDeliveryZone = matchedDeliveryZone || deliveryFeeQuote.zone;
+            }
 
             summary.vendor = summaryVendorId;
             summary.vendorId = summaryVendorId;
             summary.sellerType = summarySellerType;
             summary.sellerId = summarySellerId;
             summary.sellerName = summary.sellerName || (summarySellerType === 'naijago' ? 'NaijaGo' : summary.vendorName || 'Vendor');
+            summary.fulfillmentMethod = fulfillmentMethod;
+            summary.pickupDetails = fulfillmentMethod === 'pickup'
+                ? {
+                    location: {
+                        shopName:
+                            pickupVendor.pickupSettings?.shopName ||
+                            pickupVendor.businessName ||
+                            summary.sellerName,
+                        formattedAddress:
+                            pickupVendor.businessLocation?.formattedAddress || '',
+                        latitude: pickupVendor.businessLocation?.latitude,
+                        longitude: pickupVendor.businessLocation?.longitude,
+                        phoneNumber:
+                            pickupVendor.pickupSettings?.phoneNumber ||
+                            pickupVendor.businessSupportPhone ||
+                            pickupVendor.phoneNumber ||
+                            '',
+                        instructions:
+                            pickupVendor.pickupSettings?.instructions || '',
+                    },
+                    selectedTime: summary.pickupDetails?.selectedTime || null,
+                    estimatedPreparationMinutes:
+                        Number(
+                            pickupVendor.pickupSettings
+                                ?.estimatedPreparationMinutes,
+                        ) || 30,
+                }
+                : null;
             summary.vendorLocation = summaryVendorLocation;
             summary.subtotal = parseFloat(summarySubtotal.toFixed(2));
             summary.platformFee = parseFloat(summaryPlatformFee.toFixed(2));
@@ -1323,6 +1554,10 @@ router.post('/', protect, async (req, res) => {
                 }
             }
 
+            const restaurantOrderNote = String(req.body.restaurantOrderNote || '')
+                .trim()
+                .replace(/\s+/g, ' ')
+                .slice(0, 500);
             const newShipment = new Shipment({
                 mainOrder: createdMainOrder._id,
                 sellerType: summary.sellerType || (summaryVendorId ? 'vendor' : 'naijago'),
@@ -1343,11 +1578,15 @@ router.post('/', protect, async (req, res) => {
                     category: item.category, // Store category
                     productSnapshot: item.productSnapshot || {},
                     commissionRate: item.commissionRate, // Store individual item commission rate
+                    commissionType: item.commissionType || 'percentage',
+                    commissionKoboPerUnit: item.commissionKoboPerUnit || 0,
+                    itemCommission: item.itemCommission || 0,
                     restaurantName: item.restaurantName,
                     foodInformation: item.foodInformation,
                     foodCategory: item.foodCategory,
                     orderStartTime: item.orderStartTime,
                     orderEndTime: item.orderEndTime,
+                    customerNote: item.restaurantName ? restaurantOrderNote : '',
                     medicineAccess: item.medicineAccess,
                     isOverTheCounter: item.isOverTheCounter,
                     requiresPrescription: item.requiresPrescription,
@@ -1360,6 +1599,22 @@ router.post('/', protect, async (req, res) => {
                 subscriptionDeliveryDiscount: summary.subscriptionDeliveryDiscount || 0,
                 subscriptionFreeDeliveryApplied: summary.subscriptionFreeDeliveryApplied === true,
                 commissionRate: summary.commissionRate, // Store average commission rate for this shipment
+                fulfillmentMethod: summary.fulfillmentMethod || 'delivery',
+                pickupDetails: summary.pickupDetails
+                    ? {
+                        location: summary.pickupDetails.location,
+                        selectedTime: summary.pickupDetails.selectedTime,
+                        estimatedReadyAt: new Date(
+                            Date.now() +
+                            (
+                                Number(
+                                    summary.pickupDetails
+                                        .estimatedPreparationMinutes,
+                                ) || 30
+                            ) * 60 * 1000,
+                        ),
+                    }
+                    : undefined,
                 shipmentStatus: 'processing',
                 isDelivered: false,
             });
@@ -1559,6 +1814,11 @@ router.put('/shipments/:id/accept', protect, authorizeRoles('vendor', 'admin'), 
     try {
         const shipment = await findOwnedShipmentForVendor(req, res);
         if (!shipment) return;
+        if (shipment.fulfillmentMethod === 'pickup') {
+            return res.status(409).json({
+                message: 'Use the Pickup Orders workflow to accept customer pickup orders.',
+            });
+        }
 
         shipment.shipmentStatus = 'accepted';
         shipment.acceptedAt = new Date();
@@ -2160,6 +2420,11 @@ router.put('/shipments/:id/status-update', protect, authorizeRoles('vendor', 'ad
         }
 
         // Update the status
+        if (shipment.fulfillmentMethod === 'pickup') {
+            return res.status(409).json({
+                message: 'Use the Pickup Orders workflow for customer pickup orders.',
+            });
+        }
         shipment.shipmentStatus = status;
         await shipment.save();
 

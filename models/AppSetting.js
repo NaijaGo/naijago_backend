@@ -248,6 +248,18 @@ const AppSettingSchema = new mongoose.Schema(
       latitude: { type: Number, default: null },
       longitude: { type: Number, default: null },
     },
+    costLowStore: {
+      vendorId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+        default: null,
+      },
+      commissionKoboPerUnit: {
+        type: Number,
+        min: 0,
+        default: 5700,
+      },
+    },
   },
   {
     timestamps: true,

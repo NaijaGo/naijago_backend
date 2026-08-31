@@ -48,6 +48,41 @@ const multiUpload = upload.fields([
 ]);
 
 const NAIJAGO_CATALOG_SETTINGS_KEY = 'naijago_catalog';
+const COST_LOW_SETTINGS_KEY = 'cost_low_store';
+
+const resolveCostLowVendor = async () => {
+    const configured = await AppSetting.findOne({ key: COST_LOW_SETTINGS_KEY })
+        .select('costLowStore')
+        .lean();
+    if (configured?.costLowStore?.vendorId) {
+        const vendor = await User.findOne({
+            _id: configured.costLowStore.vendorId,
+            isVendor: true,
+            vendorStatus: 'approved',
+        }).select(`_id firstName lastName ${vendorPopulateFields}`).lean();
+        if (vendor) return vendor;
+    }
+
+    const vendor = await User.findOne({
+        isVendor: true,
+        vendorStatus: 'approved',
+        businessName: { $regex: /^(cost[\s_-]*low|lowcost(?:\s+world)?)$/i },
+    }).select(`_id firstName lastName ${vendorPopulateFields}`).lean();
+
+    if (vendor) {
+        await AppSetting.findOneAndUpdate(
+            { key: COST_LOW_SETTINGS_KEY },
+            {
+                $set: {
+                    'costLowStore.vendorId': vendor._id,
+                    'costLowStore.commissionKoboPerUnit': 5700,
+                },
+            },
+            { upsert: true, setDefaultsOnInsert: true },
+        );
+    }
+    return vendor;
+};
 
 const generateProductSku = async ({ category, brand }) => {
     const clean = (value, length) => String(value || 'GEN').replace(/[^a-z0-9]/gi, '').toUpperCase().slice(0, length) || 'GEN';
@@ -1039,6 +1074,69 @@ router.get('/flashsales', async (req, res) => {
     } catch (error) {
         console.error('Error fetching flash sale products:', error);
         res.status(500).json({ message: 'Server error fetching flash sale products.' });
+    }
+});
+
+// @desc    Get the verified Cost-Low storefront and only its active products
+router.get('/featured/cost-low', async (req, res) => {
+    try {
+        const vendor = await resolveCostLowVendor();
+        if (!vendor) {
+            return res.status(404).json({
+                message: 'The Cost-Low store is not configured yet.',
+            });
+        }
+
+        const { limit, skip } = parsePagination(req.query, {
+            defaultLimit: 100,
+            maxLimit: 300,
+        });
+        const filter = {
+            isActive: true,
+            productStatus: 'active',
+            $or: [
+                { vendor: vendor._id },
+                { sellerType: 'vendor', sellerId: vendor._id },
+            ],
+        };
+        const effectivePriceExpression = buildEffectivePriceExpression(
+            req.query.minPrice,
+            req.query.maxPrice,
+        );
+        if (effectivePriceExpression) filter.$expr = effectivePriceExpression;
+        if (String(req.query.inStock || '').toLowerCase() === 'true') {
+            filter.stockQuantity = { $gt: 0 };
+        }
+        const minimumRating = Number(req.query.minRating);
+        if (Number.isFinite(minimumRating) && minimumRating > 0) {
+            filter.averageRating = { $gte: Math.min(minimumRating, 5) };
+        }
+
+        const sort = String(req.query.sort || 'newest').toLowerCase();
+        const sortSpec = sort === 'price_low'
+            ? { price: 1, createdAt: -1 }
+            : sort === 'price_high'
+            ? { price: -1, createdAt: -1 }
+            : sort === 'popular' || sort === 'most_sold'
+            ? { salesCount: -1, createdAt: -1 }
+            : sort === 'rating' || sort === 'best_rated'
+            ? { averageRating: -1, numReviews: -1, createdAt: -1 }
+            : { createdAt: -1 };
+
+        const products = await Product.find(filter)
+            .populate('vendor', vendorPopulateFields)
+            .sort(sortSpec)
+            .skip(skip)
+            .limit(limit)
+            .lean();
+        res.set('X-Store-Vendor-Id', String(vendor._id));
+        res.set('X-Store-Name', vendor.businessName || 'Cost-Low');
+        return res.status(200).json(await attachPrimaryOffers(products));
+    } catch (error) {
+        console.error('Error fetching Cost-Low storefront:', error);
+        return res.status(500).json({
+            message: 'Server error fetching the Cost-Low store.',
+        });
     }
 });
 

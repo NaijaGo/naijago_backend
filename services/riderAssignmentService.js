@@ -92,6 +92,7 @@ const notifyEligibleRidersForShipment = async ({
   markReady = true,
 }) => {
   if (!shipment || !mainOrder) return [];
+  if (shipment.fulfillmentMethod === 'pickup') return [];
 
   const riders = await findEligibleRiders({
     pickupLocation: shipment.vendorLocation,
