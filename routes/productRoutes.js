@@ -66,7 +66,9 @@ const resolveCostLowVendor = async () => {
     const vendor = await User.findOne({
         isVendor: true,
         vendorStatus: 'approved',
-        businessName: { $regex: /^(cost[\s_-]*low|lowcost(?:\s+world)?)$/i },
+        businessName: {
+            $regex: /^(low[\s_-]*cost(?:[\s_-]+world)?|cost[\s_-]*low)$/i,
+        },
     }).select(`_id firstName lastName ${vendorPopulateFields}`).lean();
 
     if (vendor) {
@@ -1077,13 +1079,13 @@ router.get('/flashsales', async (req, res) => {
     }
 });
 
-// @desc    Get the verified Cost-Low storefront and only its active products
+// @desc    Get the verified Low Cost storefront and only its active products
 router.get('/featured/cost-low', async (req, res) => {
     try {
         const vendor = await resolveCostLowVendor();
         if (!vendor) {
             return res.status(404).json({
-                message: 'The Cost-Low store is not configured yet.',
+                message: 'The Low Cost store is not configured yet.',
             });
         }
 
@@ -1130,12 +1132,12 @@ router.get('/featured/cost-low', async (req, res) => {
             .limit(limit)
             .lean();
         res.set('X-Store-Vendor-Id', String(vendor._id));
-        res.set('X-Store-Name', vendor.businessName || 'Cost-Low');
+        res.set('X-Store-Name', vendor.businessName || 'Low Cost');
         return res.status(200).json(await attachPrimaryOffers(products));
     } catch (error) {
-        console.error('Error fetching Cost-Low storefront:', error);
+        console.error('Error fetching Low Cost storefront:', error);
         return res.status(500).json({
-            message: 'Server error fetching the Cost-Low store.',
+            message: 'Server error fetching the Low Cost store.',
         });
     }
 });
