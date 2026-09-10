@@ -31,12 +31,7 @@ const resend = process.env.RESEND_API_KEY
     ? new Resend(process.env.RESEND_API_KEY)
     : null;
 const BASE_URL = process.env.BASE_URL || 'http://localhost:5000';
-
-const parseCoordinate = (value) => {
-    if (value === undefined || value === null || value === '') return undefined;
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : undefined;
-};
+const { validateCoordinates } = require('../utils/addressCoordinates');
 
 
 // Limit: max 4 resend attempts per email per hour
@@ -1421,6 +1416,10 @@ router.delete('/saved-items/:productId', protect, async (req, res) => {
 // @access  Private
 router.post('/addresses', protect, async (req, res) => {
     const { address, city, postalCode, country, isDefault, phoneNumber, latitude, longitude } = req.body;
+    // Keep this optional while older production app versions are still active.
+    // New clients always resolve and send the coordinate pair.
+    const coordinates = validateCoordinates(latitude, longitude);
+    if (coordinates.error) return res.status(400).json({ message: coordinates.error });
 
     if (!address || !city || !postalCode || !country) {
         return res.status(400).json({ message: 'All address fields are required.' });
@@ -1448,8 +1447,8 @@ router.post('/addresses', protect, async (req, res) => {
             postalCode,
             country,
             phoneNumber: typeof phoneNumber === 'string' ? phoneNumber.trim() : undefined,
-            latitude: parseCoordinate(latitude),
-            longitude: parseCoordinate(longitude),
+            latitude: coordinates.latitude,
+            longitude: coordinates.longitude,
             isDefault: req.body.isDefault
         });
         await user.save();
@@ -1467,6 +1466,8 @@ router.post('/addresses', protect, async (req, res) => {
 router.put('/addresses/:index', protect, async (req, res) => {
     const { index } = req.params; // Index of the address in the array
     const { address, city, postalCode, country, isDefault, phoneNumber, latitude, longitude } = req.body;
+    const coordinates = validateCoordinates(latitude, longitude);
+    if (coordinates.error) return res.status(400).json({ message: coordinates.error });
 
     try {
         const user = await User.findById(req.user._id);
@@ -1497,10 +1498,10 @@ router.put('/addresses/:index', protect, async (req, res) => {
                     : undefined;
         }
         if (latitude !== undefined) {
-            targetAddress.latitude = parseCoordinate(latitude);
+            targetAddress.latitude = coordinates.latitude;
         }
         if (longitude !== undefined) {
-            targetAddress.longitude = parseCoordinate(longitude);
+            targetAddress.longitude = coordinates.longitude;
         }
         targetAddress.isDefault = isDefault !== undefined ? isDefault : targetAddress.isDefault;
 
