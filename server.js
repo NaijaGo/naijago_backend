@@ -74,6 +74,7 @@ app.use('/api/pharmacist', require('./routes/pharmacistRoutes'));
 app.use('/api/admin', require('./routes/adminRoutes'));
 app.use('/api/admin', require('./routes/adminCarouselRoutes'));
 app.use('/api/products', require('./routes/productRoutes'));
+app.use('/api/locations', require('./routes/locationRoutes'));
 app.use('/api/orders', orderRoutes);
 app.use('/api/pickup', require('./routes/pickupRoutes'));
 app.use('/api/reviews', require('./routes/reviewsRoutes'));
