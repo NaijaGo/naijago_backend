@@ -15,8 +15,8 @@ const autocompleteLimiter = rateLimit({
 
 router.get('/autocomplete', protect, autocompleteLimiter, async (req, res) => {
   const query = String(req.query.q || '').trim();
-  if (query.length < 3 || query.length > 160) {
-    return res.status(400).json({ message: 'Enter at least 3 characters to search for an address.' });
+  if (query.length < 2 || query.length > 160) {
+    return res.status(400).json({ message: 'Enter at least 2 characters to search for an address.' });
   }
 
   const apiKey = process.env.GEOAPIFY_API_KEY?.trim();
