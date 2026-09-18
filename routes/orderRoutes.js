@@ -28,9 +28,22 @@ const {
     buildPendingPaymentResult,
     paymentMatchesOrder,
 } = require('../utils/flutterwavePayment');
+const { initiateSquadPayment, verifySquadPayment } = require('../services/squadPaymentService');
+const {
+    buildSquadPendingPaymentResult,
+    normalizeSquadTransaction,
+    squadPaymentMatchesOrder,
+    verifySquadWebhookSignature,
+} = require('../utils/squadPayment');
 
 const buildFlutterwaveTxRef = (orderId) =>
     `NGO_${orderId}_${crypto.randomBytes(12).toString('hex')}`;
+
+const buildSquadTxRef = (orderId) =>
+    `NGS_${orderId}_${crypto.randomBytes(12).toString('hex')}`;
+
+const configuredPaymentProvider = () =>
+    String(process.env.PAYMENT_PROVIDER || 'flutterwave').trim().toLowerCase();
 
 const getCostLowCommissionConfig = async (session = null) => {
     const query = AppSetting.findOne({ key: 'cost_low_store' })
@@ -244,7 +257,7 @@ async function decrementPaidItemInventory({ item, session }) {
     }
 }
 
-async function settleVerifiedFlutterwaveOrder({ order, buyer, verifiedTx, app, session, method }) {
+async function settleVerifiedPayment({ order, buyer, verifiedTx, app, session, method, provider = 'flutterwave' }) {
     order.isPaid = true;
     order.paidAt = order.paidAt || new Date();
     order.mainOrderStatus = 'processing';
@@ -253,10 +266,12 @@ async function settleVerifiedFlutterwaveOrder({ order, buyer, verifiedTx, app, s
         id: verifiedTx.id,
         status: verifiedTx.status,
         tx_ref: verifiedTx.tx_ref,
+        provider,
         flw_ref: verifiedTx.flw_ref,
+        gateway_ref: verifiedTx.gateway_ref,
         amount: verifiedTx.amount,
         currency: verifiedTx.currency,
-        email_address: verifiedTx.customer?.email,
+        email_address: verifiedTx.customer?.email || verifiedTx.email,
         verifiedAt: new Date(),
         verificationMethod: method,
     };
@@ -269,7 +284,7 @@ async function settleVerifiedFlutterwaveOrder({ order, buyer, verifiedTx, app, s
         for (const item of shipment.items) {
             await decrementPaidItemInventory({ item, session });
         }
-        await notifyVendorOfPaidShipment({ app, order, shipment, paymentMethod: 'Flutterwave', session });
+        await notifyVendorOfPaidShipment({ app, order, shipment, paymentMethod: provider === 'squad' ? 'Squad' : 'Flutterwave', session });
     }
     return order.save({ session });
 }
@@ -2085,7 +2100,63 @@ router.post('/:id/payment-intent', protect, async (req, res) => {
             return res.status(200).json({ status: 'verified', orderId: order._id });
         }
         if (order.paymentMethod === 'Wallet') {
-            return res.status(400).json({ message: 'Wallet orders do not use Flutterwave.' });
+            return res.status(400).json({ message: 'Wallet orders do not use online checkout.' });
+        }
+
+        const provider = configuredPaymentProvider();
+        if (provider === 'squad') {
+            const buyer = await User.findById(req.user.id).select('firstName lastName email');
+            if (!buyer?.email) {
+                return res.status(400).json({ message: 'A verified email address is required for payment.' });
+            }
+            const existingSquadRef = order.paymentResult?.provider === 'squad'
+                ? order.paymentResult.tx_ref
+                : null;
+            if (existingSquadRef && order.paymentResult?.checkoutUrl) {
+                return res.status(200).json({
+                    provider: 'squad',
+                    orderId: order._id,
+                    tx_ref: existingSquadRef,
+                    checkout_url: order.paymentResult.checkoutUrl,
+                    amount: order.totalPrice,
+                    amount_kobo: Math.round(Number(order.totalPrice) * 100),
+                    currency: 'NGN',
+                    status: order.paymentResult.status || 'initiated',
+                });
+            }
+            const txRef = existingSquadRef || buildSquadTxRef(order._id);
+            const checkout = await initiateSquadPayment({
+                amountNaira: order.totalPrice,
+                email: buyer.email,
+                customerName: `${buyer.firstName || ''} ${buyer.lastName || ''}`.trim() || buyer.email,
+                transactionRef: txRef,
+                orderId: order._id,
+            });
+            order.paymentResult = {
+                ...(order.paymentResult || {}),
+                provider: 'squad',
+                tx_ref: checkout.data.transaction_ref,
+                checkoutUrl: checkout.data.checkout_url,
+                status: 'initiated',
+                expectedAmount: order.totalPrice,
+                expectedAmountKobo: Math.round(Number(order.totalPrice) * 100),
+                currency: 'NGN',
+                initiatedAt: order.paymentResult?.initiatedAt || new Date(),
+            };
+            await order.save();
+            return res.status(existingSquadRef ? 200 : 201).json({
+                provider: 'squad',
+                orderId: order._id,
+                tx_ref: checkout.data.transaction_ref,
+                checkout_url: checkout.data.checkout_url,
+                amount: order.totalPrice,
+                amount_kobo: Math.round(Number(order.totalPrice) * 100),
+                currency: 'NGN',
+                status: 'initiated',
+            });
+        }
+        if (provider !== 'flutterwave') {
+            return res.status(503).json({ message: 'Online payment is temporarily unavailable.' });
         }
 
         const existingRef = order.paymentResult?.tx_ref;
@@ -2172,6 +2243,52 @@ router.put('/:id/pay', protect, async (req, res) => {
             });
         }
         console.log(`[PAY ENDPOINT] Idempotency check passed - no conflicting order found for tx_ref: ${transaction_id}`);
+        const provider = String(mainOrder.paymentResult?.provider || 'flutterwave').toLowerCase();
+        if (provider === 'squad') {
+            const verified = await verifySquadPayment({
+                transactionRef: transaction_id,
+                initiatedAt: mainOrder.paymentResult?.initiatedAt,
+            });
+            if (!squadPaymentMatchesOrder(verified, mainOrder, transaction_id)) {
+                mainOrder.paymentResult = buildSquadPendingPaymentResult(
+                    mainOrder.paymentResult,
+                    verified,
+                    transaction_id,
+                );
+                await mainOrder.save({ session });
+                await session.commitTransaction();
+                session.endSession();
+                return res.status(202).json({
+                    message: 'Payment is not confirmed yet. It will be checked again.',
+                    status: mainOrder.paymentResult.status,
+                });
+            }
+            const normalized = normalizeSquadTransaction(verified);
+            const updatedOrder = await settleVerifiedPayment({
+                order: mainOrder,
+                buyer,
+                verifiedTx: {
+                    ...normalized.raw,
+                    id: normalized.id,
+                    status: 'successful',
+                    tx_ref: normalized.tx_ref,
+                    gateway_ref: normalized.gateway_ref,
+                    amount: normalized.amountKobo / 100,
+                    currency: normalized.currency,
+                    email: normalized.email,
+                },
+                app: req.app,
+                session,
+                method: 'direct_verify',
+                provider: 'squad',
+            });
+            await session.commitTransaction();
+            session.endSession();
+            try { await grantReferralRewardForVerifiedUser(req.user.id); } catch (referralError) {
+                console.error('[PAY ENDPOINT] Referral reward processing error:', referralError);
+            }
+            return res.json(updatedOrder);
+        }
         const flutterwaveSecretKey = process.env.FLUTTERWAVE_SECRET_KEY?.trim();
         if (!flutterwaveSecretKey || !flutterwaveSecretKey.startsWith('FLWSECK-')) {
             console.error('[PAY ENDPOINT] Flutterwave verification misconfigured: FLUTTERWAVE_SECRET_KEY is missing or is not a secret key.');
@@ -2228,7 +2345,7 @@ router.put('/:id/pay', protect, async (req, res) => {
         }
         console.log(`[PAY ENDPOINT] VERIFICATION SUCCESS - tx_ref: ${transaction_id} | Amount: ${flwData.data.amount} NGN | Customer: ${flwData.data.customer.email}`);
         // Verified — update MainOrder
-        const updatedOrder = await settleVerifiedFlutterwaveOrder({
+        const updatedOrder = await settleVerifiedPayment({
             order: mainOrder,
             buyer,
             verifiedTx: flwData.data,
@@ -3045,6 +3162,54 @@ router.get('/:id', protect, async (req, res) => {
 });
 
 
+router.post('/webhooks/squad', async (req, res) => {
+  const signature = req.headers['x-squad-encrypted-body'] || req.headers['x-squad-signature'];
+  const secretKey = String(process.env.SQUAD_SECRET_KEY || '').trim();
+  if (!verifySquadWebhookSignature({ rawBody: req.rawBody, body: req.body, signature, secretKey })) {
+    console.warn('Invalid Squad webhook signature');
+    return res.status(401).send('Signature mismatch');
+  }
+  const event = req.body || {};
+  const body = event.Body || event.body || {};
+  const txRef = body.transaction_ref || event.TransactionRef || event.transaction_ref;
+  if (!txRef || String(event.Event || event.event || '').toLowerCase() !== 'charge_successful') {
+    return res.sendStatus(200);
+  }
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  try {
+    const order = await MainOrder.findOne({ 'paymentResult.tx_ref': txRef, 'paymentResult.provider': 'squad', isPaid: false }).session(session);
+    if (!order) {
+      await session.commitTransaction();
+      return res.sendStatus(200);
+    }
+    const verified = await verifySquadPayment({ transactionRef: txRef, initiatedAt: order.paymentResult?.initiatedAt });
+    if (!squadPaymentMatchesOrder(verified, order, txRef)) {
+      await session.commitTransaction();
+      return res.sendStatus(200);
+    }
+    const buyer = await User.findById(order.user).session(session);
+    if (!buyer) throw new Error('Buyer user account not found.');
+    const normalized = normalizeSquadTransaction(verified);
+    await settleVerifiedPayment({
+      order, buyer,
+      verifiedTx: { ...normalized.raw, id: normalized.id, status: 'successful', tx_ref: normalized.tx_ref, gateway_ref: normalized.gateway_ref, amount: normalized.amountKobo / 100, currency: normalized.currency, email: normalized.email },
+      app: req.app, session, method: 'webhook', provider: 'squad',
+    });
+    await session.commitTransaction();
+    try { await grantReferralRewardForVerifiedUser(order.user); } catch (error) {
+      console.error('Squad webhook referral reward processing error:', error);
+    }
+    return res.sendStatus(200);
+  } catch (error) {
+    await session.abortTransaction();
+    console.error('Squad webhook processing error:', error);
+    return res.status(500).send('Internal error');
+  } finally {
+    session.endSession();
+  }
+});
+
 router.post('/webhooks/flutterwave', async (req, res) => {
   const webhookSecret = process.env.FLUTTERWAVE_WEBHOOK_SECRET;
   const signature = req.headers['flutterwave-signature'];
@@ -3106,7 +3271,7 @@ router.post('/webhooks/flutterwave', async (req, res) => {
 
     const buyer = await User.findById(order.user).session(session);
     if (!buyer) throw new Error('Buyer user account not found.');
-    await settleVerifiedFlutterwaveOrder({
+    await settleVerifiedPayment({
       order,
       buyer,
       verifiedTx,
@@ -3175,7 +3340,7 @@ async function processPendingFlutterwavePayments(app) {
         }
         const buyer = await User.findById(order.user).session(session);
         if (!buyer) throw new Error('Buyer user account not found.');
-        await settleVerifiedFlutterwaveOrder({
+        await settleVerifiedPayment({
           order,
           buyer,
           verifiedTx: verified.data,
@@ -3198,7 +3363,78 @@ async function processPendingFlutterwavePayments(app) {
   }
 }
 
+let squadPaymentRecoveryRunning = false;
+async function processPendingSquadPayments(app) {
+  if (squadPaymentRecoveryRunning || !process.env.SQUAD_SECRET_KEY) return;
+  squadPaymentRecoveryRunning = true;
+  try {
+    const candidates = await MainOrder.find({
+      isPaid: false,
+      mainOrderStatus: 'pending_payment',
+      'paymentResult.provider': 'squad',
+      'paymentResult.tx_ref': { $exists: true, $ne: '' },
+      'paymentResult.status': { $in: ['initiated', 'pending', 'unknown'] },
+    }).sort({ 'paymentResult.lastCheckedAt': 1, createdAt: 1 }).limit(20);
+
+    for (const candidate of candidates) {
+      const txRef = candidate.paymentResult?.tx_ref;
+      if (!txRef) continue;
+      const session = await mongoose.startSession();
+      session.startTransaction();
+      try {
+        const order = await MainOrder.findOne({ _id: candidate._id, isPaid: false }).session(session);
+        if (!order) {
+          await session.commitTransaction();
+          continue;
+        }
+        const verified = await verifySquadPayment({
+          transactionRef: txRef,
+          initiatedAt: order.paymentResult?.initiatedAt,
+        });
+        if (!squadPaymentMatchesOrder(verified, order, txRef)) {
+          order.paymentResult = buildSquadPendingPaymentResult(order.paymentResult, verified, txRef);
+          await order.save({ session });
+          await session.commitTransaction();
+          continue;
+        }
+        const buyer = await User.findById(order.user).session(session);
+        if (!buyer) throw new Error('Buyer user account not found.');
+        const normalized = normalizeSquadTransaction(verified);
+        await settleVerifiedPayment({
+          order,
+          buyer,
+          verifiedTx: {
+            ...normalized.raw,
+            id: normalized.id,
+            status: 'successful',
+            tx_ref: normalized.tx_ref,
+            gateway_ref: normalized.gateway_ref,
+            amount: normalized.amountKobo / 100,
+            currency: normalized.currency,
+            email: normalized.email,
+          },
+          app,
+          session,
+          method: 'scheduled_reconciliation',
+          provider: 'squad',
+        });
+        await session.commitTransaction();
+        await grantReferralRewardForVerifiedUser(order.user);
+        console.log(`[SQUAD PAYMENT RECOVERY] Order ${order._id} verified via ${txRef}`);
+      } catch (error) {
+        await session.abortTransaction();
+        console.error(`[SQUAD PAYMENT RECOVERY] Failed for order ${candidate._id}:`, error.message);
+      } finally {
+        session.endSession();
+      }
+    }
+  } finally {
+    squadPaymentRecoveryRunning = false;
+  }
+}
+
 router.processPendingFlutterwavePayments = processPendingFlutterwavePayments;
+router.processPendingSquadPayments = processPendingSquadPayments;
 router.paymentMatchesOrder = paymentMatchesOrder;
 
 

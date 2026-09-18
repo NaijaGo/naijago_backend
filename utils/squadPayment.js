@@ -7,9 +7,9 @@ const normalizeSquadTransaction = (response) => {
     status: data.transaction_status || data.status,
     tx_ref: data.transaction_ref,
     gateway_ref: data.gateway_ref,
-    amountKobo: Number(data.amount),
-    currency: String(data.currency || '').toUpperCase(),
-    email: data.email || data.customer?.email,
+    amountKobo: Number(data.amount ?? data.transaction_amount),
+    currency: String(data.currency || data.transaction_currency_id || '').toUpperCase(),
+    email: data.email || data.customer_email || data.customer?.email,
     raw: data,
   };
 };

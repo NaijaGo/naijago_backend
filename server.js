@@ -2208,12 +2208,15 @@ const startServer = async () => {
     if (process.env.DISABLE_PAYMENT_RECOVERY_RUNNER !== 'true') {
       const runPaymentRecovery = () => {
         orderRoutes.processPendingFlutterwavePayments(app).catch((error) => {
-          console.error(colors.red(`Payment recovery runner error: ${error.message}`));
+          console.error(colors.red(`Flutterwave recovery runner error: ${error.message}`));
+        });
+        orderRoutes.processPendingSquadPayments(app).catch((error) => {
+          console.error(colors.red(`Squad recovery runner error: ${error.message}`));
         });
       };
       runPaymentRecovery();
       setInterval(runPaymentRecovery, Number(process.env.PAYMENT_RECOVERY_INTERVAL_MS || 300000));
-      console.log(colors.green('Flutterwave payment recovery runner active.'));
+      console.log(colors.green('Payment recovery runners active (Squad + legacy Flutterwave).'));
     }
     if (process.env.DISABLE_RIDER_ASSIGNMENT_TIMEOUT_RUNNER !== 'true') {
       const runAssignmentExpiry = () => {
