@@ -5,6 +5,9 @@ const { protect } = require('../middleware/authMiddleware');
 const { normalizeGeoapifySuggestion } = require('../utils/locationSuggestions');
 
 const router = express.Router();
+const suggestionCache = new Map();
+const SUGGESTION_CACHE_TTL_MS = 5 * 60 * 1000;
+const SUGGESTION_CACHE_MAX_ENTRIES = 250;
 const autocompleteLimiter = rateLimit({
   windowMs: 60 * 1000,
   limit: 60,
@@ -26,12 +29,21 @@ router.get('/autocomplete', protect, autocompleteLimiter, async (req, res) => {
 
   const latitude = Number(req.query.lat);
   const longitude = Number(req.query.lng);
+  const normalizedQuery = query.toLowerCase().replace(/\s+/g, ' ');
+  const biasKey = Number.isFinite(latitude) && Number.isFinite(longitude)
+    ? `${latitude.toFixed(2)},${longitude.toFixed(2)}`
+    : 'ng';
+  const cacheKey = `${normalizedQuery}|${biasKey}`;
+  const cached = suggestionCache.get(cacheKey);
+  if (cached && Date.now() - cached.createdAt <= SUGGESTION_CACHE_TTL_MS) {
+    return res.json({ suggestions: cached.suggestions, cached: true });
+  }
   const params = {
     text: query,
     format: 'json',
     filter: 'countrycode:ng',
     lang: 'en',
-    limit: 6,
+    limit: 15,
     apiKey,
   };
   if (Number.isFinite(latitude) && Number.isFinite(longitude)
@@ -46,9 +58,22 @@ router.get('/autocomplete', protect, autocompleteLimiter, async (req, res) => {
       params,
       timeout: 10000,
     });
-    const suggestions = (response.data?.results || [])
+    let rawResults = response.data?.results || [];
+    if (rawResults.length === 0) {
+      const fallbackResponse = await axios.get('https://api.geoapify.com/v1/geocode/search', {
+        params,
+        timeout: 10000,
+      });
+      rawResults = fallbackResponse.data?.results || [];
+    }
+    const seen = new Set();
+    const suggestions = rawResults
       .map(normalizeGeoapifySuggestion)
-      .filter(Boolean);
+      .filter((suggestion) => suggestion && !seen.has(suggestion.id) && seen.add(suggestion.id));
+    suggestionCache.set(cacheKey, { suggestions, createdAt: Date.now() });
+    if (suggestionCache.size > SUGGESTION_CACHE_MAX_ENTRIES) {
+      suggestionCache.delete(suggestionCache.keys().next().value);
+    }
     return res.json({ suggestions });
   } catch (error) {
     console.error('Geoapify autocomplete failed:', error.response?.status || error.message);
