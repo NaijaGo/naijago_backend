@@ -103,7 +103,11 @@ Prepared database gate: from the backend run
 `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\runAtlasIntegrationTests.ps1 -RunTests -Suite Search`.
 It exercises the real aggregation and concurrent cache/quota writes with synthetic
 fixtures, injected per-run collection names and simulated AI responses only.
-Authenticated Atlas Search execution is pending; see ISOLATED_DATABASE_TESTS.md.
+Verified user-run Atlas result: 44e0cbffc664427e94839d4f384e002b on
+2026-09-20, 13 passed, 0 failed, 0 skipped, approximately 57.4 seconds.
+No cleanup error was reported. This covers the actual Mongo aggregate and
+cache/quota operations, not a real Gemini response, production latency or device
+acceptance. See ISOLATED_DATABASE_TESTS.md.
 
 - Run aggregate queries against an isolated MongoDB copy (unit tests do not replace this).
 - Audit category/audience/type inference, especially generic bags, shoes and unisex goods.

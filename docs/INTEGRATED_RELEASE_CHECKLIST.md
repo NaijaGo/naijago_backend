@@ -44,9 +44,9 @@ Workspace root has no usable Git repository. Cross-repository tracker lives here
 | EXP-05 | Vendor engagement notices and replies; aggregation/preferences and deep links | Vendor/backend | Outbox, preferences, dedupe, replies/deep links implemented; provider delivery and aggregation acceptance pending |
 | EXP-06 | Visible-only video playback, caching, data usage, performance/accessibility | Customer | Manual muted playback and lifecycle/expiry guards implemented; device/data/performance/accessibility pending |
 | SEARCH-01 | Central taxonomy; category path/audience/gender/type/brand/tags/vendor fields; legacy backfill/create/edit | Backend/admin/vendor | Working: attributes/forms/dry-run migration added; data audit pending |
-| SEARCH-02 | Structured intent/synonyms, broad/specific searches and combined filters; true availability; relevance tests | Backend | Unit tests passed; seller eligibility/offer snapshot fixes added; isolated Mongo Search suite prepared, actual run/performance pending |
+| SEARCH-02 | Structured intent/synonyms, broad/specific searches and combined filters; true availability; relevance tests | Backend | Unit and real Atlas search/filter/offer/pagination tests passed; representative data audit/performance/device acceptance pending |
 | SEARCH-03 | Collection heading/View All/subcategory chips/products across vendors, filters and pagination | Customer | Implemented; contract/device checks in progress |
-| SEARCH-04 | Gemini strict-schema ambiguous-query classification; fast deterministic path, cache/timeouts/fallback/rate-cost limits | Backend | Zero-result classification fallback implemented; unit tests passed; isolated cache/quota race tests prepared; actual Mongo run, real model and latency acceptance pending |
+| SEARCH-04 | Gemini strict-schema ambiguous-query classification; fast deterministic path, cache/timeouts/fallback/rate-cost limits | Backend | Unit and real Atlas cache/quota/lease tests passed with simulated AI; real model and latency acceptance pending |
 | REQUEST-01 | Explicit zero-result AI preview; AI concept/not for sale label; no fake price/cart; async generation | Customer/backend | Pending |
 | REQUEST-02 | Request This Product; admin sourcing queue/status/vendor match, customer history/notifications | Customer/admin/backend | Pending |
 | REFINE-01 | Preserve original; automatic derivative refinement, background/light/centering/shadow; product identity preserved | Backend | Pending |
@@ -60,7 +60,7 @@ Workspace root has no usable Git repository. Cross-repository tracker lives here
 | RECUR-01 | Weekly/biweekly/monthly/custom; reminder-to-pay, next/all edits, pause/resume/skip/cancel, occurrence linkage | Backend/customer | Pending |
 | RECUR-02 | Current price-stock-vendor-address-slot checks, substitution preference/approval threshold, reminders/failure/admin oversight | Apps/backend/admin | Pending |
 | RECUR-03 | PDF initial scope is reminder-to-pay; automatic charges require provider support/consent verification before inclusion | Backend | Pending decision |
-| OPS-01 | Durable jobs, leases/retries/idempotency, feature flags, audit/analytics/permissions | Backend/admin | Queue/media/Explore worker and admin retries implemented; Atlas competing claims/lease fencing/outbox tests passed; independent worker restart, health/alerts and remaining handlers pending |
+| OPS-01 | Durable jobs, leases/retries/idempotency, feature flags, audit/analytics/permissions | Backend/admin | Queue/media/Explore worker and admin retries implemented; Atlas claim/lease/outbox tests passed; separate-process crash/restart suite prepared for user-run Atlas gate; production worker lifecycle, health/alerts and remaining handlers pending |
 | WEB-01 | Needed product/vendor/campaign/group deep links/fallback pages, privacy/UGC/advertising terms | Website/apps | Pending |
 | RELEASE-01 | Compatibility with existing apps, migrations rehearsed, backup/rollback | All | Pending |
 | RELEASE-02 | Unit/API/concurrency/E2E/performance; payment/webhook/notification/media failures, slow networks and device matrix | All | Pending |
@@ -118,6 +118,11 @@ Workspace root has no usable Git repository. Cross-repository tracker lives here
 
 ## Current release boundary
 
+- 2026-09-20: Worker harness offline safety tests passed 6/6. Full backend regression then passed 157 tests, 0 failed, with 3 opt-in database suites deliberately skipped locally (no test URI supplied). JavaScript/PowerShell syntax and Git whitespace checks passed. No production worker, paid provider, deployment or authenticated database connection was started by the agent; Workers Atlas execution still awaits the user's private-credential run.
+
+- 2026-09-20: User ran Search against the isolated Atlas database after checkpoint 92a0f9a. Run 44e0cbffc664427e94839d4f384e002b passed 13 tests (twelve subtests plus parent), 0 failed, 0 skipped, about 57.4 seconds; no cleanup error reported. Real Mongo verified taxonomy matching, mixed category formats, seller eligibility, combined filters, offer snapshot consistency, all 125 paginated rows, literal/no-result queries, AI filter enforcement and cache/global/per-actor quota/failure recovery. AI HTTP was simulated; this is not a real Gemini/provider or customer-device result.
+- 2026-09-20: Prepared Workers suite using independent Node child processes and independent connections to one per-run BackgroundJob collection. Four scenarios: 12 jobs shared by two workers, abrupt exit after simulated delivery, graceful abort before delivery, and exhausted lease failure. Children inherit only test URI plus essential OS variables, not production/provider/Node preload configuration. Only owned child handles may be terminated; all must close before collection cleanup. Actual Atlas Workers execution remains pending; production worker startup/scheduler/drain/monitoring acceptance remains separate.
+
 - 2026-09-20: Final offline search-checkpoint regression: 151 passed, 0 failed, 2 intentionally skipped database suites (Explore and Search) with no test URI supplied. The final targeted search/harness subset passed 15/15. JavaScript and PowerShell syntax and Git whitespace checks passed. This is not an authenticated Atlas Search pass; that is the user's next private-credential test. No new keys, production changes, pushes, deployments or builds were required.
 
 - 2026-09-20: Extended the isolated harness with Search/All selectors (default connection check and Explore behavior preserved). Added a real-Mongo Search suite covering twelve subtests: attributes/synonyms, seller eligibility, combined filters, real offer price/stock, snapshot consistency, 125-row pagination, literal queries, AI filter enforcement and concurrent cache/quota/lease behavior. Only synthetic per-run data and simulated AI HTTP; authenticated Atlas execution remains pending. Five offline tests cover the new harness creation/cleanup boundaries and failure paths.
@@ -131,13 +136,18 @@ Workspace root has no usable Git repository. Cross-repository tracker lives here
 - 2026-09-20: Atlas harness safety tests: 10 passed. Full backend regression: 132 passed, 0 failed, 1 skipped (actual Mongo integration still awaiting private user-run connection). Node and PowerShell syntax checks and Git whitespace validation passed. No Atlas connection or database mutation performed by the agent.
 
 This is a local development checkpoint, NOT completion of the integrated phase.
-Latest verified database gate: user-supplied Atlas run
+Previously verified database gate: user-supplied Atlas run
 265adef2f39e42df98611b23ba1191ba after fix e4d9a2d passed 5 tests, 0 failed,
 0 skipped (four subtests plus parent; about 22.8 seconds). This supersedes the
 earlier pending-rerun notes above. The tested queue claims, lease recovery/stale
 completion, reaction/comment deduplication and outbox rollback passed against
 the isolated database. No cleanup error was reported. This is not a production
 deployment or a whole-platform acceptance result.
+
+Latest verified database gate: Search run 44e0cbffc664427e94839d4f384e002b,
+13 passed, 0 failed, 0 skipped. It supersedes earlier Search-pending notes above.
+Both Explore and Search database gates have now passed; Workers is the next
+prepared gate. Provider, deployment and device evidence remain separate.
 
 No commits from this phase have been pushed/deployed automatically, no paid provider
 calls have been made, no production migration/database write has run, and no AAB/IPA
@@ -152,7 +162,7 @@ Do not treat successful unit tests as permission to publish this unfinished rele
 ## Next actions
 
 1. Save verified local checkpoints; keep flags off and do not deploy the incomplete release automatically.
-2. Atlas connection and the initial transaction/lease suite PASSED. Next run the prepared isolated smart-search aggregate/filter/cache/quota suite using -RunTests -Suite Search, then address its results before independent worker restart, health/alerts and browser/provider acceptance. See ISOLATED_DATABASE_TESTS.md. Never change production MONGO_URI for tests.
+2. Atlas connection, Explore transaction/lease suite and Search aggregate/filter/cache/quota suite PASSED. Next run -RunTests -Suite Workers for the prepared independent-process gate, then close production worker lifecycle/health/alerts and browser/provider acceptance. See ISOLATED_DATABASE_TESTS.md. Never change production MONGO_URI for tests.
 3. Implement clearly non-purchasable AI preview + Request This Product/admin sourcing, then original-preserving image refinement with approval/bulk/retry controls.
 4. Implement PDF scheduled delivery, photo reviews, group ordering and recurring reminder-to-pay workflows with integration tests.
 5. Close prior radar/security/regression items, rehearse migrations with a fresh backup, then deploy/build/device-test the complete release.

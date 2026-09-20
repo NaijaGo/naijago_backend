@@ -1,7 +1,8 @@
 # Isolated MongoDB regression tests
 
-The opt-in suites are test/integration/exploreMongo.test.js and
-test/integration/searchMongo.test.js. They never read MONGO_URI. Do not modify
+The opt-in suites are test/integration/exploreMongo.test.js,
+test/integration/searchMongo.test.js and test/integration/workerMongo.test.js.
+They never read MONGO_URI to connect. Do not modify
 the production connection or Render configuration. They accept either a loopback
 replica set or the one user-approved, separate Atlas
 TEST cluster. Production hosts and other Atlas hosts are rejected.
@@ -45,11 +46,11 @@ That command keeps running the original Explore suite. Run the new Search gate:
 
     powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\runAtlasIntegrationTests.ps1 -RunTests -Suite Search
 
-Use -Suite All to run both sequentially. Search uses the actual Mongoose schemas,
+Use -Suite All to run all three sequentially. Search uses the actual Mongoose schemas,
 indexes, aggregation, population, cache leases and quota writes, with synthetic
 fixtures and simulated Gemini responses. It does not contact a paid AI provider,
-create real listings, or change deployment flags. The actual Search Atlas result
-is still pending; offline syntax/unit tests do not establish a database pass.
+create real listings, or change deployment flags. The user-run Search Atlas gate
+passed 13 tests with no failures/skips; evidence is recorded below.
 
 The script restores the previous test environment variables on exit. Atlas use
 requires NAIJAGO_ALLOW_ATLAS_TESTS=true; the interactive script supplies it only
@@ -57,7 +58,8 @@ for its child process. TLS, majority writes, retryable writes and the test datab
 are enforced. Unknown/unsafe connection options are rejected.
 
 Explore creates four uniquely named ngtest_<random-run-id>_* collections; Search
-creates five (users, products, offers, AI cache and quota). All uses a separate
+creates five (users, products, offers, AI cache and quota). Workers creates one
+BackgroundJob collection, shared only by that run's child processes. All uses a separate
 run ID and cleanup boundary for each suite. Each suite creates its own indexes
 and refuses existing collection names. Cleanup checks
 the connected database and the complete list of names against that run's allowed
@@ -118,7 +120,12 @@ search aggregates, media moderation races, scheduling, group carts and payment
 settlement before the integrated release. No provider calls or payments belong
 in this isolated suite.
 
-## Search gate prepared for the next Atlas run
+## Search gate verified against Atlas
+
+User-supplied terminal output after checkpoint 92a0f9a, 2026-09-20:
+run 44e0cbffc664427e94839d4f384e002b, 13 passed, 0 failed, 0 skipped,
+approximately 57.4 seconds. No cleanup error was reported. The twelve subtests
+below and their parent passed against real Mongo with simulated AI HTTP.
 
 Twelve subtests plus their parent exercise:
 
@@ -145,4 +152,32 @@ they do not change the computer clock or real provider quotas.
 
 Still separate release gates: real provider schema/model validation, representative
 catalog query plans/latency, HTTP/proxy limits, metadata backfill rehearsal and
-customer-device UI checks. No Search database pass is claimed before user output.
+customer-device UI checks. A test fixture pass does not establish production
+performance or correctness of every existing product's inferred metadata.
+
+## Worker process gate - prepared, Atlas execution pending
+
+From the backend repository, run:
+
+    powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\runAtlasIntegrationTests.ps1 -RunTests -Suite Workers
+
+The same hidden test-credential prompt applies. Four subtests plus their parent
+use actual separate Node processes, separate Mongo connections and the existing
+queue/runner implementation. They check competing claims, restart after a crash
+between simulated delivery and database acknowledgment, graceful abort before
+delivery, and bounded failure when attempts are exhausted.
+
+The provider is a local receipt map, not OneSignal. Reusing a delivery key returns
+the same simulated receipt: this verifies retry identity, not exactly-once real
+notification delivery. Test clocks are explicitly advanced past recorded leases;
+the host clock is unchanged and tests do not wait the production three-minute
+lease. Actual hosting shutdown, startup/index failure cleanup, scheduler draining,
+heartbeat timing, health alerts and real provider idempotency remain release gates.
+
+Child environments exclude MONGO_URI, provider credentials and NODE_OPTIONS.
+Credentials stay in the test process environment, never command-line arguments
+or files. Child stdout/stderr are not relayed; failures use safe test messages.
+Children cannot create/drop collections or import the production worker/providers.
+Parent cleanup confirms each owned child has closed before dropping its own
+collection; if a child cannot be stopped, it preserves the collection and reports
+failure. Never use broad process-kill or database-cleanup commands.

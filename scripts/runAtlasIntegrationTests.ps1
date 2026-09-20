@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([switch]$RunTests, [ValidateSet('Explore', 'Search', 'All')][string]$Suite = 'Explore')
+param([switch]$RunTests, [ValidateSet('Explore', 'Search', 'Workers', 'All')][string]$Suite = 'Explore')
 
 $ErrorActionPreference = 'Stop'
 $testRepoRoot = Split-Path -Parent $PSScriptRoot
@@ -15,7 +15,7 @@ try {
     Write-Host 'Dedicated test cluster: naijago-testing.kwcvhix.mongodb.net'
     if ($RunTests) {
         Write-Host 'This runs isolated tests and removes only collections created by this test run.'
-        Write-Host ('Suite: ' + $Suite + '. AI HTTP responses are simulated; no paid provider calls.')
+        Write-Host ('Suite: ' + $Suite + '. External providers are simulated; no paid provider calls.')
     } else {
         Write-Host 'Connection check only. No test data will be written.'
     }
@@ -32,7 +32,8 @@ try {
         $testFiles = @(switch ($Suite) {
             'Explore' { 'test/integration/exploreMongo.test.js' }
             'Search' { 'test/integration/searchMongo.test.js' }
-            'All' { 'test/integration/exploreMongo.test.js'; 'test/integration/searchMongo.test.js' }
+            'Workers' { 'test/integration/workerMongo.test.js' }
+            'All' { 'test/integration/exploreMongo.test.js'; 'test/integration/searchMongo.test.js'; 'test/integration/workerMongo.test.js' }
         })
         & node --test --test-concurrency=1 @testFiles
     } else {

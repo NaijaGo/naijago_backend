@@ -61,7 +61,8 @@ skipped. Push acceptance is not proof that a device displayed a notification.
 ## Before release
 
 - Verified 2026-09-20 from user-supplied isolated Atlas run 265adef2f39e42df98611b23ba1191ba: concurrent enqueue/claim identity, simulated lease expiry and stale completion rejection, transactionally deduplicated reaction/comment notifications, and rollback on injected outbox failure. Four subtests plus parent passed, with no failures or skips. This confirms database behavior under parallel calls, not actual delivery to a device.
-- Still test two independent worker processes and process crash/restart recovery against the isolated database; the parallel-call suite does not replace this check.
+- Prepared (not yet Atlas-verified): run the isolated process suite with -RunTests -Suite Workers. It uses separate Node processes/connections and the actual queue/runner with synthetic jobs, a simulated provider and controlled lease clocks. Covers competing claims, crash after provider acceptance before acknowledgment, graceful stop and exhausted attempts. See ISOLATED_DATABASE_TESTS.md.
+- The process suite does not start the production worker entrypoint or validate Render hosting. Still verify production startup/index-failure cleanup, draining scheduler/handler work before disconnect, host SIGTERM/restart timing, worker health/alerts and real provider idempotency.
 - Verify Cloudinary deletion on a deliberately abandoned test upload only.
 - Verify admin visibility/retry/audit against a real isolated Mongo database and browser. Cancellation UI and worker-health alerts remain pending.
 - Complete image refinement/preview jobs, media takedown/revocation and scheduled workflow handlers.
