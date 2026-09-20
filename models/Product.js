@@ -104,6 +104,11 @@ const productSchema = mongoose.Schema(
         required: true,
       },
     ],
+    refinementScanPending: { type: Boolean, select: false },
+    refinementScanAfter: { type: Date, select: false },
+    refinementScanCode: { type: String, select: false },
+    refinementScanProfile: { type: String, enum: ['standard', 'relight'], select: false },
+    refinementRequestedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', select: false },
 
     // ------------------------------
     // NEW STRUCTURED IMAGE OBJECT
@@ -340,6 +345,8 @@ productSchema.index({ moderationStatus: 1, createdAt: -1 });
 productSchema.index({ salesCount: -1, createdAt: -1 });
 productSchema.index({ name: 'text', description: 'text', brand: 'text', category: 'text', subcategory: 'text', searchTags: 'text', restaurantName: 'text' });
 
+productSchema.index({ refinementScanPending: 1, refinementScanAfter: 1, _id: 1 });
+require('../services/imageRefinementProductHooks').imageRefinementProductHooks(productSchema);
 const Product = mongoose.model('Product', productSchema);
 
 module.exports = Product;

@@ -1,8 +1,22 @@
 # Isolated MongoDB regression tests
 
+## Newest prepared gate: Refinement (not yet run against Atlas)
+
+From the backend repository:
+
+    powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\runAtlasIntegrationTests.ps1 -RunTests -Suite Refinement
+
+Seven subtests plus their parent use real isolated Product, ImageRefinement,
+BackgroundJob and AiUsageBucket collections: concurrent dedupe/quotas, outbox
+rollback, preserved originals, approval/publication concurrency, stale vendor-save
+rejection, seller reassignment, global budget bounds and durable upload scheduling.
+Photoroom and Cloudinary are simulated; no provider key or paid call is needed.
+Existing Explore/Search/Workers/Requests passes remain recorded below; they do not
+count as evidence for this newly prepared gate. See IMAGE_REFINEMENT.md.
+
 The opt-in suites are test/integration/exploreMongo.test.js,
-test/integration/searchMongo.test.js, test/integration/workerMongo.test.js and
-test/integration/requestMongo.test.js.
+test/integration/searchMongo.test.js, test/integration/workerMongo.test.js,
+test/integration/requestMongo.test.js and test/integration/refinementMongo.test.js.
 They never read MONGO_URI to connect. Do not modify
 the production connection or Render configuration. They accept either a loopback
 replica set or the one user-approved, separate Atlas
@@ -47,7 +61,7 @@ That command keeps running the original Explore suite. Run the new Search gate:
 
     powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\runAtlasIntegrationTests.ps1 -RunTests -Suite Search
 
-Use -Suite All to run all four sequentially. Search uses the actual Mongoose schemas,
+Use -Suite All to run all five sequentially. Search uses the actual Mongoose schemas,
 indexes, aggregation, population, cache leases and quota writes, with synthetic
 fixtures and simulated Gemini responses. It does not contact a paid AI provider,
 create real listings, or change deployment flags. The user-run Search Atlas gate

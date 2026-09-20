@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([switch]$RunTests, [ValidateSet('Explore', 'Search', 'Workers', 'Requests', 'All')][string]$Suite = 'Explore')
+param([switch]$RunTests, [ValidateSet('Explore', 'Search', 'Workers', 'Requests', 'Refinement', 'All')][string]$Suite = 'Explore')
 
 $ErrorActionPreference = 'Stop'
 $testRepoRoot = Split-Path -Parent $PSScriptRoot
@@ -34,7 +34,8 @@ try {
             'Search' { 'test/integration/searchMongo.test.js' }
             'Workers' { 'test/integration/workerMongo.test.js' }
             'Requests' { 'test/integration/requestMongo.test.js' }
-            'All' { 'test/integration/exploreMongo.test.js'; 'test/integration/searchMongo.test.js'; 'test/integration/workerMongo.test.js'; 'test/integration/requestMongo.test.js' }
+            'Refinement' { 'test/integration/refinementMongo.test.js' }
+            'All' { 'test/integration/exploreMongo.test.js'; 'test/integration/searchMongo.test.js'; 'test/integration/workerMongo.test.js'; 'test/integration/requestMongo.test.js'; 'test/integration/refinementMongo.test.js' }
         })
         & node --test --test-concurrency=1 @testFiles
     } else {

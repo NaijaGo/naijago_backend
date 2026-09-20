@@ -17,6 +17,9 @@ async function main() {
         ensureIndexes: async (types) => {
             await BackgroundJob.createCollection();
             await BackgroundJob.createIndexes();
+            if (types.includes('image.refine') && !await require('../services/imageRefinementRuntime').ready()) {
+                throw new Error('Image refinement indexes are not ready.');
+            }
             if (types.includes('request.notify') && !await require('../services/productRequestRuntime').ready()) {
                 throw new Error('Product request indexes are not ready.');
             }
@@ -29,6 +32,8 @@ async function main() {
             const media = createMediaCleanupService({ MediaAsset, Product, CarouselSlide, cloudinary, queue });
             const revocation = createMediaRevocationService({ MediaAsset, cloudinary, queue });
             const handlers = {};
+            const refinement = allowedTypes.includes('image.refine') ? require('../services/imageRefinementRuntime') : null;
+            if (refinement) Object.assign(handlers, refinement.handlers());
             if (allowedTypes.includes('request.notify')) Object.assign(handlers, require('../services/productRequestRuntime').handlers());
             if (allowedTypes.includes('media.cleanup')) handlers['media.cleanup'] = media.cleanup;
             if (allowedTypes.includes('media.revoke')) handlers['media.revoke'] = revocation.revoke;
@@ -38,7 +43,7 @@ async function main() {
                     explore: require('../services/exploreRuntime').explore, notifications: require('../services/notificationService') });
             }
             return { runner: createJobRunner({ queue, handlers }),
-                schedule: createWorkerSchedule({ allowedTypes, media, revocation }) };
+                schedule: createWorkerSchedule({ allowedTypes, media, revocation, refinement: refinement?.service }) };
         },
     });
 }

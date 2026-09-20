@@ -11,10 +11,14 @@ async function finishesWithin(work, timeoutMs) {
         ]);
     } finally { clearTimeout(timer); }
 }
-function createWorkerSchedule({ allowedTypes, media, revocation, now = Date.now }) {
+function createWorkerSchedule({ allowedTypes, media, revocation, refinement, now = Date.now }) {
     const types = new Set(allowedTypes);
-    let lastCleanup = null, lastRevocation = null;
+    let lastCleanup = null, lastRevocation = null, lastRefinement = null;
     return async function schedule({ signal }) {
+        signal.throwIfAborted();
+        if (types.has('image.refine') && (lastRefinement === null || now() - lastRefinement >= 60000)) {
+            await refinement.schedule({ signal }); lastRefinement = now();
+        }
         signal.throwIfAborted();
         if (types.has('media.revoke') && (lastRevocation === null || now() - lastRevocation >= 15000)) {
             await revocation.schedule({ signal }); lastRevocation = now();
@@ -84,6 +88,7 @@ async function startManagedWorker({ env, db, ensureIndexes, createRuntime, host 
         if (env.PRODUCT_VIDEO_ENABLED === 'true') allowedTypes.push('media.revoke');
         if (env.EXPLORE_ENABLED === 'true') allowedTypes.push('explore.notify');
         if (env.PRODUCT_REQUESTS_ENABLED === 'true') allowedTypes.push('request.preview', 'request.notify');
+        if (env.IMAGE_REFINEMENT_ENABLED === 'true') allowedTypes.push('image.refine', 'image.publish');
         if (!allowedTypes.length) throw new Error('No worker handlers are enabled.');
         await db.connect(env.MONGO_URI, { serverSelectionTimeoutMS: 10000 });
         await ensureIndexes(allowedTypes);

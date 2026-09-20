@@ -24,7 +24,14 @@ At least one task flag below must be enabled; an empty worker fails startup
 before connecting instead of appearing healthy without any active handlers.
 Registered tasks: `media.cleanup` (MEDIA_CLEANUP_ENABLED=true),
 `media.revoke` (PRODUCT_VIDEO_ENABLED=true), `explore.notify` (EXPLORE_ENABLED=true),
-and `request.preview` / `request.notify` (PRODUCT_REQUESTS_ENABLED=true).
+`request.preview` / `request.notify` (PRODUCT_REQUESTS_ENABLED=true), and
+`image.refine` / `image.publish` (IMAGE_REFINEMENT_ENABLED=true).
+Refinement uses a durable pending marker on vendor uploads or admin batches; the
+worker scans five marked products per minute. It requires a private Photoroom key,
+existing Cloudinary settings and finite global/per-seller budgets. Original and
+candidate assets are immutable and authenticated; public publication requires
+explicit admin approval. A possibly paid generation is never blindly retried.
+See IMAGE_REFINEMENT.md. Image retries are not exposed by generic job administration.
 Paid previews also require PRODUCT_REQUEST_PREVIEWS_ENABLED, existing provider
 credentials and finite daily budgets. See PRODUCT_REQUESTS.md. Preview crash
 recovery never automatically repeats a paid generation call; admin job retries
@@ -37,7 +44,7 @@ no paid worker service has been created here. An always-running process is neede
 for time-sensitive jobs; sleeping web services cannot promise on-time execution.
 
 The production entrypoint now uses the locally tested managed lifecycle. It
-connects, ensures queue/Explore indexes, then starts one non-overlapping polling
+connects, ensures queue and enabled feature indexes, then starts one non-overlapping polling
 loop. Startup failures attempt database close within five seconds and emit only
 sanitized diagnostics. SIGTERM/SIGINT stops polling, aborts the scheduler/handler,
 and waits up to thirty seconds for the active tick before attempting database
