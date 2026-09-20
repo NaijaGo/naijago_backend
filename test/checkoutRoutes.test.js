@@ -16,7 +16,8 @@ const query = (value) => ({ select() { return this; }, session() { return this; 
     then(resolve, reject) { return Promise.resolve(value).then(resolve, reject); } });
 
 async function setup(t, options = {}) {
-    const saved = { orders: [], shipments: [], commits: 0, aborts: 0, feeCalls: [] };
+    const saved = { orders: [], shipments: [], commits: 0, aborts: 0, feeCalls: [], buyerReads: [], sessionReads: [] };
+    const readQuery = (name, value) => { const result = query(value); result.session = function(value) { saved.sessionReads.push({ name, value }); return this; }; return result; };
     const product = { _id: P, name: 'Real catalog shirt', price: 5000, discountPrice: null, stockQuantity: 999,
         category: 'Fashion', isActive: true, moderationStatus: 'approved', productStatus: 'active', sellerType: 'vendor', vendor: S,
         imageUrls: ['https://example.invalid/real.jpg'], variants: [], ...options.product };
@@ -30,10 +31,10 @@ async function setup(t, options = {}) {
         async save() { saved.shipments.push(this); return this; } static countDocuments() { return query(0); } }
     const session = { startTransaction() {}, inTransaction: () => true, endSession() {},
         async abortTransaction() { saved.aborts++; }, async commitTransaction() { saved.commits++; } };
-    const models = { MainOrder, Shipment, Product: { find: () => options.databaseError ? { lean: async () => { throw new Error('synthetic-private-connection-string'); } } : query([product, ...(options.products || [])]) },
-        ProductOffer: { find: () => query([offer, ...(options.offers || [])]) },
-        User: { find: () => query([seller]), findById: (id) => query(String(id) === S ? seller : options.buyer || {}), findOne: () => query(seller) },
-        AppSetting: { findOne: () => query({ costLowStore: { vendorId: S, commissionKoboPerUnit: 5700 } }) } };
+    const models = { MainOrder, Shipment, Product: { find: () => options.databaseError ? { lean: async () => { throw new Error('synthetic-private-connection-string'); } } : readQuery('products', [product, ...(options.products || [])]) },
+        ProductOffer: { find: () => readQuery('offers', [offer, ...(options.offers || [])]) },
+        User: { find: () => readQuery('sellers', [seller]), findById: (id) => { saved.buyerReads.push(String(id)); return readQuery('buyer', String(id) === S ? seller : options.buyer || {}); }, findOne: () => query(seller) },
+        AppSetting: { findOne: () => readQuery('commission', { costLowStore: { vendorId: S, commissionKoboPerUnit: 5700 } }) } };
     const file = path.join(__dirname, '../routes/orderRoutes.js'), actualRequire = createRequire(file), module = { exports: {} };
     const middleware = (req, res, next) => { req.user = { _id: '777777777777777777777777', id: '777777777777777777777777' }; next(); };
     function requireForRoute(name) {
@@ -49,8 +50,37 @@ async function setup(t, options = {}) {
     const app = express(); app.use(express.json()); app.use('/orders', module.exports);
     const listener = app.listen(0, '127.0.0.1'); await new Promise((resolve) => listener.once('listening', resolve));
     t.after(() => { listener.closeAllConnections(); return new Promise((resolve) => listener.close(resolve)); });
-    return { saved, async post(route, input) { const response = await fetch(`http://127.0.0.1:${listener.address().port}/orders${route}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input), signal: AbortSignal.timeout(15000) }); return { status: response.status, data: await response.json() }; } };
+    return { saved, models, calculateCheckoutSummary: module.exports.calculateCheckoutSummary, async post(route, input) { const response = await fetch(`http://127.0.0.1:${listener.address().port}/orders${route}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input), signal: AbortSignal.timeout(15000) }); return { status: response.status, data: await response.json() }; } };
 }
+
+test('shared quote matches the HTTP quote and cannot inherit a client-supplied owner or session', async (t) => {
+    const f = await setup(t), owner = '777777777777777777777777', session = { inTransaction: () => true };
+    const http = await f.post('/summary', body({ userId: S, session: { forged: true } }));
+    assert.equal(http.status, 200); assert.deepEqual(f.saved.buyerReads, [owner]); assert.equal(f.saved.sessionReads.length, 0);
+    const internal = await f.calculateCheckoutSummary({ ...body(), userId: owner, session });
+    assert.deepEqual(JSON.parse(JSON.stringify(internal)), http.data);
+    assert.deepEqual(f.saved.sessionReads.map((entry) => entry.name), ['products', 'offers', 'sellers', 'commission', 'buyer']);
+    assert.ok(f.saved.sessionReads.every((entry) => entry.value === session));
+    assert.equal(f.saved.orders.length, 0); assert.equal(f.saved.shipments.length, 0);
+});
+
+test('planned group adapter uses the actual summary implementation with the same fees and signed quote snapshot', async (t) => {
+    const f = await setup(t), owner = '777777777777777777777777';
+    const { createCheckoutCatalogService } = require('../services/checkoutCatalogService');
+    const { createPlannedOrderCatalogService } = require('../services/plannedOrderCatalogService');
+    const { createPlannedCheckoutApproval } = require('../utils/plannedCheckoutApproval');
+    const adapter = createPlannedOrderCatalogService({ catalog: createCheckoutCatalogService(f.models), User: f.models.User, calculateCheckoutSummary: f.calculateCheckoutSummary });
+    const group = { owner, sellerType: 'vendor', sellerId: S, fulfillmentKey: `vendor:${S}:9:7`,
+        destination: { ...address, phoneNumber: 'synthetic', latitude: 9.1, longitude: 7.1 }, schedule: { mode: 'now', timeZone: 'Africa/Lagos' } };
+    const first = await adapter.quoteGroup({ group, items: [item({ selectedSize: null })] });
+    assert.equal(first.totalPrice, 2500); assert.equal(first.totalPlatformFees, 114); assert.equal(first.shipmentSummaries.length, 1);
+    const approval = createPlannedCheckoutApproval({ secret: 'synthetic-local-test-secret-not-for-production' });
+    const context = { kind: 'group', owner, recordId: P, revision: 3, destination: group.destination, schedule: group.schedule };
+    const issued = approval.issue({ context, quote: first });
+    const again = await adapter.quoteGroup({ group, items: [item()], session: { inTransaction: () => true } });
+    assert.equal(approval.verify({ context, quote: again, token: issued.approvalToken }), true);
+    assert.equal(f.saved.orders.length, 0);
+});
 
 test('real summary route retains delivery fees and the fixed Low Cost commission using authoritative item values', async (t) => {
     const { post, saved } = await setup(t);

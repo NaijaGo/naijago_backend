@@ -866,28 +866,24 @@ router.get('/', protect, async (req, res) => {
 // @desc    Calculate total price, split by vendor, and return summary
 // @route   POST /api/orders/calculate_summary
 // @access  Private
-router.post('/summary', protect, async (req, res) => {
-    const {
-        cartItems,
-        shippingAddress,
-        userLocation,
-        fulfillmentSelections = {},
-    } = req.body;
+// Shared, server-only quote entry point. Planned checkout calls this same function
+// with the owner's identity; it does not call a loopback HTTP route or copy prices.
+async function calculateCheckoutSummary({ cartItems, shippingAddress, userLocation,
+    fulfillmentSelections = {}, userId, session = null }) {
 
     if (!cartItems || cartItems.length === 0) {
-        return res.status(400).json({ message: 'No items in cart for summary calculation' });
+        throw new CheckoutCatalogError('EMPTY_CART', 'No items in cart for summary calculation', 400);
     }
     if (!shippingAddress || !hasLocation(userLocation)) {
-        return res.status(400).json({ message: 'Shipping address and location are required' });
+        throw new CheckoutCatalogError('INVALID_ADDRESS', 'Shipping address and location are required', 400);
     }
     
-    try {
-        const catalogLines = await checkoutCatalog.resolve(cartItems);
+        const catalogLines = await checkoutCatalog.resolve(cartItems, { session });
         const sellerCartMap = new Map();
         let totalSubtotal = 0;
         let totalPlatformFees = 0;
         const deliveryFeeSettings = await getDeliveryFeeSettings();
-        const costLowConfig = await getCostLowCommissionConfig();
+        const costLowConfig = await getCostLowCommissionConfig(session);
         let matchedDeliveryZone = null;
 
         // 1. Group items by vendor and calculate subtotal for each vendor
@@ -895,15 +891,11 @@ router.post('/summary', protect, async (req, res) => {
             const { item, product, offer: selectedOffer, sellerType, sellerId, sellerName, sellerLocation, sellerKey, sellerVendor, unitPrice, fulfillmentKey } = line;
 
             if (isRestrictedMedicine(product)) {
-                return res.status(400).json({
-                    message: `${product.name} requires pharmacist consultation before purchase.`
-                });
+                throw new CheckoutCatalogError('CONSULTATION_REQUIRED', `${product.name} requires pharmacist consultation before purchase.`, 400);
             }
 
             if (isRestaurantProduct(product) && !isWithinRestaurantOrderWindow(product)) {
-                return res.status(400).json({
-                    message: `${product.name} can only be ordered from ${product.orderStartTime || '09:00'} to ${product.orderEndTime || '19:00'}.`
-                });
+                throw new CheckoutCatalogError('RESTAURANT_CLOSED', `${product.name} can only be ordered from ${product.orderStartTime || '09:00'} to ${product.orderEndTime || '19:00'}.`, 400);
             }
             
             const requestedSelection =
@@ -915,9 +907,7 @@ router.post('/summary', protect, async (req, res) => {
                     ? 'pickup'
                     : 'delivery';
             if (fulfillmentMethod === 'pickup' && !sellerVendor?.pickupEnabled) {
-                return res.status(400).json({
-                    message: `${sellerName} does not currently offer customer pickup.`,
-                });
+                throw new CheckoutCatalogError('PICKUP_UNAVAILABLE', `${sellerName} does not currently offer customer pickup.`, 400);
             }
 
             const itemPrice = unitPrice * item.quantity;
@@ -1092,7 +1082,9 @@ router.post('/summary', protect, async (req, res) => {
             });
         }
 
-        const buyer = await User.findById(req.user._id).select('naijagoSubscription');
+        const buyerQuery = User.findById(userId).select('naijagoSubscription');
+        if (session) buyerQuery.session(session);
+        const buyer = await buyerQuery;
         const subscriptionDiscount = buildSubscriptionDeliveryDiscount({
             user: buyer,
             totalSubtotal,
@@ -1124,7 +1116,7 @@ router.post('/summary', protect, async (req, res) => {
         });
 
         // 4. Respond to Flutter
-        res.json({
+        return {
             totalSubtotal: parseFloat(totalSubtotal.toFixed(2)),
             totalShippingPrice: parseFloat(totalShippingPrice.toFixed(2)),
             originalShippingPrice: parseFloat(originalShippingPrice.toFixed(2)),
@@ -1166,8 +1158,14 @@ router.post('/summary', protect, async (req, res) => {
                 averageRate: totalSubtotal > 0 ? parseFloat((totalPlatformFees / totalSubtotal).toFixed(3)) : 0,
                 note: 'Commission rates vary by product category (5% - 12%)'
             }
-        });
+        };
+}
 
+router.post('/summary', protect, async (req, res) => {
+    try {
+        // Do not spread the body: identity/session are exclusively server-owned.
+        const { cartItems, shippingAddress, userLocation, fulfillmentSelections } = req.body;
+        res.json(await calculateCheckoutSummary({ cartItems, shippingAddress, userLocation, fulfillmentSelections, userId: req.user._id }));
     } catch (error) {
         if (error instanceof CheckoutCatalogError) return res.status(error.statusCode).json({ message: error.message, code: error.code });
         console.error('Error calculating order summary:', { name: error.name });
@@ -3384,6 +3382,7 @@ async function processPendingSquadPayments(app) {
 router.processPendingFlutterwavePayments = processPendingFlutterwavePayments;
 router.processPendingSquadPayments = processPendingSquadPayments;
 router.paymentMatchesOrder = paymentMatchesOrder;
+router.calculateCheckoutSummary = calculateCheckoutSummary;
 
 
 

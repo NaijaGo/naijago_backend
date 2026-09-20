@@ -105,7 +105,7 @@ test('group items drop supplied prices and validate quantities, duplicate varian
     assert.throws(() => g.normalizeItems([{ product, quantity: 1 }, { product, quantity: 2 }]));
     assert.throws(() => g.normalizeItems([{ product, quantity: 1, customerNote: 'a'.repeat(501) }]));
     assert.throws(() => g.normalizeItems([null]), { code: 'INVALID_ITEMS' });
-    assert.throws(() => g.normalizeItems([{ product, quantity: 1, selectedSize: 'XL' }]), { code: 'VARIANT_REQUIRED' });
+    assert.equal(g.normalizeItems([{ product, quantity: 1, selectedSize: 'XL' }])[0].selectedSize, 'XL');
     assert.equal(g.normalizeItems([{ product, quantity: 1, selectedSize: 'XL', variantId: user }])[0].variantId, user);
 });
 test('group invites have high entropy and only hashed identity needs storage', () => {

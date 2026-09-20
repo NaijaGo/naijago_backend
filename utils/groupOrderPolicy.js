@@ -1,6 +1,7 @@
 'use strict';
 const crypto = require('crypto');
 const { fail, id, integer, instant } = require('./orderPlanningPolicy');
+const { normalizeSelectedSize, sizeIdentity } = require('./plannedItemSelection');
 
 function normalizeItems(items) {
     if (!Array.isArray(items) || items.length > 100) fail('INVALID_ITEMS', 'Choose up to 100 items.');
@@ -9,15 +10,15 @@ function normalizeItems(items) {
         if (!item || typeof item !== 'object' || Array.isArray(item)) fail('INVALID_ITEMS', 'Choose valid cart items.');
         const product = id(item.product); const offer = item.offer ? id(item.offer) : null;
         const variantId = item.variantId ? id(item.variantId) : null;
-        if (item.selectedSize != null && !variantId) fail('VARIANT_REQUIRED', 'Choose this product variant again before adding it to the shared or recurring cart.');
+        const selectedSize = normalizeSelectedSize(item.selectedSize);
         const quantity = integer(item.quantity, 1, 99, 'quantity');
         const note = item.customerNote == null ? '' : item.customerNote;
         if (typeof note !== 'string' || note.length > 500) fail('INVALID_NOTE', 'Order notes must be 500 characters or fewer.');
-        const key = [product, offer, variantId].join(':');
+        const key = [product, offer, variantId || sizeIdentity(selectedSize)].join(':');
         if (seen.has(key)) fail('DUPLICATE_ITEM', 'Combine duplicate product variants into one quantity.');
         seen.add(key);
         // Price, seller, stock and commercial display data come from the catalog.
-        return { product, offer, variantId, quantity, customerNote: note.trim() };
+        return { product, offer, variantId, quantity, ...(selectedSize == null ? {} : { selectedSize }), customerNote: note.trim() };
     });
 }
 function createInvite() { const token = crypto.randomBytes(32).toString('base64url'); return { token, hash: inviteHash(token) }; }

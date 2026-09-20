@@ -66,7 +66,7 @@ test('isolated Mongo: delivery reservation, group privacy and recurring occurren
         assert.equal((await Reservation.findOne({ order: input.orderId })).state, 'confirmed');
         assert.equal((await Window.findById(rows[0]._id)).used, 1);
     });
-    const validateItems = async () => ({ fulfillmentKey: `vendor:${seller}` });
+    const validateItems = async ({ items }) => ({ fulfillmentKey: `vendor:${seller}`, items });
     const groups = createGroupOrderService({ Group, connection, queue, validateItems, now });
     let group, token;
     await t.test('concurrent joins enforce participant limit and retries cannot duplicate membership', async () => {
@@ -93,7 +93,8 @@ test('isolated Mongo: delivery reservation, group privacy and recurring occurren
         await assert.rejects(groups.edit({ groupId: group.id, actor: oid(), revision: saved.revision, items: [] }), { code: 'GROUP_NOT_FOUND' });
     });
     const validateOccurrence = async () => ({ eligible: true, totalKobo: 500000 });
-    const recurring = createRecurringOrderService({ Plan, Occurrence, connection, queue, validateOccurrence, now });
+    const validateTemplate = async ({ items }) => ({ items }); // Commercial adapters remain simulated in this isolation gate.
+    const recurring = createRecurringOrderService({ Plan, Occurrence, connection, queue, validateOccurrence, validateTemplate, now });
     let plan;
     await t.test('concurrent recurring generation retains one occurrence and one reminder', async () => {
         plan = await recurring.create({ actor, input: { name: 'Synthetic water plan', items: [{ product, quantity: 2 }], destination,
@@ -109,7 +110,7 @@ test('isolated Mongo: delivery reservation, group privacy and recurring occurren
     await t.test('recurring outbox failure rolls back generation and advancement', async () => {
         const another = await recurring.create({ actor, input: { name: 'Synthetic rollback plan', items: [{ product, quantity: 1 }], destination,
             rule: { timeZone: 'Africa/Lagos', startDate: '2100-01-02', frequency: 'monthly', windowStart: '09:00', windowEnd: '12:00' } } });
-        const broken = createRecurringOrderService({ Plan, Occurrence, connection, validateOccurrence, now,
+        const broken = createRecurringOrderService({ Plan, Occurrence, connection, validateOccurrence, validateTemplate, now,
             queue: { enqueue: async () => { throw new Error('synthetic-recurring-outbox-failure'); } } });
         await assert.rejects(broken.generate(String(another._id)), /synthetic-recurring-outbox-failure/);
         assert.equal(await Occurrence.countDocuments({ plan: another._id }), 0); assert.equal((await Plan.findById(another._id)).nextIndex, 0);

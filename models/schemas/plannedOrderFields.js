@@ -1,8 +1,12 @@
 const mongoose = require('mongoose');
+const { normalizeSelectedSize } = require('../../utils/plannedItemSelection');
 const item = new mongoose.Schema({
     product: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', required: true },
     offer: { type: mongoose.Schema.Types.ObjectId, ref: 'ProductOffer', default: null },
     variantId: { type: mongoose.Schema.Types.ObjectId, default: null },
+    selectedSize: { type: mongoose.Schema.Types.Mixed, default: null, validate: (value) => {
+        try { normalizeSelectedSize(value); return true; } catch (_) { return false; }
+    } },
     quantity: { type: Number, min: 1, max: 99, required: true, validate: Number.isSafeInteger },
     customerNote: { type: String, trim: true, maxlength: 500, default: '' },
 }, { _id: false });

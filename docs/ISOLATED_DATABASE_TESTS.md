@@ -1,5 +1,21 @@
 # Isolated MongoDB regression tests
 
+## Follow-up planning adapters: offline checkpoint only
+
+After the verified Checkout gate below, group/recurring composition now uses real
+catalog validation and the shared quote calculation, preserves legacy selections,
+requires expiring owner-approved quotes and checks the unpaid-order adapter result.
+The Planning suite's simulated commercial validators were updated to the new
+return contract; the suite was not rerun against Atlas at this checkpoint.
+The previously reported ten-test pass remains evidence for its earlier revision,
+not proof of new quote, future-edit or checkout-versus-pause/cancel races.
+
+Before activation, add/run combined real catalog/order/slot/plan concurrency cases
+after the actual order and scheduled adapters are connected. Offline rollback
+fixtures are orchestration tests, not Mongo isolation evidence. Keep credentials
+private; no new connection, key, production database, deployment or device build
+is needed just to record this local stage.
+
 ## Latest verified gate: Checkout
 
 User-supplied Atlas output (2026-09-20), after checkpoint 9c1cd18, verifies run

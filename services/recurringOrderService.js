@@ -1,10 +1,16 @@
 'use strict';
 const { fail, id, integer, instant, normalizeRecurrence, occurrenceAt } = require('../utils/orderPlanningPolicy');
 const { normalizeItems } = require('../utils/groupOrderPolicy');
+const { assertCreatedOrder, totalKobo } = require('../utils/plannedCheckoutApproval');
 const DAY = 86400000;
 
-function createRecurringOrderService({ Plan, Occurrence, connection, queue, validateOccurrence, now = () => new Date() }) {
-    if (!queue?.enqueue || typeof validateOccurrence !== 'function') throw new TypeError('Recurring orders require the notification outbox and authoritative checkout validation.');
+function createRecurringOrderService({ Plan, Occurrence, connection, queue, validateOccurrence, validateTemplate, checkout, now = () => new Date() }) {
+    if (!queue?.enqueue || typeof validateOccurrence !== 'function' || typeof validateTemplate !== 'function') throw new TypeError('Recurring orders require the notification outbox and authoritative catalog/checkout validation.');
+    async function validatedItems(items, session) {
+        const result = await validateTemplate({ items: normalizeItems(items), session });
+        if (!Array.isArray(result?.items) || !result.items.length) fail('VALIDATION_UNAVAILABLE', 'Catalog validation is unavailable.', 503);
+        return normalizeItems(result.items);
+    }
     async function transaction(work) {
         for (let attempt = 0; attempt < 3; attempt++) {
             try { return await connection.transaction(work); }
@@ -35,7 +41,7 @@ function createRecurringOrderService({ Plan, Occurrence, connection, queue, vali
         if (occurrenceAt(rule, 0).startAt <= now()) fail('INVALID_START', 'Choose a future first delivery.');
         return connection.transaction(async (session) => {
             // A template does not freeze prices, reserve stock or authorize charges.
-            const plan = new Plan({ owner: actor, name: input.name, items, destination: input.destination, rule,
+            const plan = new Plan({ owner: actor, name: input.name, items: await validatedItems(items, session), destination: input.destination, rule,
                 substitutionPreference: input.substitutionPreference || 'do_not_replace',
                 priceApprovalPercent: input.priceApprovalPercent ?? 0, priceApprovalKobo: input.priceApprovalKobo ?? 0,
                 reminderLeadDays, nextGenerateAt: new Date(occurrenceAt(rule, 0).startAt - reminderLeadDays * DAY) });
@@ -76,10 +82,19 @@ function createRecurringOrderService({ Plan, Occurrence, connection, queue, vali
             // Dates keep their original recurrence anchor. Changing frequency or
             // anchor requires a new plan, until the rescheduling flow is wired.
             if (input.rule || input.paymentMode) fail('PLAN_SCHEDULE_LOCKED', 'Create a new plan to change its repeat schedule.');
-            if (input.items !== undefined) { const items = normalizeItems(input.items); if (!items.length) fail('EMPTY_PLAN', 'Add at least one product.'); plan.items = items; }
+            if (input.items !== undefined) plan.items = await validatedItems(input.items, session);
             if (input.destination !== undefined) plan.destination = input.destination;
             for (const field of ['name', 'substitutionPreference', 'priceApprovalPercent', 'priceApprovalKobo']) if (input[field] !== undefined) plan[field] = input[field];
-            audit(plan, actor, 'future_orders_edited'); await plan.save({ session }); return plan.toObject();
+            audit(plan, actor, 'future_orders_edited'); await plan.save({ session });
+            const pending = await Occurrence.find({ plan: plan._id, state: { $in: ['awaiting_review', 'needs_attention'] }, startAt: { $gt: now() } }).session(session);
+            for (const row of pending) {
+                if (input.items !== undefined) row.items = plan.items;
+                if (input.destination !== undefined) row.destination = plan.destination;
+                row.planRevision = plan.revision; row.state = 'needs_attention'; row.attentionCode = 'revalidation_required';
+                row.estimatedTotalKobo = null; row.estimatedAt = null;
+                audit(row, actor, 'future_order_updated'); await row.save({ session }); await notify(row, 'future_order_updated', session);
+            }
+            return plan.toObject();
         });
     }
     async function editOccurrence({ occurrenceId, actor, revision, action, input = {} }) {
@@ -91,7 +106,7 @@ function createRecurringOrderService({ Plan, Occurrence, connection, queue, vali
             if (!['active', 'paused'].includes(plan.state) || !['awaiting_review', 'needs_attention'].includes(row.state) || row.startAt <= now() || row.revision !== revision) fail('OCCURRENCE_LOCKED', 'This occurrence can no longer be edited here.', 409);
             if (action === 'skip') row.state = 'skipped';
             else if (action === 'edit') {
-                if (input.items !== undefined) { const items = normalizeItems(input.items); if (!items.length) fail('EMPTY_PLAN', 'Add at least one product.'); row.items = items; }
+                if (input.items !== undefined) row.items = await validatedItems(input.items, session);
                 if (input.destination !== undefined) row.destination = input.destination;
                 row.state = 'needs_attention'; row.attentionCode = 'revalidation_required'; row.estimatedTotalKobo = null;
             } else fail('INVALID_ACTION', 'Unsupported occurrence action.');
@@ -145,6 +160,48 @@ function createRecurringOrderService({ Plan, Occurrence, connection, queue, vali
         for (const plan of plans) { signal?.throwIfAborted(); await generate(String(plan._id), signal); }
         return plans.length;
     }
-    return { create, get, control, editFuture, editOccurrence, generate, generateDue };
+    function requireCheckout() {
+        if (!checkout?.quoteOccurrence || !checkout?.approval?.issue || !checkout?.approval?.verify) fail('CHECKOUT_UNAVAILABLE', 'Recurring checkout is not ready.', 503);
+    }
+    const quoteContext = (row, plan) => ({ kind: 'recurring', owner: String(row.owner), recordId: String(row._id), revision: row.revision,
+        planId: String(plan._id), planRevision: plan.revision, startAt: row.startAt, endAt: row.endAt, destination: row.destination });
+    async function forCheckout({ occurrenceId, actor, revision, session }) {
+        const row = await Occurrence.findOne({ _id: id(occurrenceId), owner: id(actor) }).select('+destination').session(session || null);
+        if (!row) fail('OCCURRENCE_NOT_FOUND', 'Upcoming order not found.', 404);
+        const plan = await owned(String(row.plan), actor, session || null);
+        if (['checkout', 'ordered'].includes(row.state) && row.order) return { row, plan, reused: true };
+        if (plan.state !== 'active' || !['awaiting_review', 'needs_attention'].includes(row.state) || row.startAt <= now() ||
+            row.revision !== integer(revision, 0, Number.MAX_SAFE_INTEGER, 'occurrence revision')) fail('OCCURRENCE_LOCKED', 'Refresh this active upcoming order before checkout.', 409);
+        return { row, plan, reused: false };
+    }
+    async function quote(args) {
+        requireCheckout(); const { row, plan, reused } = await forCheckout(args);
+        if (reused) fail('OCCURRENCE_LOCKED', 'Continue payment from the existing order.', 409);
+        const current = await checkout.quoteOccurrence({ occurrence: row, plan });
+        const increaseKobo = row.estimatedTotalKobo == null ? null : Math.max(0, totalKobo(current) - row.estimatedTotalKobo);
+        const increasePercent = increaseKobo == null ? null : row.estimatedTotalKobo > 0 ? increaseKobo / row.estimatedTotalKobo * 100 : increaseKobo > 0 ? null : 0;
+        return { ...checkout.approval.issue({ context: quoteContext(row, plan), quote: current }), priceChange: {
+            previousEstimateKobo: row.estimatedTotalKobo, increaseKobo, increasePercent,
+            requiresAttention: increaseKobo == null || increaseKobo > plan.priceApprovalKobo || (increaseKobo > 0 && (increasePercent == null || increasePercent > plan.priceApprovalPercent)),
+        } }; // Always explicit approval/payment, even below notification thresholds.
+    }
+    async function checkoutOrder({ occurrenceId, actor, revision, approvalToken, session, createOrder }) {
+        if (!session?.inTransaction() || typeof createOrder !== 'function') fail('TRANSACTION_REQUIRED', 'Checkout must use the order transaction.', 500);
+        const { row, plan, reused } = await forCheckout({ occurrenceId, actor, revision, session });
+        if (reused) return { orderId: String(row.order), reused: true };
+        requireCheckout();
+        const current = await checkout.quoteOccurrence({ occurrence: row, plan, session });
+        checkout.approval.verify({ context: quoteContext(row, plan), quote: current, token: approvalToken });
+        // A write on the plan serializes checkout against pause/cancel/template
+        // edits. Merely reading it in a snapshot would allow write skew with a
+        // concurrent plan-control transaction that touches a different document.
+        audit(plan, actor, 'checkout_started'); await plan.save({ session });
+        const order = await createOrder({ owner: row.owner, occurrence: row, plan, items: normalizeItems(row.items), quote: current, session });
+        assertCreatedOrder({ order, quote: current, owner: row.owner, shipmentCount: current.shipmentSummaries?.length });
+        row.order = order._id; row.state = 'checkout'; audit(row, actor, 'checkout_started');
+        await row.save({ session }); await notify(row, 'checkout_started', session);
+        return { orderId: String(order._id), reused: false };
+    }
+    return { create, get, control, editFuture, editOccurrence, generate, generateDue, quote, checkout: checkoutOrder };
 }
 module.exports = { createRecurringOrderService };

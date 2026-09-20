@@ -49,9 +49,9 @@ Do not enable/publish the four features based on these foundations alone.
   mismatch rejection, rollback and legacy no-offer stock protection. It does
   not verify real payment-provider settlement, dispatch or application screens.
 
-Next: connect the resolver to group/recurring adapters
-without losing legacy sizes, enforce owner acceptance of changed quotes immediately
-before payment, link slot confirmation to settlement, preserve late/stock-conflicted
+Next: finish scheduled quote/slot validation and the shared unpaid-order creation
+adapter, enforce quote freshness again at payment initiation, link slot confirmation
+to settlement, preserve late/stock-conflicted
 successful-payment evidence for reconciliation, and guard every dispatch entry.
 Historical pending orders without offer IDs, seller reassignment and existing
 variant-offer synchronization need compatibility/reconciliation acceptance before
@@ -71,8 +71,64 @@ checkpoint, not completion or production approval of the coordinated release.
 |---|---|---|
 | Scheduled delivery | WAT rules, calendar validation, reservation/expiry models, transactional area/vendor/rider capacity claims, idempotent confirmation/release, due-only dispatch policy | Authoritative slot generation from actual vendor hours, product restrictions and area/rider policy; checkout/price/stock/payment hooks; late-paid-slot support/reconciliation; reschedule/cancel transaction; actual dispatch guards on every rider entry point; customer/vendor/admin/rider views; reminders and analytics |
 | Photo reviews | Delivered paid-purchase eligibility including verified pickup; max five photo IDs; strict stars/optional text; JPEG/PNG/HEIC byte/10MB limits; private Cloudinary incoming resize/conversion/metadata-strip adapter and thumbnail request | Durable owned upload records/quotas, actual decode and EXIF/HEIC verification, delivered-only submit route using existing Review model, transaction-safe review/rating updates, customer editor/gallery/filter, vendor reply permissions, moderation/reporting/audit, edit/delete period, retention/takedown and notifications |
-| Group ordering | One owner/fulfilment point, private member DTOs, hashed invite, participant limits, revision-protected own-item edits, owner close/extend/remove/cancel, cutoff scan, transactional event outbox, shared-transaction checkout adapter with retry identity | Authenticated/rate-limited HTTP and deep links; creation idempotency/invite regeneration; real catalog/variant/aggregate-stock validation; current quote/fee acceptance and exactly-one-shipment checkout integration; unavailable-item removal, abandoned-group expiry, payment completion state, realtime notifications and customer/vendor/admin views |
-| Recurring orders | WAT weekly/biweekly/monthly/custom-day calendar retaining month-end anchor, reminder-only model, private plans/occurrences, skip/pause/resume/cancel and quantity/address edit services, bounded generation with transactional reminder outbox, no catch-up charges | Real catalog/coverage/slot validation adapter, owner-approved checkout/payment linkage, future schedule editing and propagation to already-generated unpaid occurrences, expiry/completion worker, price threshold display/substitution approval, notification delivery and customer/admin screens |
+| Group ordering | One owner/fulfilment point, private member DTOs, hashed invite, participant limits, revision-protected edits and controls, cutoff scan, outbox; real catalog/aggregate-stock adapter, shared quote and expiring owner approval with retry-safe unpaid-order link contract | Authenticated/rate-limited HTTP and deep links; creation idempotency/invite regeneration; actual one-shipment MainOrder creation adapter and payment integration; unavailable-item removal, abandoned-group expiry, payment completion state, realtime notifications and customer/vendor/admin views |
+| Recurring orders | WAT calendar retaining month-end anchor, reminder-only plans/occurrences, owner controls, bounded generation/outbox; real catalog validation retaining sizes, explicit quote approval and price-change metadata; future basket/address edits propagate to pending occurrences | Scheduled coverage/slot and future-time pricing, actual order/payment adapter, future schedule editing, expiry/completion worker, substitution approval and threshold UI, real notification delivery and customer/admin screens |
+
+### Planned checkout approval checkpoint (2026-09-20, local only)
+
+`plannedOrderServiceFactory` explicitly composes group/recurring services with the
+real Product/ProductOffer resolver. It does not mount a route, start a worker,
+connect a database or read production configuration. Legacy string/option/custom
+sizes survive saved templates and occurrences; catalog validation supplies the
+actual option, variant and offer identity. Group members may select the same
+product, but checkout checks their combined quantity against authoritative stock.
+Mixed sellers/fulfilment points cannot be combined into one group shipment.
+
+The existing POST /orders/summary calculation is also a server-only function used
+by the planning adapter: no copied delivery, subscription or commission formula.
+HTTP identity/session cannot be overridden in the request body. Quote calculation
+creates neither an order nor a payment and does not reserve inventory.
+
+The owner must present a five-minute HMAC-signed approval matching the current
+quote, owner, record/revision, destination, schedule and item/fee snapshot. Changed,
+expired, tampered or missing approval fails before the order adapter is called.
+Tokens contain hashes, not addresses. Group checkout requires one shipment; both
+flows reject an adapter result with wrong owner/total, paid state or wrong shipment
+count. Order linking and notification enqueue share the caller's transaction.
+Repeated checkout returns the existing link. Recurring checkout also writes the
+plan to conflict with concurrent pause/cancel/template controls; its real Mongo
+race acceptance is still pending, not proven by fake-transaction tests.
+
+Future item/address edits update already-generated, future unpaid occurrences,
+invalidate their estimates and require review. Paid/checkout-linked, skipped and
+past occurrences are untouched. Price-threshold metadata is available, but never
+authorizes an automatic charge. Recurrence remains reminder-to-pay only.
+
+Boundary: the actual MainOrder/Shipment creation adapter, authenticated planning
+routes, payment-initiation freshness, settlement and scheduled dispatch are not
+connected yet. Scheduled quotes deliberately fail with SCHEDULE_UNAVAILABLE (503)
+without a real checkSchedule dependency. That future adapter must validate vendor
+hours, lead time, coverage, capacity and dispatch readiness; the shared quote must
+also gain future-time restaurant/subscription rules before schedules are enabled.
+Do not use an always-eligible callback in production. Current shared quote rules
+remain the existing immediate-order rules. No runtime activation is authorized by
+these offline tests, and no provider verification flow was changed here.
+
+Final local regression: 298 passed, zero failed, seven credential-gated Mongo
+suites deliberately skipped (305 total, 35199.8806ms). Twenty-one new cases cover
+quote identity/expiry/tampering, real catalog/size/aggregate-stock composition,
+owner-only approval, repeat checkout, future edits and rollback, plus actual
+HTTP/server-only quote parity and transaction/identity handling. Providers and
+database storage remain simulated in these new tests. No new Atlas, production,
+browser/device or real-provider pass is claimed.
+
+Configuration: no new paid API or mobile key. The future private composition needs
+a backend-only signing secret of at least 32 bytes (the existing JWT_SECRET may be
+reused if it meets that requirement). Never put it in Dart defines, Git or chat;
+do not rotate a live authentication secret just to run these tests. Tests use only
+a synthetic key. All existing Atlas passes remain historical scoped evidence;
+updated planning adapters need their own real integration/race acceptance before
+release. No repeat of an old passing gate is requested solely to record progress.
 
 The new services require injected trusted catalog/order adapters. The mocks used
 in tests are NOT runtime catalog validation. Never mount the services using the
@@ -197,6 +253,7 @@ test-cluster restrictions and never change production settings for tests.
 - [x] Add shared domain rules, models and service foundations for all four.
 - [x] Run focused offline validation without provider/database calls.
 - [x] Verify the new combined Planning gate against isolated Atlas (10/10).
+- [x] Compose real catalog validation and shared quotes with private owner approval, retaining legacy sizes (offline-tested; no public/runtime activation).
 - [ ] Finish authoritative shared checkout/variant/stock/payment/dispatch integration.
 - [ ] Finish review submission, media lifecycle and moderation integration.
 - [ ] Connect authenticated/rate-limited APIs and bounded worker handlers.

@@ -1,10 +1,11 @@
 'use strict';
 const { fail, id, integer, instant } = require('../utils/orderPlanningPolicy');
 const { normalizeItems, createInvite, inviteHash, assertOpen, assertOwner, memberOf, groupView, closedGroupItems } = require('../utils/groupOrderPolicy');
+const { assertCreatedOrder } = require('../utils/plannedCheckoutApproval');
 
 // Domain service, not a public router. The catalog and order adapters must reuse
 // existing authoritative checkout validation. Never pass request-supplied prices.
-function createGroupOrderService({ Group, connection, queue, validateItems, now = () => new Date() }) {
+function createGroupOrderService({ Group, connection, queue, validateItems, checkout, now = () => new Date() }) {
     if (typeof validateItems !== 'function' || !queue?.enqueue) throw new TypeError('Group orders require catalog validation and a transactional notification outbox.');
     const active = (row) => row.members.filter((member) => member.state === 'active');
     async function load(groupId, session) {
@@ -35,11 +36,11 @@ function createGroupOrderService({ Group, connection, queue, validateItems, now 
             if (startAt <= cutoffAt || endAt <= startAt) fail('INVALID_SCHEDULE', 'The group must close before its delivery window.');
             safeSchedule = { mode: 'scheduled', startAt, endAt, timeZone: 'Africa/Lagos' };
         }
-        // This adapter also verifies the configured vendor/fulfilment point for an empty cart.
-        const context = await validateItems({ items: [], sellerType: input.sellerType, sellerId, fulfillmentKey: input.fulfillmentKey });
-        if (!context?.fulfillmentKey) fail('INVALID_SELLER', 'This shop is not available for group orders.', 409);
         const invite = createInvite();
         const result = await connection.transaction(async (session) => {
+            const context = await validateItems({ purpose: 'create', items: [], sellerType: input.sellerType, sellerId,
+                fulfillmentKey: input.fulfillmentKey, anchorItem: input.anchorItem, session });
+            if (!context?.fulfillmentKey) fail('INVALID_SELLER', 'This shop is not available for group orders.', 409);
             const row = new Group({ owner: actor, ownerDisplayName: displayName, name: input.name,
                 sellerType: input.sellerType, sellerId, fulfillmentKey: context.fulfillmentKey,
                 inviteHash: invite.hash, destination: input.destination, destinationLabel: input.destinationLabel,
@@ -73,9 +74,10 @@ function createGroupOrderService({ Group, connection, queue, validateItems, now 
         return connection.transaction(async (session) => {
             const row = await load(groupId, session); const member = memberOf(row, actor); assertOpen(row, now());
             if (row.revision !== revision) fail('GROUP_CHANGED', 'The group changed. Refresh before editing.', 409);
-            await validateItems({ items: safeItems, sellerType: row.sellerType, sellerId: row.sellerId,
+            const context = await validateItems({ purpose: 'edit', items: safeItems, sellerType: row.sellerType, sellerId: row.sellerId,
                 fulfillmentKey: row.fulfillmentKey, session });
-            member.items = safeItems; member.submittedAt = now();
+            if (!Array.isArray(context?.items)) fail('VALIDATION_UNAVAILABLE', 'Catalog validation is unavailable.', 503);
+            member.items = normalizeItems(context.items); member.submittedAt = now();
             await record(row, actor, 'items_submitted', session); return groupView(row, actor);
         });
     }
@@ -101,18 +103,32 @@ function createGroupOrderService({ Group, connection, queue, validateItems, now 
             await record(row, actor, event, session); return groupView(row, actor);
         });
     }
-    async function checkout({ groupId, actor, revision, session, createOrder }) {
+    const quoteContext = (row) => ({ kind: 'group', owner: String(row.owner), recordId: String(row._id), revision: row.revision,
+        fulfillmentKey: row.fulfillmentKey, schedule: row.schedule, destination: row.destination });
+    function requireCheckout() {
+        if (!checkout?.quoteGroup || !checkout?.approval?.issue || !checkout?.approval?.verify) fail('CHECKOUT_UNAVAILABLE', 'Group checkout is not ready.', 503);
+    }
+    async function quote({ groupId, actor, revision }) {
+        requireCheckout();
+        const row = await load(groupId, null); memberOf(row, actor); assertOwner(row, actor);
+        if (row.revision !== integer(revision, 0, Number.MAX_SAFE_INTEGER, 'group revision')) fail('GROUP_CHANGED', 'Refresh the group before checkout.', 409);
+        const items = closedGroupItems(row, actor);
+        const current = await checkout.quoteGroup({ group: row, items });
+        return checkout.approval.issue({ context: quoteContext(row), quote: current });
+    }
+    async function checkoutOrder({ groupId, actor, revision, approvalToken, session, createOrder }) {
         if (!session?.inTransaction() || typeof createOrder !== 'function') fail('TRANSACTION_REQUIRED', 'Checkout must use the order transaction.', 500);
         const row = await load(groupId, session); memberOf(row, actor); assertOwner(row, actor);
         if (['checkout', 'ordered'].includes(row.state) && row.order) return { orderId: String(row.order), reused: true };
+        requireCheckout();
         if (row.revision !== integer(revision, 0, Number.MAX_SAFE_INTEGER, 'group revision')) fail('GROUP_CHANGED', 'Refresh the group before checkout.', 409);
         const items = closedGroupItems(row, actor);
-        const quote = await validateItems({ items, sellerType: row.sellerType, sellerId: row.sellerId,
-            fulfillmentKey: row.fulfillmentKey, destination: row.destination, schedule: row.schedule, session });
+        const currentQuote = await checkout.quoteGroup({ group: row, items, session });
+        checkout.approval.verify({ context: quoteContext(row), quote: currentQuote, token: approvalToken });
         // The shared order adapter must revalidate totals and create exactly one
         // shipment/fee for this fulfilment point; no payment is charged here.
-        const order = await createOrder({ owner: row.owner, group: row, items, quote, session });
-        if (!order?._id || String(order.user) !== String(row.owner)) fail('INVALID_ORDER', 'Group checkout did not create a valid owner order.', 500);
+        const order = await createOrder({ owner: row.owner, group: row, items, quote: currentQuote, session });
+        assertCreatedOrder({ order, quote: currentQuote, owner: row.owner, shipmentCount: 1 });
         row.order = order._id; row.state = 'checkout'; await record(row, actor, 'checkout_started', session);
         return { orderId: String(order._id), reused: false };
     }
@@ -129,6 +145,6 @@ function createGroupOrderService({ Group, connection, queue, validateItems, now 
         }
         return rows.length;
     }
-    return { create, get, join, edit, control, checkout, closeDue };
+    return { create, get, join, edit, control, quote, checkout: checkoutOrder, closeDue };
 }
 module.exports = { createGroupOrderService };
