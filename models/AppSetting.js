@@ -176,6 +176,11 @@ const PharmacySubscriptionHistorySchema = new mongoose.Schema(
 
 const AppSettingSchema = new mongoose.Schema(
   {
+    // Optional and absent on existing settings. No startup seed enables this.
+    scheduledDelivery: {
+      type: require('./schemas/DeliverySchedulePolicy'),
+      default: undefined,
+    },
     key: {
       type: String,
       required: true,

@@ -92,7 +92,16 @@ test('scheduled quotes require explicit capacity validation and pass server-owne
     const quoted = await allowed.service.quoteOccurrence({ occurrence, session });
     assert.equal(checked[0].session, session); assert.equal(checked[0].lines[0].item.offer, O);
     assert.equal(quoted.schedule.mode, 'scheduled'); assert.deepEqual(quoted.schedule.startAt, occurrence.startAt);
+    assert.deepEqual(allowed.quotes[0].deliveryAt, occurrence.startAt);
     assert.deepEqual(await allowed.service.validateOccurrence({ occurrence }), { eligible: true, totalKobo: 271257 });
+});
+
+test('a scheduling adapter cannot silently move the window the owner selected', async () => {
+    const occurrence = { owner: S, items: [item()], destination, startAt: new Date('2100-01-02T08:00:00Z'), endAt: new Date('2100-01-02T11:00:00Z') };
+    const f = fixture({ checkSchedule: async () => ({ eligible: true, schedule: { mode: 'scheduled', timeZone: 'Africa/Lagos',
+        startAt: new Date('2100-01-03T08:00:00Z'), endAt: new Date('2100-01-03T11:00:00Z') } }) });
+    await assert.rejects(f.service.quoteOccurrence({ occurrence }), { code: 'SCHEDULE_CHANGED' });
+    assert.equal(f.quotes.length, 0);
 });
 
 test('commercial failures require review; infrastructure failures remain retryable and cannot look like stock failures', async () => {

@@ -15,6 +15,53 @@ transactionally. Provider verification and delivery pricing policies are unchang
 No app screen, release build, migration or production deployment is claimed.
 Do not enable/publish the four features based on these foundations alone.
 
+### Scheduled availability and future quotes (2026-09-20, local only)
+
+The next connected backend slice now includes:
+
+- Optional, typed `AppSetting.scheduledDelivery` on the existing settings model,
+  under key `scheduled_delivery_program`. Existing settings remain unchanged.
+  Nothing seeds or enables this policy automatically. An admin configuration UI,
+  audited policy-revision changes and window publication are still required; do
+  not populate production settings manually to bypass these remaining gates.
+- `deliveryScheduleService` reads that policy in the caller's transaction and
+  derives the area, rider pool and distinct shop/warehouse resource keys from
+  the authoritative catalog locations. Client-supplied resource/window IDs do
+  not select capacity. Each resource must have the exact same enabled window and
+  policy revision. Missing, duplicate, invalid or full resources fail closed.
+- WAT opening intervals cover preparation through the end of the chosen window,
+  including overnight openings. Explicit geographical coverage replaces guesswork;
+  ambiguous overlapping areas require operational review. Current vendor closure,
+  radius, preparation time, hours and last-order cutoff can narrow the operational
+  policy. This path does not inherit the legacy 1000-km restaurant test override.
+- The reservation adapter re-resolves those server-owned resources in an active
+  transaction, then delegates to the existing atomic reservation service. Repeated
+  products share one shop claim; the service does not reject a retry merely because
+  the existing hold itself filled a capacity bucket. It does not create a receipt,
+  charge a customer or reserve product inventory.
+- Planned quote composition uses this database-backed check when the required
+  models are supplied. The chosen window cannot silently move. The shared checkout
+  quote evaluates restaurant WAT availability and subscription expiry/benefit hours
+  at the selected delivery time. Ordinary HTTP summaries cannot supply a fake
+  pricing date. Prices and stock still come from today's real catalog and must be
+  checked again before payment; this is not a future price guarantee.
+
+Verification: focused offline scheduling/catalog/HTTP regressions passed 44/44
+after correcting a shared-reference test fixture. After adding configuration-schema
+coverage, the complete offline suite passed 331 tests, zero failed, eight credential-gated
+database suites skipped (339 total, 150101.7335ms, serial execution). No timeouts were
+increased. A connected isolated-Mongo case also extends Planning
+with stored-policy reads, derived resources, concurrent reservations, repeat identity,
+rollback and revision mismatch. Its real Atlas result is **pending**, to be collected
+in the combined acceptance run, not through another user test interruption now.
+
+**Still blocked deliberately:** scheduled/recurring receipt creation, payment-slot
+confirmation, late-success reconciliation, actual rider dispatch guards, rescheduling,
+reminders and app/admin screens. No public scheduling API was enabled, no database
+was changed, and no provider, push, deployment or app build was performed for this
+checkpoint. Next integrate receipt/hold lifecycle and payment freshness/settlement,
+then every dispatch entry point before relaxing the existing scheduled-checkout gate.
+
 ### Shared checkout checkpoint (2026-09-20)
 
 - `checkoutCatalogService` reads actual Product/ProductOffer and approved seller

@@ -1,5 +1,5 @@
 'use strict';
-const { fail, id, PlanningError } = require('../utils/orderPlanningPolicy');
+const { fail, id, instant, PlanningError } = require('../utils/orderPlanningPolicy');
 const { normalizeItems } = require('../utils/groupOrderPolicy');
 const { CheckoutCatalogError, hasLocation } = require('./checkoutCatalogService');
 const { totalKobo } = require('../utils/plannedCheckoutApproval');
@@ -47,17 +47,25 @@ function createPlannedOrderCatalogService({ catalog, User, calculateCheckoutSumm
     async function quote({ owner, items, destination, schedule, session }) {
         if (!hasLocation(destination) || !destination.address || !destination.city || !destination.country || !destination.postalCode || !destination.phoneNumber) fail('INVALID_ADDRESS', 'Choose a complete delivery address.');
         const lines = await resolve(items, session);
+        let approvedSchedule = schedule?.toObject ? schedule.toObject() : schedule || { mode: 'now', timeZone: 'Africa/Lagos' };
         if (schedule?.mode === 'scheduled') {
             // No optimistic fallback: a future-time stock quote is not proof of
             // vendor hours, area/rider capacity, lead times or dispatch readiness.
             if (typeof checkSchedule !== 'function') fail('SCHEDULE_UNAVAILABLE', 'Scheduled delivery validation is not ready.', 503);
             const result = await checkSchedule({ owner, lines, destination, schedule, session });
             if (result?.eligible !== true) fail('SCHEDULE_UNAVAILABLE', 'This delivery window is not currently available.', 409);
+            approvedSchedule = result.schedule || approvedSchedule;
+            if (approvedSchedule.mode !== 'scheduled' || approvedSchedule.timeZone !== 'Africa/Lagos' ||
+                instant(approvedSchedule.startAt).getTime() !== instant(schedule.startAt).getTime() ||
+                instant(approvedSchedule.endAt).getTime() !== instant(schedule.endAt).getTime()) {
+                fail('SCHEDULE_CHANGED', 'The delivery window changed. Choose and approve it again.', 409);
+            }
         }
         const summary = await calculateCheckoutSummary({ userId: owner, cartItems: canonical(lines), shippingAddress: {
             address: destination.address, city: destination.city, country: destination.country, postalCode: destination.postalCode, phoneNumber: destination.phoneNumber },
-            userLocation: { latitude: destination.latitude, longitude: destination.longitude }, session });
-        return { ...summary, schedule: schedule?.toObject ? schedule.toObject() : schedule || { mode: 'now', timeZone: 'Africa/Lagos' } };
+            userLocation: { latitude: destination.latitude, longitude: destination.longitude }, session,
+            ...(approvedSchedule.mode === 'scheduled' ? { deliveryAt: instant(approvedSchedule.startAt) } : {}) });
+        return { ...summary, schedule: approvedSchedule };
     }
     async function quoteGroup({ group, items, session }) {
         await validateItems({ items, sellerType: group.sellerType, sellerId: group.sellerId, fulfillmentKey: group.fulfillmentKey, session });

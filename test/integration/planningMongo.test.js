@@ -6,13 +6,15 @@ const { createDeliveryReservationService } = require('../../services/deliveryRes
 const { createGroupOrderService } = require('../../services/groupOrderService');
 const { createRecurringOrderService } = require('../../services/recurringOrderService');
 const { createBackgroundJobService } = require('../../services/backgroundJobService');
+const { createDeliveryScheduleService, createSchedulePolicyReader } = require('../../services/deliveryScheduleService');
+const { locationResourceKey } = require('../../utils/deliveryScheduleAvailability');
 const oid = () => String(new Types.ObjectId());
 
 test('isolated Mongo: delivery reservation, group privacy and recurring occurrence transactions', {
     skip: !process.env.NAIJAGO_TEST_MONGO_URI, timeout: 240000,
 }, async (t) => {
     const { connection, models } = await openIsolatedTestDatabase(t,
-        ['DeliveryWindow', 'DeliveryReservation', 'GroupOrder', 'RecurringPlan', 'RecurringOccurrence', 'BackgroundJob']);
+        ['DeliveryWindow', 'DeliveryReservation', 'GroupOrder', 'RecurringPlan', 'RecurringOccurrence', 'BackgroundJob', 'AppSetting']);
     const { DeliveryWindow: Window, DeliveryReservation: Reservation, GroupOrder: Group, RecurringPlan: Plan, RecurringOccurrence: Occurrence, BackgroundJob: Job } = models;
     let time = new Date('2100-01-01T08:00:00Z'); const now = () => new Date(time);
     const policy = { revision: 1, timeZone: 'Africa/Lagos', minimumLeadMinutes: 120, maximumAdvanceDays: 30,
@@ -65,6 +67,42 @@ test('isolated Mongo: delivery reservation, group privacy and recurring occurren
         time = new Date('2100-01-01T08:30:00Z'); await booking.release({ ...input, expiredOnly: true });
         assert.equal((await Reservation.findOne({ order: input.orderId })).state, 'confirmed');
         assert.equal((await Window.findById(rows[0]._id)).used, 1);
+    });
+    await t.test('stored schedule policy derives real resources, quotes capacity and reserves once under contention', async () => {
+        const line = { sellerType: 'vendor', sellerId: new Types.ObjectId(seller), sellerLocation: { latitude: 9.001, longitude: 7.001 }, sellerVendor: {} };
+        const shopKey = locationResourceKey(line), areaKey = 'isolated_area', poolKey = 'isolated_pool';
+        const configured = { ...policy, enabled: true,
+            areas: [{ key: areaKey, enabled: true, center: { latitude: 9, longitude: 7 }, radiusKm: 20, riderPoolKey: poolKey }],
+            shops: [{ resourceKey: shopKey, enabled: true, deliveryRadiusKm: 10, preparationMinutes: 30,
+                operatingHours: ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'].map(day => ({ day, open: '00:00', close: '00:00' })) }] };
+        await models.AppSetting.create({ key: 'scheduled_delivery_program', scheduledDelivery: configured });
+        const resources = [`area:${areaKey}`, `riders:${poolKey}`, shopKey];
+        const startAt = new Date('2100-01-02T08:00:00Z'), endAt = new Date('2100-01-02T11:00:00Z');
+        const rows = await Window.create(resources.map(resourceKey => ({ resourceKey, startAt, endAt, capacity: 1, enabled: true, policyRevision: 1 })));
+        const availability = createDeliveryScheduleService({ Window, readPolicy: createSchedulePolicyReader(models.AppSetting), reservations: booking, now });
+        const input = { owner: actor, lines: [line, { ...line }], destination, schedule: { mode: 'scheduled', timeZone: 'Africa/Lagos', startAt, endAt },
+            windowIds: [oid()], resourceKeys: ['riders:forged'], policy: { enabled: false } };
+        assert.equal((await availability.check(input)).eligible, true);
+        const results = await Promise.allSettled(Array.from({ length: 4 }, () => {
+            const orderId = oid(); return connection.transaction(session => availability.reserve({ ...input, orderId, session }));
+        }));
+        assert.equal(results.filter(result => result.status === 'fulfilled').length, 1);
+        for (const result of results) if (result.status === 'rejected') assert.equal(result.reason.code, 'WINDOW_FULL');
+        const held = results.find(result => result.status === 'fulfilled').value;
+        assert.equal(held.windowIds.length, 3);
+        await connection.transaction(session => availability.reserve({ ...input, orderId: String(held.order), session }));
+        assert.ok((await Window.find({ _id: { $in: rows.map(row => row._id) } })).every(row => row.used === 1));
+        await assert.rejects(availability.check(input), { code: 'WINDOW_FULL' });
+        await booking.release({ orderId: String(held.order), owner: actor });
+        const rolledBackOrder = oid();
+        await assert.rejects(connection.transaction(async session => {
+            await availability.reserve({ ...input, orderId: rolledBackOrder, session });
+            throw new Error('synthetic-receipt-failure');
+        }), /synthetic-receipt-failure/);
+        assert.equal(await Reservation.countDocuments({ order: rolledBackOrder }), 0);
+        assert.ok((await Window.find({ _id: { $in: rows.map(row => row._id) } })).every(row => row.used === 0));
+        await models.AppSetting.updateOne({ key: 'scheduled_delivery_program' }, { $set: { 'scheduledDelivery.revision': 2 } });
+        await assert.rejects(availability.check(input), { code: 'SCHEDULE_UNAVAILABLE' });
     });
     const validateItems = async ({ items }) => ({ fulfillmentKey: `vendor:${seller}`, items });
     const groups = createGroupOrderService({ Group, connection, queue, validateItems, now });

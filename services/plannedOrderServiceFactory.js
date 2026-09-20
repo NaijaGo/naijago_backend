@@ -5,13 +5,16 @@ const { createPlannedCheckoutApproval } = require('../utils/plannedCheckoutAppro
 const { createGroupOrderService } = require('./groupOrderService');
 const { createRecurringOrderService } = require('./recurringOrderService');
 const { fail } = require('../utils/orderPlanningPolicy');
+const { createDeliveryScheduleService, createSchedulePolicyReader } = require('./deliveryScheduleService');
 
 // Explicit composition only: no env reads, jobs, database connection or routes
 // start on import. Supply the existing router.calculateCheckoutSummary and the
 // backend's private JWT_SECRET (>=32 bytes) when authenticated APIs are mounted.
-function createPlannedOrderServices({ models, connection, queue, calculateCheckoutSummary, createUnpaidOrder, checkSchedule, signingSecret, now }) {
+function createPlannedOrderServices({ models, connection, queue, calculateCheckoutSummary, createUnpaidOrder, checkSchedule, readSchedulePolicy, signingSecret, now }) {
     const catalog = createCheckoutCatalogService(models);
-    const adapters = createPlannedOrderCatalogService({ catalog, User: models.User, calculateCheckoutSummary, checkSchedule });
+    const policyReader = readSchedulePolicy || (models.DeliveryWindow && models.AppSetting ? createSchedulePolicyReader(models.AppSetting) : null);
+    const scheduleService = policyReader ? createDeliveryScheduleService({ Window: models.DeliveryWindow, readPolicy: policyReader, now }) : null;
+    const adapters = createPlannedOrderCatalogService({ catalog, User: models.User, calculateCheckoutSummary, checkSchedule: scheduleService?.check || checkSchedule });
     const approval = createPlannedCheckoutApproval({ secret: signingSecret, now });
     const checkout = { ...adapters, approval };
     const groups = createGroupOrderService({ Group: models.GroupOrder, connection, queue, validateItems: adapters.validateItems, checkout, now });

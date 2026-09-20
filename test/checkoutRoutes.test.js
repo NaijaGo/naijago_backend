@@ -71,6 +71,34 @@ async function setup(t, options = {}) {
         calculateCheckoutSummary: module.exports.calculateCheckoutSummary, async post(route, input) { const response = await fetch(`http://127.0.0.1:${listener.address().port}/orders${route}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input), signal: AbortSignal.timeout(15000) }); return { status: response.status, data: await response.json() }; } };
 }
 
+test('future quotes evaluate subscription expiry and benefit hours at delivery time', async (t) => {
+    const f = await setup(t, { buyer: { naijagoSubscription: { status: 'active', expiresAt: '2100-02-01T00:00:00Z',
+        deliveriesRemaining: 2, minimumOrderValue: 0, validHours: { start: '09:00', end: '18:00' }, planId: 'test-plan' } } });
+    const quote = (deliveryAt) => f.calculateCheckoutSummary({ ...body(), userId: '777777777777777777777777', deliveryAt });
+    assert.equal((await quote('2100-01-01T12:00:00+01:00')).totalShippingPrice, 0);
+    assert.equal((await quote('2100-01-01T19:00:00+01:00')).totalShippingPrice, 500);
+    assert.equal((await quote('2100-02-01T12:00:00+01:00')).totalShippingPrice, 500);
+    assert.equal(f.saved.orders.length, 0);
+});
+
+test('future restaurant quotes use the selected WAT time, not the host clock', async (t) => {
+    const f = await setup(t, { product: { category: 'Restaurant', orderStartTime: '11:00', orderEndTime: '12:00' } });
+    const quote = (deliveryAt) => f.calculateCheckoutSummary({ ...body(), userId: '777777777777777777777777', deliveryAt });
+    assert.equal((await quote('2100-01-01T10:30:00Z')).totalPrice, 2500);
+    await assert.rejects(quote('2100-01-01T09:30:00Z'), { code: 'RESTAURANT_CLOSED' });
+    await assert.rejects(quote('2100-01-01T11:30:00Z'), { code: 'RESTAURANT_CLOSED' });
+    assert.equal(f.saved.orders.length, 0);
+});
+
+test('ordinary HTTP quotes ignore a forged pricing date and cannot revive an expired subscription', async (t) => {
+    const f = await setup(t, { buyer: { naijagoSubscription: { status: 'active', expiresAt: '2001-01-01T00:00:00Z',
+        deliveriesRemaining: 2, minimumOrderValue: 0, validHours: { start: '00:00', end: '00:00' } } } });
+    const input = body({ deliveryAt: '2000-01-01T12:00:00+01:00' });
+    assert.equal((await f.calculateCheckoutSummary({ ...input, userId: '777777777777777777777777' })).totalShippingPrice, 0);
+    const response = await f.post('/summary', input);
+    assert.equal(response.status, 200); assert.equal(response.data.totalShippingPrice, 500);
+});
+
 test('existing creator persists real order/shipment schemas without charging and leaves input quote unchanged', async (t) => {
     const f = await setup(t, { realOrderModels: true }), userId = '777777777777777777777777';
     const quote = await f.calculateCheckoutSummary({ ...body(), userId });

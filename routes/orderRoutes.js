@@ -12,6 +12,8 @@ const User = require('../models/User');
 const { createCheckoutCatalogService, CheckoutCatalogError, hasLocation } = require('../services/checkoutCatalogService');
 const { createCheckoutInventoryService } = require('../services/checkoutInventoryService');
 const { assertCheckoutQuoteUnchanged } = require('../utils/checkoutQuoteSnapshot');
+const { instant } = require('../utils/orderPlanningPolicy');
+const { watParts } = require('../utils/deliveryScheduleAvailability');
 const checkoutCatalog = createCheckoutCatalogService({ Product, ProductOffer, User });
 const checkoutInventory = createCheckoutInventoryService({ Product, ProductOffer });
 const Rider = require('../models/Rider');
@@ -117,24 +119,24 @@ const parsePagination = (query, defaults = {}) => {
     return { page, limit, skip: (page - 1) * limit };
 };
 
-function getActiveNaijaGoSubscription(user) {
+function getActiveNaijaGoSubscription(user, at = new Date()) {
     const subscription = user?.naijagoSubscription;
     if (!subscription || subscription.status !== 'active') return null;
 
     const expiresAt = subscription.expiresAt ? new Date(subscription.expiresAt) : null;
-    if (expiresAt && expiresAt.getTime() <= Date.now()) return null;
+    if (expiresAt && expiresAt.getTime() <= at.getTime()) return null;
     if ((subscription.deliveriesRemaining || 0) <= 0) return null;
 
     return subscription;
 }
 
-function isWithinSubscriptionHours(subscription) {
+function isWithinSubscriptionHours(subscription, at = new Date()) {
     const validHours = subscription?.validHours || {};
     const start = validHours.start || '09:00';
     const end = validHours.end || '18:00';
     const [startHour, startMinute] = start.split(':').map(Number);
     const [endHour, endMinute] = end.split(':').map(Number);
-    const now = new Date();
+    const now = at;
     const timeZone = process.env.SUBSCRIPTION_TIMEZONE || 'Africa/Lagos';
     const zonedParts = new Intl.DateTimeFormat('en-GB', {
         hour: '2-digit',
@@ -163,8 +165,8 @@ function getDeliveryZoneName(zone) {
     return zone.zoneKey || zone.zoneName || '';
 }
 
-function buildSubscriptionDeliveryDiscount({ user, totalSubtotal, totalShippingPrice, matchedDeliveryZone, shippingAddress }) {
-    const subscription = getActiveNaijaGoSubscription(user);
+function buildSubscriptionDeliveryDiscount({ user, totalSubtotal, totalShippingPrice, matchedDeliveryZone, shippingAddress, deliveryAt = new Date() }) {
+    const subscription = getActiveNaijaGoSubscription(user, deliveryAt);
     if (!subscription) {
         return { eligible: false, discount: 0, reason: 'No active subscription.' };
     }
@@ -173,7 +175,7 @@ function buildSubscriptionDeliveryDiscount({ user, totalSubtotal, totalShippingP
         return { eligible: false, discount: 0, reason: 'Minimum order value not met.' };
     }
 
-    if (!isWithinSubscriptionHours(subscription)) {
+    if (!isWithinSubscriptionHours(subscription, deliveryAt)) {
         return { eligible: false, discount: 0, reason: 'Outside subscription delivery hours.' };
     }
 
@@ -721,7 +723,7 @@ function minutesFromTime(value, fallback) {
 function isWithinRestaurantOrderWindow(product = {}, date = new Date()) {
     const start = minutesFromTime(product.orderStartTime, '09:00');
     const end = minutesFromTime(product.orderEndTime, '19:00');
-    const now = (date.getHours() * 60) + date.getMinutes();
+    const now = watParts(date).minutes;
 
     if (start === end) return true;
     if (start < end) return now >= start && now <= end;
@@ -729,7 +731,7 @@ function isWithinRestaurantOrderWindow(product = {}, date = new Date()) {
 }
 
 function currentDayKey(date = new Date()) {
-    return ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'][date.getDay()];
+    return watParts(date).day;
 }
 
 function isWithinVendorOperatingHours(vendor = {}, date = new Date()) {
@@ -755,7 +757,7 @@ function isWithinVendorOperatingHours(vendor = {}, date = new Date()) {
 
     const start = minutesFromTime(hours.openTime, '09:00');
     const end = minutesFromTime(hours.lastOrderTime || hours.closeTime, '19:00');
-    const now = (date.getHours() * 60) + date.getMinutes();
+    const now = watParts(date).minutes;
     const within = start === end
         ? true
         : start < end
@@ -870,7 +872,11 @@ router.get('/', protect, async (req, res) => {
 // Shared, server-only quote entry point. Planned checkout calls this same function
 // with the owner's identity; it does not call a loopback HTTP route or copy prices.
 async function calculateCheckoutSummary({ cartItems, shippingAddress, userLocation,
-    fulfillmentSelections = {}, userId, session = null }) {
+    fulfillmentSelections = {}, userId, session = null, deliveryAt = null }) {
+
+    // Server-only pricing context. The HTTP summary handler does not accept a
+    // client deliveryAt: planned quotes first validate the actual window.
+    const quoteTime = deliveryAt == null ? new Date() : instant(deliveryAt);
 
     if (!cartItems || cartItems.length === 0) {
         throw new CheckoutCatalogError('EMPTY_CART', 'No items in cart for summary calculation', 400);
@@ -895,7 +901,7 @@ async function calculateCheckoutSummary({ cartItems, shippingAddress, userLocati
                 throw new CheckoutCatalogError('CONSULTATION_REQUIRED', `${product.name} requires pharmacist consultation before purchase.`, 400);
             }
 
-            if (isRestaurantProduct(product) && !isWithinRestaurantOrderWindow(product)) {
+            if (isRestaurantProduct(product) && !isWithinRestaurantOrderWindow(product, quoteTime)) {
                 throw new CheckoutCatalogError('RESTAURANT_CLOSED', `${product.name} can only be ordered from ${product.orderStartTime || '09:00'} to ${product.orderEndTime || '19:00'}.`, 400);
             }
             
@@ -1089,6 +1095,7 @@ async function calculateCheckoutSummary({ cartItems, shippingAddress, userLocati
         const buyer = await buyerQuery;
         const subscriptionDiscount = buildSubscriptionDeliveryDiscount({
             user: buyer,
+            deliveryAt: quoteTime,
             totalSubtotal,
             totalShippingPrice,
             matchedDeliveryZone,

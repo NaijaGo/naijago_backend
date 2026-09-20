@@ -15,7 +15,8 @@ function loadCheckoutForTests({ models, connection }) {
     const forbidden = () => { throw new Error('Live integration is forbidden in checkout tests.'); };
     const blocked = new Proxy({}, { get: () => forbidden });
     const pure = new Set(['express', 'crypto', '../services/checkoutCatalogService', '../services/checkoutInventoryService',
-        '../utils/checkoutQuoteSnapshot', '../utils/flutterwavePayment', '../utils/squadPayment']);
+        '../utils/checkoutQuoteSnapshot', '../utils/flutterwavePayment', '../utils/squadPayment',
+        '../utils/orderPlanningPolicy', '../utils/deliveryScheduleAvailability']);
     function safeRequire(name) {
         if (pure.has(name)) return actualRequire(name);
         if (name === 'mongoose') return { startSession: () => connection.startSession() };
