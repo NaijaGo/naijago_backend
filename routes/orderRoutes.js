@@ -257,7 +257,18 @@ async function decrementPaidItemInventory({ item, session }) {
     }
 }
 
-async function settleVerifiedPayment({ order, buyer, verifiedTx, app, session, method, provider = 'flutterwave' }) {
+async function notifyPaidOrderVendors({ app, order, paymentMethod }) {
+    const shipments = await Shipment.find({ mainOrder: order._id });
+    for (const shipment of shipments) {
+        try {
+            await notifyVendorOfPaidShipment({ app, order, shipment, paymentMethod });
+        } catch (error) {
+            console.error(`Post-settlement ${paymentMethod} vendor notification failed for shipment ${shipment._id}:`, error.message);
+        }
+    }
+}
+
+async function settleVerifiedPayment({ order, buyer, verifiedTx, app, session, method, provider = 'flutterwave', deferVendorNotifications = false }) {
     order.isPaid = true;
     order.paidAt = order.paidAt || new Date();
     order.mainOrderStatus = 'processing';
@@ -284,7 +295,9 @@ async function settleVerifiedPayment({ order, buyer, verifiedTx, app, session, m
         for (const item of shipment.items) {
             await decrementPaidItemInventory({ item, session });
         }
-        await notifyVendorOfPaidShipment({ app, order, shipment, paymentMethod: provider === 'squad' ? 'Squad' : 'Flutterwave', session });
+        if (!deferVendorNotifications) {
+            await notifyVendorOfPaidShipment({ app, order, shipment, paymentMethod: provider === 'squad' ? 'Squad' : 'Flutterwave', session });
+        }
     }
     return order.save({ session });
 }
@@ -2281,9 +2294,11 @@ router.put('/:id/pay', protect, async (req, res) => {
                 session,
                 method: 'direct_verify',
                 provider: 'squad',
+                deferVendorNotifications: true,
             });
             await session.commitTransaction();
             session.endSession();
+            await notifyPaidOrderVendors({ app: req.app, order: updatedOrder, paymentMethod: 'Squad' });
             try { await grantReferralRewardForVerifiedUser(req.user.id); } catch (referralError) {
                 console.error('[PAY ENDPOINT] Referral reward processing error:', referralError);
             }
@@ -3195,8 +3210,10 @@ router.post('/webhooks/squad', async (req, res) => {
       order, buyer,
       verifiedTx: { ...normalized.raw, id: normalized.id, status: 'successful', tx_ref: normalized.tx_ref, gateway_ref: normalized.gateway_ref, amount: normalized.amountKobo / 100, currency: normalized.currency, email: normalized.email },
       app: req.app, session, method: 'webhook', provider: 'squad',
+      deferVendorNotifications: true,
     });
     await session.commitTransaction();
+    await notifyPaidOrderVendors({ app: req.app, order, paymentMethod: 'Squad' });
     try { await grantReferralRewardForVerifiedUser(order.user); } catch (error) {
       console.error('Squad webhook referral reward processing error:', error);
     }
@@ -3383,49 +3400,49 @@ async function processPendingSquadPayments(app) {
       const txRef = candidate.paymentResult?.tx_ref;
       if (!txRef) continue;
       const session = await mongoose.startSession();
-      session.startTransaction();
+      let settledOrder;
       try {
-        const order = await MainOrder.findOne({ _id: candidate._id, isPaid: false }).session(session);
-        if (!order) {
-          await session.commitTransaction();
-          continue;
-        }
-        const verified = await verifySquadPayment({
-          transactionRef: txRef,
-          initiatedAt: order.paymentResult?.initiatedAt,
+        await session.withTransaction(async () => {
+          const order = await MainOrder.findOne({ _id: candidate._id, isPaid: false }).session(session);
+          if (!order) return;
+          const verified = await verifySquadPayment({
+            transactionRef: txRef,
+            initiatedAt: order.paymentResult?.initiatedAt,
+          });
+          if (!squadPaymentMatchesOrder(verified, order, txRef)) {
+            order.paymentResult = buildSquadPendingPaymentResult(order.paymentResult, verified, txRef);
+            await order.save({ session });
+            return;
+          }
+          const buyer = await User.findById(order.user).session(session);
+          if (!buyer) throw new Error('Buyer user account not found.');
+          const normalized = normalizeSquadTransaction(verified);
+          settledOrder = await settleVerifiedPayment({
+            order,
+            buyer,
+            verifiedTx: {
+              ...normalized.raw,
+              id: normalized.id,
+              status: 'successful',
+              tx_ref: normalized.tx_ref,
+              gateway_ref: normalized.gateway_ref,
+              amount: normalized.amountKobo / 100,
+              currency: normalized.currency,
+              email: normalized.email,
+            },
+            app,
+            session,
+            method: 'scheduled_reconciliation',
+            provider: 'squad',
+            deferVendorNotifications: true,
+          });
         });
-        if (!squadPaymentMatchesOrder(verified, order, txRef)) {
-          order.paymentResult = buildSquadPendingPaymentResult(order.paymentResult, verified, txRef);
-          await order.save({ session });
-          await session.commitTransaction();
-          continue;
+        if (settledOrder) {
+          await notifyPaidOrderVendors({ app, order: settledOrder, paymentMethod: 'Squad' });
+          await grantReferralRewardForVerifiedUser(settledOrder.user);
+          console.log(`[SQUAD PAYMENT RECOVERY] Order ${settledOrder._id} verified via ${txRef}`);
         }
-        const buyer = await User.findById(order.user).session(session);
-        if (!buyer) throw new Error('Buyer user account not found.');
-        const normalized = normalizeSquadTransaction(verified);
-        await settleVerifiedPayment({
-          order,
-          buyer,
-          verifiedTx: {
-            ...normalized.raw,
-            id: normalized.id,
-            status: 'successful',
-            tx_ref: normalized.tx_ref,
-            gateway_ref: normalized.gateway_ref,
-            amount: normalized.amountKobo / 100,
-            currency: normalized.currency,
-            email: normalized.email,
-          },
-          app,
-          session,
-          method: 'scheduled_reconciliation',
-          provider: 'squad',
-        });
-        await session.commitTransaction();
-        await grantReferralRewardForVerifiedUser(order.user);
-        console.log(`[SQUAD PAYMENT RECOVERY] Order ${order._id} verified via ${txRef}`);
       } catch (error) {
-        await session.abortTransaction();
         console.error(`[SQUAD PAYMENT RECOVERY] Failed for order ${candidate._id}:`, error.message);
       } finally {
         session.endSession();
