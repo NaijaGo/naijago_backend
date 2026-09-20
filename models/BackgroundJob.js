@@ -7,7 +7,9 @@ const schema = new mongoose.Schema({
     owner: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     payload: { type: mongoose.Schema.Types.Mixed, required: true },
     payloadHash: { type: String, required: true },
-    deliveryKey: { type: String, default: randomUUID },
+    // Mongoose supplies a scope argument (null on upsert) to default callbacks.
+    // crypto.randomUUID accepts an options object, never that scope argument.
+    deliveryKey: { type: String, default: () => randomUUID() },
     state: { type: String, enum: ['queued', 'running', 'completed', 'failed', 'cancelled'], default: 'queued' },
     attempts: { type: Number, default: 0, min: 0 },
     maxAttempts: { type: Number, default: 4, min: 1, max: 8 },

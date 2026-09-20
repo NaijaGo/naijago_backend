@@ -118,6 +118,8 @@ Workspace root has no usable Git repository. Cross-repository tracker lives here
 
 ## Current release boundary
 
+- 2026-09-20: User confirmed TEST_DATABASE_CONNECTION_OK, then ran the real Atlas suite. Three subtests failed on the same BackgroundJob deliveryKey default (randomUUID called with null); rollback passed. Parent failure accounts for the fourth reported failure. Reproduced the exact failure offline through real Mongoose defaults/upsert casting, fixed the callback, and added four regressions including retry-key preservation. Concurrent integration batches now drain before cleanup and rollback checks the intended error. Full local backend suite: 142 passed, 0 failed, 1 skipped. Real Atlas rerun is pending; no push/deployment or production database change.
+
 - 2026-09-20: User's initial Atlas connection check failed with a generic error; root cause is not yet confirmed. Test cluster SRV/TXT DNS resolution and credential-free URI/driver construction checks passed locally. Added credential-safe staged diagnostics and read-only client lifecycle tests: 16/16 targeted tests passed, plus JavaScript/PowerShell syntax and whitespace checks. Actual authenticated Atlas check and transaction suite remain pending. No production setting or data changed.
 
 - 2026-09-20: User created a separate Atlas testing project/cluster and rotated the test password after a screenshot exposure. Added explicit opt-in for only naijago-testing.kwcvhix.mongodb.net and the fixed naijago_integration_tests database. Hidden-password PowerShell runner defaults to a read-only connection check. Real tests create and remove only uniquely named collections belonging to the current run; no dropDatabase or production MONGO_URI use.

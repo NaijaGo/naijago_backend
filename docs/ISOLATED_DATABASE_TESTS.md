@@ -33,10 +33,8 @@ password is wrong or that the IP allowlist is the sole cause. Share only these
 safe diagnostic lines; do not log the original driver error or completed URI.
 
 The first user-run check failed with the old generic message; its exact cause
-remains unconfirmed. A local read-only DNS check resolved the approved cluster's
-SRV/TXT records, and driver construction accepted the URI with fictitious
-credentials (no login attempted). Retry the updated connection-only script to
-identify the failed stage before changing any Atlas settings.
+was not confirmed. A subsequent user-run check succeeded with
+TEST_DATABASE_CONNECTION_OK. No change to production settings was needed.
 
 After the connection check succeeds, explicitly run the isolated tests:
 
@@ -78,9 +76,19 @@ suite as skipped without the variable. A skipped test is not a pass.
 
 ## Coverage and remaining verification
 
-The Atlas connection and actual Mongo tests still require a user-run check with
-the new, private test password. Local safety tests do not prove connectivity or
-transaction behavior on Atlas.
+The user confirmed the Atlas connection. The first actual Mongo suite reported
+one passing rollback test and three failing subtests (four failures including
+the parent test). All three shared the same BackgroundJob.deliveryKey default
+error: Mongoose supplied null to a directly registered crypto.randomUUID callback
+during an upsert. This was reproduced offline through the real Mongoose query
+pipeline and fixed by wrapping randomUUID in a zero-argument callback.
+
+Four new regression tests cover upsert defaults, ordinary documents, preserving
+explicit/retried delivery keys, and session propagation. Full local backend
+suite after the fix: 142 passed, 0 failed, 1 skipped (real Mongo). An Atlas rerun
+with the private test password is still required; do not count local tests as
+proof that the real concurrency suite has passed. Concurrent test batches now
+settle every request before cleanup; rollback asserts the exact injected error.
 
 Current assertions: concurrent enqueue/claim uniqueness, expired lease recovery,
 stale-worker acknowledgment rejection, concurrent reactions/comments with their
