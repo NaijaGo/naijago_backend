@@ -6,6 +6,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const { createRequire } = require('node:module');
 const express = require('express');
+const { Types } = require('mongoose');
 const P = '111111111111111111111111', O = '222222222222222222222222', S = '333333333333333333333333';
 const P2 = '444444444444444444444444', O2 = '555555555555555555555555';
 const item = (extra = {}) => ({ product: P, quantity: 2, ...extra });
@@ -18,12 +19,14 @@ const query = (value) => ({ select() { return this; }, session() { return this; 
 async function setup(t, options = {}) {
     const saved = { orders: [], shipments: [], commits: 0, aborts: 0, ends: 0, feeCalls: [], buyerReads: [], sessionReads: [] };
     const readQuery = (name, value) => { const result = query(value); result.session = function(value) { saved.sessionReads.push({ name, value }); return this; }; return result; };
-    const product = { _id: P, name: 'Real catalog shirt', price: 5000, discountPrice: null, stockQuantity: 999,
-        category: 'Fashion', isActive: true, moderationStatus: 'approved', productStatus: 'active', sellerType: 'vendor', vendor: S,
+    // Lean Mongo results retain BSON ObjectIds; HTTP serialization must not be
+    // required to make an internal quote usable by the order creator.
+    const product = { _id: new Types.ObjectId(P), name: 'Real catalog shirt', price: 5000, discountPrice: null, stockQuantity: 999,
+        category: 'Fashion', isActive: true, moderationStatus: 'approved', productStatus: 'active', sellerType: 'vendor', vendor: new Types.ObjectId(S),
         imageUrls: ['https://example.invalid/real.jpg'], variants: [], ...options.product };
-    const offer = { _id: O, product: P, sellerType: 'vendor', sellerId: S, price: 1000, discountPrice: null, stockQuantity: 4,
+    const offer = { _id: new Types.ObjectId(O), product: new Types.ObjectId(P), sellerType: 'vendor', sellerId: new Types.ObjectId(S), price: 1000, discountPrice: null, stockQuantity: 4,
         isPrimary: true, status: 'active', fulfilmentLocation: location, variants: [], ...options.offer };
-    const seller = { _id: S, isVendor: true, vendorStatus: 'approved', businessName: 'Low Cost', businessLocation: location,
+    const seller = { _id: new Types.ObjectId(S), isVendor: true, vendorStatus: 'approved', businessName: 'Low Cost', businessLocation: location,
         pickupEnabled: true, pickupSettings: { maximumConcurrentOrders: 20, estimatedPreparationMinutes: 30 }, ...options.seller };
     class MainOrder { constructor(data) { Object.assign(this, data); this._id = '666666666666666666666666'; }
         async save() { if (!saved.orders.includes(this)) saved.orders.push(this); return this; } }
@@ -79,6 +82,38 @@ test('existing creator persists real order/shipment schemas without charging and
     assert.equal(result.order.planning.kind, 'group'); assert.equal(String(result.order.planning.sourceId), P);
     assert.equal(f.saved.shipments[0].items[0].price, 1000); assert.equal(f.saved.shipments[0].items[0].commissionKoboPerUnit, 5700);
     assert.equal(JSON.stringify(quote), before); assert.equal(f.saved.commits, 0); assert.equal(f.saved.ends, 0);
+});
+
+test('BSON-backed quote keeps canonical string product, offer and variant IDs for direct and HTTP checkout', async (t) => {
+    const variantId = '999999999999999999999999';
+    const f = await setup(t, { realOrderModels: true,
+        product: { variants: [{ _id: new Types.ObjectId(variantId), attributes: { size: 'M' }, stockQuantity: 4, isActive: true }] },
+        offer: { variants: [{ _id: new Types.ObjectId(), productVariantId: new Types.ObjectId(variantId), price: 1000, stockQuantity: 4, isActive: true }] } });
+    const input = body({ cartItems: [item({ selectedSize: 'M' })] }), userId = '777777777777777777777777';
+    const quote = await f.calculateCheckoutSummary({ ...input, userId });
+    const line = quote.shipmentSummaries[0].items[0];
+    assert.equal(line.product, P); assert.equal(line.offer, O); assert.equal(line.variantId, variantId);
+    const http = await f.post('/summary', input); assert.equal(http.status, 200);
+    assert.deepEqual(JSON.parse(JSON.stringify(quote)), http.data);
+    const before = JSON.stringify(quote);
+    const result = await f.createUnpaidOrder({ userId, session: f.session, expectedQuote: quote,
+        planning: { kind: 'group', sourceId: P2, revision: 2 }, input: { ...input, shipmentSummaries: quote.shipmentSummaries } });
+    assert.equal(result.order.isPaid, false); assert.equal(result.order.totalPrice, 2500);
+    const savedLine = f.saved.shipments[0].items[0];
+    assert.equal(String(savedLine.product), P); assert.equal(String(savedLine.offer), O); assert.equal(String(savedLine.variantId), variantId);
+    assert.equal(savedLine.selectedSize, 'M'); assert.equal(JSON.stringify(quote), before);
+});
+
+test('legacy quote without offers keeps null IDs and creates the same unpaid order directly', async (t) => {
+    const f = await setup(t, { realOrderModels: true });
+    f.models.ProductOffer.find = () => query([]);
+    const userId = '777777777777777777777777', quote = await f.calculateCheckoutSummary({ ...body(), userId });
+    const line = quote.shipmentSummaries[0].items[0];
+    assert.equal(line.product, P); assert.equal(line.offer, null); assert.equal(line.variantId, null);
+    const result = await f.createUnpaidOrder({ userId, session: f.session, expectedQuote: quote,
+        input: body({ shipmentSummaries: quote.shipmentSummaries }) });
+    assert.equal(result.order.totalPrice, 10500); assert.equal(result.order.isPaid, false);
+    assert.equal(f.saved.shipments[0].items[0].offer, null);
 });
 
 test('creator rejects changed line prices, equal-total fee swaps, seller location and stock before writes', async (t) => {

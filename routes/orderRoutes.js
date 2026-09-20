@@ -889,7 +889,7 @@ async function calculateCheckoutSummary({ cartItems, shippingAddress, userLocati
 
         // 1. Group items by vendor and calculate subtotal for each vendor
         for (const line of catalogLines) {
-            const { item, product, offer: selectedOffer, sellerType, sellerId, sellerName, sellerLocation, sellerKey, sellerVendor, unitPrice, fulfillmentKey } = line;
+            const { item, product, sellerType, sellerId, sellerName, sellerLocation, sellerKey, sellerVendor, unitPrice, fulfillmentKey } = line;
 
             if (isRestrictedMedicine(product)) {
                 throw new CheckoutCatalogError('CONSULTATION_REQUIRED', `${product.name} requires pharmacist consultation before purchase.`, 400);
@@ -995,8 +995,9 @@ async function calculateCheckoutSummary({ cartItems, shippingAddress, userLocati
             const vendorData = sellerCartMap.get(fulfillmentKey);
             vendorData.items.push({
                 ...buildOrderItemFromProduct({
+                    // Catalog item IDs are canonical strings. Keep them intact
+                    // for internal checkout as well as JSON/mobile round trips.
                     ...item,
-                    offer: selectedOffer?._id || null,
                     authoritativePrice: unitPrice,
                 }, product),
                 commissionRate,

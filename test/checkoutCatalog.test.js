@@ -37,6 +37,16 @@ test('prices, stock, seller, SKU and zero-coordinate fulfilment come from the ca
     assert.equal(line.item.name, undefined); assert.equal(line.item.price, undefined);
 });
 
+test('catalog input IDs remain strict strings and do not accept wrapped or operator-bearing objects', async () => {
+    const { service, filters } = fixture();
+    for (const field of ['product', 'offer', 'variantId']) {
+        for (const value of [{ _id: P }, { $oid: P }, { $ne: null }, { toString: () => P }, [P], 123]) {
+            await rejects(service.resolve([item({ [field]: value })]), 'INVALID_ITEM');
+        }
+    }
+    assert.equal(filters.length, 0);
+});
+
 test('disabled, foreign, missing and out-of-stock offers cannot fall back to stale product inventory', async () => {
     for (const status of ['disabled', 'draft', 'out_of_stock']) await rejects(fixture({ offers: [offer({ status })] }).service.resolve([item()]), 'OFFER_UNAVAILABLE');
     await rejects(fixture().service.resolve([item({ offer: O2 })]), 'OFFER_UNAVAILABLE');

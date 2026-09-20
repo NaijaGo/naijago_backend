@@ -2,6 +2,29 @@
 
 ## New gate prepared: PlannedCheckout (NOT yet verified)
 
+Latest user-run attempt after b88e8fd: 066239891d744956b46d7ce2f703e225,
+two passed and four failed including the parent (six total, 142165.7497ms).
+User setup succeeded. Stale/non-owner rejection and scheduled fail-closed passed;
+concurrent creation, outbox rollback and source-index cases all stopped at
+INVALID_ITEM before successful receipt creation. No cleanup error was reported.
+
+Root cause reproduced offline: calculateCheckoutSummary replaced the catalog's
+canonical string offer ID with the raw Mongo ObjectId. HTTP JSON serialization
+hid the mismatch, while direct group quote-to-creator calls rejected the object.
+The quote now retains all canonical item IDs from catalog validation. Strict
+string-only input validation is unchanged; do not widen it to arbitrary objects.
+Existing route fixtures now use real BSON product/offer/seller IDs, and new
+regressions cover variant ID/direct-HTTP parity, legacy no-offer nulls and hostile
+wrapped/operator ID input. Two selected tests failed on the old code (including
+the identical INVALID_ITEM stack); all 48 focused tests passed after correction.
+These are offline tests with simulated persistence, not an Atlas pass. Rerun
+PlannedCheckout with the same TEST credentials; no deployment/build is needed.
+
+Final quote-ID-fix offline regression: 316 passed, zero failed, eight deliberately
+skipped database suites (324 total, 37322.4985ms). Order-route JavaScript parsing
+and Git whitespace checks passed. No authenticated Atlas/provider call was made
+by the agent. The corrected real-database acceptance remains pending.
+
 First user-run attempt after f3ad920 reached Atlas but failed during synthetic
 user setup: run 36c0adf4516d4a3bad95d25346cc01f6, one failed parent, no checkout
 subtests reached (52837.6629ms). Both raw user inserts lacked email and phone,
@@ -48,8 +71,8 @@ It refuses mixed connections, exposes only the two helpers, and blocks provider
 modules and network/payment calls. Only delivery-fee configuration is simulated
 (a fixed test fee); stock, prices, commission settings, receipts, shipments, source
 documents, indexes, outbox and transaction behavior use the real test database.
-The runner's All selector includes this eighth suite. The first authenticated
-attempt failed as recorded above; no pass is claimed. Earlier seven passing
+The runner's All selector includes this eighth suite. The authenticated attempts
+failed as recorded above; no pass is claimed. Earlier seven passing
 gates do not establish acceptance of these new changes.
 
 Final offline regression for this checkpoint: 310 passed, zero failed, eight
