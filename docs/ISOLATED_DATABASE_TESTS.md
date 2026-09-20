@@ -1,8 +1,28 @@
 # Isolated MongoDB regression tests
 
-## New gate prepared: PlannedCheckout (NOT yet verified)
+## Latest verified gate: PlannedCheckout
 
-Latest user-run attempt after b88e8fd: 066239891d744956b46d7ce2f703e225,
+User-supplied Atlas output after checkpoint 66a0e1c verifies run
+eadc272f392c4c0dbfc060368e9237e6: six passed (five subtests plus parent), zero
+failed, zero skipped, 106565.6784ms overall. No cleanup error was reported.
+All five scenarios below passed against the isolated real database. The earlier
+fixture and offer-ID failures are superseded by this result, not erased.
+
+Scope: concurrent group checkout produced one unpaid receipt/shipment/fee and
+one notification job without consuming stock; stale/non-owner checkout was
+rejected; notification failure rolled back receipt, shipments and source;
+the unique source index rejected duplicate planned receipts without blocking
+ordinary orders; scheduled creation remained blocked. Providers and delivery
+fee configuration were simulated. Notification delivery, payments, actual
+scheduled delivery and app/device acceptance are NOT established by this test.
+
+All eight prepared suites have passed at their recorded revisions. This is not
+a fresh combined run at HEAD or whole-platform sign-off. No repeat of this gate,
+new key, deployment or app rebuild is needed just to record progress.
+
+### Earlier attempts and repairs (historical; superseded by the pass above)
+
+Previous user-run attempt after b88e8fd: 066239891d744956b46d7ce2f703e225,
 two passed and four failed including the parent (six total, 142165.7497ms).
 User setup succeeded. Stale/non-owner rejection and scheduled fail-closed passed;
 concurrent creation, outbox rollback and source-index cases all stopped at
@@ -17,13 +37,13 @@ Existing route fixtures now use real BSON product/offer/seller IDs, and new
 regressions cover variant ID/direct-HTTP parity, legacy no-offer nulls and hostile
 wrapped/operator ID input. Two selected tests failed on the old code (including
 the identical INVALID_ITEM stack); all 48 focused tests passed after correction.
-These are offline tests with simulated persistence, not an Atlas pass. Rerun
-PlannedCheckout with the same TEST credentials; no deployment/build is needed.
+Those offline tests used simulated persistence, not Atlas. The subsequent
+user-run pass above now supplies the real-database evidence for this correction.
 
 Final quote-ID-fix offline regression: 316 passed, zero failed, eight deliberately
 skipped database suites (324 total, 37322.4985ms). Order-route JavaScript parsing
 and Git whitespace checks passed. No authenticated Atlas/provider call was made
-by the agent. The corrected real-database acceptance remains pending.
+by the agent. Real-database acceptance was pending until the user-run pass above.
 
 First user-run attempt after f3ad920 reached Atlas but failed during synthetic
 user setup: run 36c0adf4516d4a3bad95d25346cc01f6, one failed parent, no checkout
@@ -39,17 +59,19 @@ password hashing. A shared test-only fixture module feeds both Atlas setup and
 three offline regressions for real-schema validity, all unique User index keys
 and rejection of missing email/phone. The focused fixture/loader/harness tests
 passed 15/15. No production model, index, credential or application flow changed;
-do not drop indexes or edit production users. Atlas acceptance remains pending:
-rerun the SAME PlannedCheckout command below, not the connection-only check.
+do not drop indexes or edit production users. Atlas acceptance was pending at
+that checkpoint and is now superseded by the passing run above.
 
 Fixture-fix full offline regression: 313 passed, zero failed, eight deliberately
 skipped database suites (321 total, 36185.8851ms). JavaScript parsing and Git
 whitespace checks passed. The agent did not connect to Atlas or run paid calls;
-only a subsequent user-run PlannedCheckout pass can close this acceptance gate.
+the subsequent user-run PlannedCheckout pass above closes this scoped gate.
+
+### Verified suite scope and future regression command
 
 The existing unpaid MainOrder/Shipment creator now composes with immediate group
-checkout in the source/order/outbox transaction. Test it using the same dedicated
-TEST credentials, without changing any production environment settings:
+checkout in the source/order/outbox transaction. For relevant future regressions
+only, use the same TEST credentials without changing production settings:
 
     powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\runAtlasIntegrationTests.ps1 -RunTests -Suite PlannedCheckout
 
@@ -71,9 +93,8 @@ It refuses mixed connections, exposes only the two helpers, and blocks provider
 modules and network/payment calls. Only delivery-fee configuration is simulated
 (a fixed test fee); stock, prices, commission settings, receipts, shipments, source
 documents, indexes, outbox and transaction behavior use the real test database.
-The runner's All selector includes this eighth suite. The authenticated attempts
-failed as recorded above; no pass is claimed. Earlier seven passing
-gates do not establish acceptance of these new changes.
+The runner's All selector includes this eighth suite. The latest authenticated
+run passed as recorded above. Earlier failures remain historical evidence.
 
 Final offline regression for this checkpoint: 310 passed, zero failed, eight
 credential-gated suites deliberately skipped (318 total, 48377.2536ms). New
@@ -97,13 +118,13 @@ fixtures are orchestration tests, not Mongo isolation evidence. Keep credentials
 private; no new connection, key, production database, deployment or device build
 is needed just to record this local stage.
 
-## Latest verified gate: Checkout
+## Previously verified gate: Checkout
 
 User-supplied Atlas output (2026-09-20), after checkpoint 9c1cd18, verifies run
 509083010de949d8b4f8f2d912e8a4ce: six passed (five subtests plus parent), zero
 failed, zero skipped, 43191.5829ms overall. No cleanup error was reported.
-All seven earlier database suites passed at their recorded revisions; the new
-PlannedCheckout gate above is still pending. The complete release has not passed.
+All seven earlier database suites passed at their recorded revisions;
+PlannedCheckout now also passed as recorded above. The complete release has not passed.
 
 The existing order routes share authoritative catalog/variant validation and
 transaction-only inventory handling. Checkout tests these real services on the

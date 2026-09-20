@@ -49,8 +49,9 @@ Do not enable/publish the four features based on these foundations alone.
   mismatch rejection, rollback and legacy no-offer stock protection. It does
   not verify real payment-provider settlement, dispatch or application screens.
 
-Next: verify the newly connected shared unpaid-order creation adapter against
-isolated Mongo, finish scheduled quote/slot validation, enforce quote freshness
+The shared unpaid-order creation adapter passed the isolated PlannedCheckout
+gate after checkpoint 66a0e1c (details below). Next: finish scheduled quote/slot
+validation, enforce quote freshness
 again at payment initiation, link slot confirmation
 to settlement, preserve late/stock-conflicted
 successful-payment evidence for reconciliation, and guard every dispatch entry.
@@ -65,15 +66,15 @@ For future inventory/catalog regressions only; no repeat is needed now:
 
 Use the same dedicated TEST credentials privately. No new API key, production URI,
 paid provider call, deployment or app rebuild is needed for this gate.
-All seven earlier Atlas gates passed at their recorded revisions. The new
-PlannedCheckout gate below is pending. This is not completion or production
+All eight prepared Atlas gates passed at their recorded revisions, including
+PlannedCheckout below. This is not completion or production
 approval of the coordinated release.
 
 | Feature | Local foundation | Still required for the complete feature |
 |---|---|---|
 | Scheduled delivery | WAT rules, calendar validation, reservation/expiry models, transactional area/vendor/rider capacity claims, idempotent confirmation/release, due-only dispatch policy | Authoritative slot generation from actual vendor hours, product restrictions and area/rider policy; checkout/price/stock/payment hooks; late-paid-slot support/reconciliation; reschedule/cancel transaction; actual dispatch guards on every rider entry point; customer/vendor/admin/rider views; reminders and analytics |
 | Photo reviews | Delivered paid-purchase eligibility including verified pickup; max five photo IDs; strict stars/optional text; JPEG/PNG/HEIC byte/10MB limits; private Cloudinary incoming resize/conversion/metadata-strip adapter and thumbnail request | Durable owned upload records/quotas, actual decode and EXIF/HEIC verification, delivered-only submit route using existing Review model, transaction-safe review/rating updates, customer editor/gallery/filter, vendor reply permissions, moderation/reporting/audit, edit/delete period, retention/takedown and notifications |
-| Group ordering | One owner/fulfilment point, private member DTOs, hashed invite, participant limits, revision-protected controls, cutoff scan/outbox; real catalog/stock adapter, shared quote and owner approval; actual one-shipment MainOrder creation composed in the same transaction and tested offline | PlannedCheckout Atlas concurrency/rollback gate; authenticated/rate-limited HTTP/deep links; creation idempotency/invite regeneration; payment integration, unavailable-item removal, abandoned-group expiry, completion state, realtime notifications and customer/vendor/admin views |
+| Group ordering | One owner/fulfilment point, private member DTOs, hashed invite, participant limits, revision-protected controls, cutoff scan/outbox; real catalog/stock adapter, shared quote and owner approval; actual one-shipment MainOrder creation composed in one transaction; PlannedCheckout Atlas concurrency/rollback/source-index gate passed 6/6 | Authenticated/rate-limited HTTP/deep links; group creation idempotency/invite regeneration; payment integration, unavailable-item removal, abandoned-group expiry, completion state, realtime notifications and customer/vendor/admin views |
 | Recurring orders | WAT calendar retaining month-end anchor, reminder-only plans/occurrences, owner controls, bounded generation/outbox; real catalog validation retaining sizes, explicit quote approval and price-change metadata; future basket/address edits propagate to pending occurrences | Scheduled coverage/slot and future-time pricing, actual order/payment adapter, future schedule editing, expiry/completion worker, substitution approval and threshold UI, real notification delivery and customer/admin screens |
 
 ### Planned checkout approval checkpoint (2026-09-20, local only)
@@ -172,14 +173,22 @@ Storage is simulated in those tests; they do not prove Mongo transaction races.
 Existing delivery, pickup, subscription, restaurant notes and Low Cost's fixed
 57-naira commission regressions passed. PowerShell parsing and diff checks passed.
 
-The new PlannedCheckout Atlas suite is prepared, NOT passed. It uses eight
-run-prefixed collections on the dedicated TEST cluster and actual models/indexes,
-without real payment/provider calls. Run only the new gate next:
+PlannedCheckout passed after quote-ID correction 66a0e1c: user-run
+eadc272f392c4c0dbfc060368e9237e6, six passed (five subtests plus parent), zero
+failed/skipped, 106565.6784ms. No cleanup error was reported. Eight run-prefixed
+collections and actual models/indexes verified concurrent unpaid receipt/source
+identity, stale/non-owner rejection, receipt/shipment/outbox rollback, ordinary
+order compatibility and scheduled fail-closed behavior. Providers and delivery
+fee configuration were simulated; actual payment/notification delivery, capacity
+integration, dispatch and UI acceptance remain open. The prior offline regression
+after this fix passed 316 tests, zero failed, eight skipped (324 total).
+
+For relevant future regressions only; no repeat is needed now:
 
     powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\runAtlasIntegrationTests.ps1 -RunTests -Suite PlannedCheckout
 
-No new secret or mobile build is needed. Earlier seven Atlas passes apply to
-their recorded revisions, not to this new order-creation connection. No push,
+No new secret or mobile build is needed. All eight passes apply to their
+recorded revisions, not a fresh combined run or full-feature acceptance. No push,
 deployment or app build was performed. The existing temporary restaurant radius
 override is tracked separately as OLD-11 and remains a release issue.
 
