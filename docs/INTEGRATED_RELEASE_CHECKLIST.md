@@ -25,7 +25,7 @@ Workspace root has no usable Git repository. Cross-repository tracker lives here
 
 | ID | Requirement / acceptance criteria | Components | State |
 |---|---|---|---|
-| BASE-01 | Regression tests for payments, stock, sellers, pickup, addresses, notifications; document existing failures | Backend/apps | Working |
+| BASE-01 | Regression tests for payments, stock, sellers, pickup, addresses, notifications; document existing failures | Backend/apps | Working: shared authoritative checkout and transaction-only variant stock connected locally; 21 new service/HTTP regressions passed; Checkout Atlas and payment freshness/reconciliation acceptance pending |
 | BASE-02 | Retain/version PDF, tracker, configuration/deployment/test evidence | All | Working |
 | BASE-03 | Backup, dry run, repeatable migrations and rollback before backfills | Backend | Pending |
 | BASE-04 | Review vulnerabilities, startup, credentials/log hygiene; no blind forced upgrades | All | Pending |
@@ -98,6 +98,10 @@ Workspace root has no usable Git repository. Cross-repository tracker lives here
 | WhatsApp | Provider connection error | Operational connection/configuration check |
 
 ## Execution evidence
+
+- 2026-09-20: Final shared-checkout regression passed 277 tests, zero failed, seven deliberately skipped credential-gated Mongo suites (284 total, 63803.3936ms), including all 21 new service/HTTP cases. JavaScript/PowerShell syntax and diff checks passed. This supersedes the preliminary 275-test run below; Checkout Atlas remains unverified until the user runs it with hidden test credentials. No deployment or build.
+
+- 2026-09-20: Shared checkout checkpoint: actual summary/creation use one Product/ProductOffer/seller resolver, validate legacy sizes and structured variants, aggregate quantities across shipments, reject ineligible offers without stale fallback, and ignore forged seller/location/item-price/tax values. Existing tax remains server-owned zero until a real server tax policy is configured. Wallet/provider inventory hook now atomically checks variant stock and updates primary mirrors without consuming another seller's inventory. Short errors and per-item restaurant notes are retained. Focused tests: 21 passed (12 service, 9 HTTP); delivery, pickup, subscription and 57-naira Low Cost commission covered. First full regression before the last two compatibility cases: 275 passed, zero failed, seven skipped. New Checkout Atlas suite prepared (five subtests + parent), NOT yet passed. Six prior gates remain verified. No push/deployment/build, database access or paid provider call. Fresh quote acceptance, paid-but-unfulfillable/historical-order reconciliation and scheduling/group/recurring wiring still required. See ORDER_FEATURES.md.
 
 - 2026-09-20: Authorized by user. All source repositories clean; requirements PDF preserved. Sandbox fails with Windows deny-read ACL errors; direct apply_patch executable works through approved escalation.
 - 2026-09-20: Confirmed manual Apply calls quote while address readiness is false; quote exits. Current-location card marks ready manual addresses selected. Saved-address switch may reuse older coordinates. Fix/tests in progress.
@@ -215,8 +219,8 @@ Do not treat successful unit tests as permission to publish this unfinished rele
 ## Next actions
 
 1. Save verified local checkpoints; keep flags off and do not deploy the incomplete release automatically.
-2. All six prepared Atlas gates (Explore, Search, Workers, Requests, Refinement and Planning) PASSED. Production worker lifecycle tests also pass locally. Keep actual host SIGTERM/restart, health/alerts and provider/browser/device acceptance separate. Never change production MONGO_URI for tests, and do not repeat passed suites solely to record progress.
-3. Next implementation block in the four-feature coordinated phase: connect authoritative shared checkout/stock/variant/payment/dispatch adapters, followed by review submission/media/moderation, authenticated APIs/worker delivery and customer/vendor/admin/rider views with cross-app acceptance tests. Preserve existing delivery/pickup and Squad/legacy payment flows. Follow ORDER_FEATURES.md; no separate feature release and no automatic production activation.
+2. Six prior Atlas gates (Explore, Search, Workers, Requests, Refinement and Planning) PASSED. Run the newly prepared Checkout gate next; its stock race/rollback acceptance is not yet verified. Keep actual hosting/provider/browser/device acceptance separate. Never change production MONGO_URI for tests, or repeat passed suites solely to record progress.
+3. Shared catalog/variant/stock validation is connected to existing checkout locally. Next connect group/recurring catalog adapters, current-quote acceptance and scheduled settlement/dispatch, followed by review submission/media/moderation, authenticated APIs/worker delivery and customer/vendor/admin/rider views. Historical orders and paid-but-unfulfillable reconciliation remain release gates. Preserve delivery/pickup and Squad/legacy flows. Follow ORDER_FEATURES.md; no separate feature release or automatic activation.
 4. Keep the real Photoroom sandbox/live trial, private-link checks, browser/device review and shared retention/erasure/takedown work tracked as unfinished release gates (see IMAGE_REFINEMENT.md). Keep flags off pending acceptance; no paid calls have run. Do not rerun already-passed gates solely to claim progress.
 5. Close prior radar/security/regression items, rehearse migrations with a fresh backup, then deploy/build/device-test the complete release.
 6. Do not mark the programme complete with required items unresolved. Record local tests, deployment and device evidence separately.

@@ -9,6 +9,10 @@ const Product = require('../models/Product');
 const ProductOffer = require('../models/ProductOffer');
 const AppSetting = require('../models/AppSetting');
 const User = require('../models/User');
+const { createCheckoutCatalogService, CheckoutCatalogError, hasLocation } = require('../services/checkoutCatalogService');
+const { createCheckoutInventoryService } = require('../services/checkoutInventoryService');
+const checkoutCatalog = createCheckoutCatalogService({ Product, ProductOffer, User });
+const checkoutInventory = createCheckoutInventoryService({ Product, ProductOffer });
 const Rider = require('../models/Rider');
 const CompanyDelivery = require('../models/CompanyDelivery');
 const { protect, authorizeRoles } = require('../middleware/authMiddleware');
@@ -231,31 +235,7 @@ async function consumeSubscriptionDeliveryIfNeeded({ buyer, mainOrder, session }
     return buyer;
 }
 
-async function decrementPaidItemInventory({ item, session }) {
-    const quantity = Math.max(1, Number(item.quantity || 1));
-    const product = await Product.findOneAndUpdate(
-        { _id: item.product, stockQuantity: { $gte: quantity } },
-        { $inc: { salesCount: quantity, stockQuantity: -quantity } },
-        { new: true, session, runValidators: true },
-    );
-    if (!product) {
-        const error = new Error(`Insufficient stock for ${item.name || 'a product'}.`);
-        error.statusCode = 409;
-        throw error;
-    }
-    if (item.offer) {
-        const offer = await ProductOffer.findOneAndUpdate(
-            { _id: item.offer, stockQuantity: { $gte: quantity } },
-            { $inc: { stockQuantity: -quantity } },
-            { new: true, session, runValidators: true },
-        );
-        if (!offer) {
-            const error = new Error(`The selected offer for ${item.name || 'a product'} is out of stock.`);
-            error.statusCode = 409;
-            throw error;
-        }
-    }
-}
+const decrementPaidItemInventory = (args) => checkoutInventory.decrement(args);
 
 async function notifyPaidOrderVendors({ app, order, paymentMethod }) {
     const shipments = await Shipment.find({ mainOrder: order._id });
@@ -293,7 +273,7 @@ async function settleVerifiedPayment({ order, buyer, verifiedTx, app, session, m
         shipment.shipmentStatus = 'processing';
         await shipment.save({ session });
         for (const item of shipment.items) {
-            await decrementPaidItemInventory({ item, session });
+            await decrementPaidItemInventory({ item, session, sellerType: shipment.sellerType, sellerId: shipment.sellerId || shipment.vendor });
         }
         if (!deferVendorNotifications) {
             await notifyVendorOfPaidShipment({ app, order, shipment, paymentMethod: provider === 'squad' ? 'Squad' : 'Flutterwave', session });
@@ -802,8 +782,8 @@ function buildOrderItemFromProduct(item, product) {
         offer: item.offer || null,
         variantId: item.variantId || null,
         sku: item.sku || product.sku || '',
-        name: item.name || product.name,
-        image: product.imageUrls?.[0],
+        name: product.name,
+        image: product.variants?.find((variant) => String(variant._id) === String(item.variantId))?.imageUrls?.[0] || product.imageUrls?.[0],
         quantity: item.quantity,
         price: authoritativePrice,
         selectedSize: item.selectedSize || null,
@@ -897,11 +877,12 @@ router.post('/summary', protect, async (req, res) => {
     if (!cartItems || cartItems.length === 0) {
         return res.status(400).json({ message: 'No items in cart for summary calculation' });
     }
-    if (!shippingAddress || !userLocation) {
+    if (!shippingAddress || !hasLocation(userLocation)) {
         return res.status(400).json({ message: 'Shipping address and location are required' });
     }
     
     try {
+        const catalogLines = await checkoutCatalog.resolve(cartItems);
         const sellerCartMap = new Map();
         let totalSubtotal = 0;
         let totalPlatformFees = 0;
@@ -910,17 +891,8 @@ router.post('/summary', protect, async (req, res) => {
         let matchedDeliveryZone = null;
 
         // 1. Group items by vendor and calculate subtotal for each vendor
-        for (const item of cartItems) {
-            // Fetch product, vendor, and category data
-            const product = await Product.findById(item.product)
-                .populate(
-                    'vendor',
-                    'businessName businessLocation phoneNumber businessSupportPhone pickupEnabled pickupSettings',
-                );
-            
-            if (!product) {
-                return res.status(404).json({ message: `Product not found: ${item.name}` });
-            }
+        for (const line of catalogLines) {
+            const { item, product, offer: selectedOffer, sellerType, sellerId, sellerName, sellerLocation, sellerKey, sellerVendor, unitPrice, fulfillmentKey } = line;
 
             if (isRestrictedMedicine(product)) {
                 return res.status(400).json({
@@ -934,30 +906,6 @@ router.post('/summary', protect, async (req, res) => {
                 });
             }
             
-            const selectedOffer = item.offer
-                ? await ProductOffer.findOne({ _id: item.offer, product: product._id, status: 'active' })
-                    .populate('sellerId', 'businessName businessLocation phoneNumber businessSupportPhone pickupEnabled pickupSettings')
-                : await ProductOffer.findOne({ product: product._id, isPrimary: true, status: 'active' })
-                    .populate('sellerId', 'businessName businessLocation phoneNumber businessSupportPhone pickupEnabled pickupSettings');
-            const sellerType = selectedOffer?.sellerType || (product.vendor ? 'vendor' : product.sellerType || 'naijago');
-            const sellerId = selectedOffer?.sellerId?._id || selectedOffer?.sellerId || product.sellerId || product.vendor?._id || null;
-            const sellerName = sellerType === 'naijago'
-                ? 'NaijaGo'
-                : selectedOffer?.sellerId?.businessName || product.vendor?.businessName || 'Vendor';
-            const sellerLocation = selectedOffer?.fulfilmentLocation?.latitude
-                ? selectedOffer.fulfilmentLocation
-                : sellerType === 'vendor'
-                    ? selectedOffer?.sellerId?.businessLocation || product.vendor?.businessLocation
-                    : product.productLocation;
-            if (!sellerLocation?.latitude || !sellerLocation?.longitude) {
-                return res.status(400).json({
-                    message: `A fulfilment location must be configured for ${product.name}.`,
-                });
-            }
-            const sellerKey = sellerType === 'naijago' ? 'naijago' : `vendor:${sellerId}`;
-            const sellerVendor = sellerType === 'vendor'
-                ? selectedOffer?.sellerId || product.vendor
-                : null;
             const requestedSelection =
                 fulfillmentSelections[sellerKey] ||
                 fulfillmentSelections[String(sellerId || '')] ||
@@ -970,11 +918,6 @@ router.post('/summary', protect, async (req, res) => {
                 return res.status(400).json({
                     message: `${sellerName} does not currently offer customer pickup.`,
                 });
-            }
-            const unitPrice = Number(selectedOffer?.discountPrice ?? selectedOffer?.price ?? product.discountPrice ?? product.price);
-            const availableStock = Number(selectedOffer?.stockQuantity ?? product.stockQuantity);
-            if (availableStock < Number(item.quantity || 1)) {
-                return res.status(400).json({ message: `Insufficient stock for ${product.name}. Available: ${availableStock}` });
             }
 
             const itemPrice = unitPrice * item.quantity;
@@ -993,8 +936,8 @@ router.post('/summary', protect, async (req, res) => {
             const { commissionRate, itemCommission } = commission;
             totalPlatformFees += itemCommission;
 
-            if (!sellerCartMap.has(sellerKey)) {
-                sellerCartMap.set(sellerKey, {
+            if (!sellerCartMap.has(fulfillmentKey)) {
+                sellerCartMap.set(fulfillmentKey, {
                     sellerType,
                     sellerId,
                     vendorId: sellerId || '',
@@ -1058,7 +1001,7 @@ router.post('/summary', protect, async (req, res) => {
                 });
             }
             
-            const vendorData = sellerCartMap.get(sellerKey);
+            const vendorData = sellerCartMap.get(fulfillmentKey);
             vendorData.items.push({
                 ...buildOrderItemFromProduct({
                     ...item,
@@ -1074,7 +1017,7 @@ router.post('/summary', protect, async (req, res) => {
             vendorData.subtotal += itemPrice;
             vendorData.platformFee += itemCommission;
             // Store the average commission rate for this vendor's shipment
-            vendorData.commissionRate = vendorData.platformFee / vendorData.subtotal;
+            vendorData.commissionRate = vendorData.subtotal > 0 ? vendorData.platformFee / vendorData.subtotal : 0;
         }
 
         // 2. Calculate fees for each shipment
@@ -1168,7 +1111,10 @@ router.post('/summary', protect, async (req, res) => {
             });
         }
 
-        const totalPrice = totalSubtotal + totalShippingPrice + (req.body.taxPrice || 0.0);
+        // No server tax policy is configured here. A submitted total/tax must
+        // never introduce an arbitrary extra charge or negative discount.
+        const authoritativeTaxPrice = 0;
+        const totalPrice = totalSubtotal + totalShippingPrice + authoritativeTaxPrice;
 
         // 3. Prepare commission breakdown for response
         const commissionBreakdown = {};
@@ -1189,7 +1135,7 @@ router.post('/summary', protect, async (req, res) => {
             subscriptionPlanId: subscriptionDiscount.planId || '',
             totalPlatformFees: parseFloat(totalPlatformFees.toFixed(2)),
             totalPrice: parseFloat(totalPrice.toFixed(2)),
-            taxPrice: req.body.taxPrice || 0.0,
+            taxPrice: authoritativeTaxPrice,
             shipmentSummaries,
             deliveryFeePolicy: {
                 fallbackRatePerKm: deliveryFeeSettings.fallbackRatePerKm,
@@ -1217,14 +1163,15 @@ router.post('/summary', protect, async (req, res) => {
             shippingAddress,
             commissionSummary: {
                 totalCommission: parseFloat(totalPlatformFees.toFixed(2)),
-                averageRate: parseFloat((totalPlatformFees / totalSubtotal).toFixed(3)),
+                averageRate: totalSubtotal > 0 ? parseFloat((totalPlatformFees / totalSubtotal).toFixed(3)) : 0,
                 note: 'Commission rates vary by product category (5% - 12%)'
             }
         });
 
     } catch (error) {
-        console.error('Error calculating order summary:', error);
-        res.status(500).json({ message: 'Error calculating order summary.', error: error.message });
+        if (error instanceof CheckoutCatalogError) return res.status(error.statusCode).json({ message: error.message, code: error.code });
+        console.error('Error calculating order summary:', { name: error.name });
+        res.status(500).json({ message: 'Unable to calculate your order right now. Please try again.' });
     }
 });
 
@@ -1242,7 +1189,6 @@ router.post('/', protect, async (req, res) => {
         totalShippingPrice,
         totalPlatformFees,
         totalPrice,
-        taxPrice,
         userLocation,
         shipmentSummaries, // The calculated breakdown array is VITAL
         originalShippingPrice,
@@ -1255,12 +1201,21 @@ router.post('/', protect, async (req, res) => {
     session.startTransaction();
 
     try {
-        if (!shipmentSummaries || shipmentSummaries.length === 0) {
+        if (!shippingAddress || !hasLocation(userLocation)) {
+            throw new CheckoutCatalogError('INVALID_ADDRESS', 'Choose a valid address and location before checkout.', 400);
+        }
+        if (!Array.isArray(shipmentSummaries) || shipmentSummaries.length === 0 || shipmentSummaries.length > 100) {
             await session.abortTransaction();
             session.endSession();
             return res.status(400).json({ message: 'No shipment summaries provided. Please calculate summary first.' });
         }
 
+        if (shipmentSummaries.some((summary) => !summary || !Array.isArray(summary.items) || !summary.items.length)) {
+            throw new CheckoutCatalogError('INVALID_ITEMS', 'Each shipment must include items.', 400);
+        }
+        const submittedItems = shipmentSummaries.flatMap((summary) => summary.items);
+        const catalogLines = await checkoutCatalog.resolve(submittedItems, { session });
+        const catalogByItem = new Map(submittedItems.map((item, index) => [item, catalogLines[index]]));
         // --- Step 1: Stock Check (Must check stock for ALL items across ALL shipments) ---
         const deliveryFeeSettings = await getDeliveryFeeSettings();
         const costLowConfig = await getCostLowCommissionConfig(session);
@@ -1273,10 +1228,14 @@ router.post('/', protect, async (req, res) => {
         for (const summary of shipmentSummaries) {
             let summarySubtotal = 0;
             let summaryPlatformFee = 0;
-            let summaryVendorLocation = summary.vendorLocation || {};
-            let summaryVendorId = summary.vendor || summary.vendorId;
-            let summarySellerType = summary.sellerType || (summaryVendorId ? 'vendor' : 'naijago');
-            let summarySellerId = summary.sellerId || summaryVendorId || null;
+            const firstLine = catalogByItem.get(summary.items[0]);
+            if (summary.items.some((item) => catalogByItem.get(item).fulfillmentKey !== firstLine.fulfillmentKey)) {
+                throw new CheckoutCatalogError('SHIPMENT_CHANGED', 'Products from different shops must be checked out as separate shipments. Please refresh your cart.');
+            }
+            const summaryVendorLocation = firstLine.sellerLocation;
+            const summaryVendorId = firstLine.sellerId;
+            const summarySellerType = firstLine.sellerType;
+            const summarySellerId = firstLine.sellerId;
             const fulfillmentMethod =
                 String(summary.fulfillmentMethod || '').toLowerCase() === 'pickup'
                     ? 'pickup'
@@ -1331,23 +1290,8 @@ router.post('/', protect, async (req, res) => {
             }
 
             for (const item of summary.items) {
-                const product = await Product.findById(item.product)
-                    .populate('vendor', 'businessName businessLocation operatingHours isTemporarilyClosed temporaryClosureReason deliveryRadiusKm prepTimeMinutes')
-                    .session(session);
-                if (!product) {
-                    await session.abortTransaction();
-                    session.endSession();
-                    return res.status(404).json({ message: `Product not found: ${item.name}` });
-                }
-                const selectedOffer = item.offer
-                    ? await ProductOffer.findOne({ _id: item.offer, product: product._id, status: 'active' }).session(session)
-                    : await ProductOffer.findOne({ product: product._id, isPrimary: true, status: 'active' }).session(session);
-                const availableStock = Number(selectedOffer?.stockQuantity ?? product.stockQuantity);
-                if (availableStock < item.quantity) {
-                    await session.abortTransaction();
-                    session.endSession();
-                    return res.status(400).json({ message: `Insufficient stock for ${product.name}. Available: ${availableStock}` });
-                }
+                const line = catalogByItem.get(item);
+                const { product, sellerVendor } = line;
                 if (isRestrictedMedicine(product)) {
                     await session.abortTransaction();
                     session.endSession();
@@ -1363,47 +1307,35 @@ router.post('/', protect, async (req, res) => {
                     });
                 }
                 if (isRestaurantProduct(product)) {
-                    const vendorHours = isWithinVendorOperatingHours(product.vendor || {});
+                    const vendorHours = isWithinVendorOperatingHours(sellerVendor || {});
                     if (!vendorHours.open) {
                         await session.abortTransaction();
                         session.endSession();
                         return res.status(400).json({
-                            message: `${product.vendor?.businessName || product.restaurantName || 'This restaurant'} is not accepting orders now. ${vendorHours.reason}`
+                            message: `${sellerVendor?.businessName || product.restaurantName || 'This restaurant'} is not accepting orders now. ${vendorHours.reason}`
                         });
                     }
 
-                    if (userLocation?.latitude && userLocation?.longitude && product.vendor?.businessLocation) {
+                    if (hasLocation(userLocation) && hasLocation(sellerVendor?.businessLocation)) {
                         const distance = calculateDistance(
                             userLocation.latitude,
                             userLocation.longitude,
-                            product.vendor.businessLocation.latitude,
-                            product.vendor.businessLocation.longitude
+                            sellerVendor.businessLocation.latitude,
+                            sellerVendor.businessLocation.longitude
                         );
-                        const radius = formatRadius(product.vendor.deliveryRadiusKm);
+                        const radius = formatRadius(sellerVendor.deliveryRadiusKm);
                         if (distance > radius) {
                             await session.abortTransaction();
                             session.endSession();
                             return res.status(400).json({
-                                message: `${product.vendor?.businessName || product.restaurantName || 'This restaurant'} only delivers within ${radius} km.`
+                                message: `${sellerVendor?.businessName || product.restaurantName || 'This restaurant'} only delivers within ${radius} km.`
                             });
                         }
                     }
                 }
 
-                if (!summaryVendorLocation?.latitude && product.vendor?.businessLocation) {
-                    summaryVendorLocation = product.vendor.businessLocation;
-                }
-                if (!summaryVendorLocation?.latitude && product.productLocation?.latitude) {
-                    summaryVendorLocation = product.productLocation;
-                }
-                if (!summaryVendorId && product.vendor?._id) {
-                    summaryVendorId = product.vendor._id;
-                }
-                summarySellerType = selectedOffer?.sellerType || (product.vendor ? 'vendor' : product.sellerType || summarySellerType);
-                summarySellerId = selectedOffer?.sellerId || product.sellerId || summarySellerId;
-
-                const safeQuantity = Math.max(1, Number(item.quantity || 1));
-                const authoritativePrice = Number(selectedOffer?.discountPrice ?? selectedOffer?.price ?? product.discountPrice ?? product.price ?? 0);
+                const safeQuantity = line.item.quantity;
+                const authoritativePrice = line.unitPrice;
                 const itemSubtotal = authoritativePrice * safeQuantity;
                 const commission = calculateItemCommission({
                     sellerType: summarySellerType,
@@ -1418,12 +1350,7 @@ router.post('/', protect, async (req, res) => {
                 summarySubtotal += itemSubtotal;
                 summaryPlatformFee += itemCommission;
 
-                Object.assign(item, buildOrderItemFromProduct({
-                    ...item,
-                    quantity: safeQuantity,
-                    offer: selectedOffer?._id || null,
-                    authoritativePrice,
-                }, product), {
+                Object.assign(item, buildOrderItemFromProduct(line.item, product), {
                     commissionRate,
                     commissionType: commission.commissionType,
                     commissionKoboPerUnit: commission.commissionKoboPerUnit,
@@ -1433,10 +1360,8 @@ router.post('/', protect, async (req, res) => {
 
             const distanceKm =
                 fulfillmentMethod === 'delivery' &&
-                userLocation?.latitude &&
-                userLocation?.longitude &&
-                summaryVendorLocation?.latitude &&
-                summaryVendorLocation?.longitude
+                hasLocation(userLocation) &&
+                hasLocation(summaryVendorLocation)
                     ? calculateDistance(
                         summaryVendorLocation.latitude,
                         summaryVendorLocation.longitude,
@@ -1462,7 +1387,8 @@ router.post('/', protect, async (req, res) => {
             summary.vendorId = summaryVendorId;
             summary.sellerType = summarySellerType;
             summary.sellerId = summarySellerId;
-            summary.sellerName = summary.sellerName || (summarySellerType === 'naijago' ? 'NaijaGo' : summary.vendorName || 'Vendor');
+            summary.sellerName = firstLine.sellerName;
+            summary.vendorName = firstLine.sellerName;
             summary.fulfillmentMethod = fulfillmentMethod;
             summary.pickupDetails = fulfillmentMethod === 'pickup'
                 ? {
@@ -1530,10 +1456,11 @@ router.post('/', protect, async (req, res) => {
             });
         }
 
+        const authoritativeTaxPrice = 0;
         const authoritativeTotalPrice = parseFloat((
             recalculatedSubtotal +
             recalculatedShippingPrice +
-            Number(taxPrice || 0)
+            authoritativeTaxPrice
         ).toFixed(2));
         
         // --- Step 2: Create the MainOrder document (The Receipt) ---
@@ -1550,7 +1477,7 @@ router.post('/', protect, async (req, res) => {
                 : 0,
             subscriptionFreeDeliveryApplied: authoritativeSubscriptionDiscount.eligible,
             subscriptionPlanId: authoritativeSubscriptionDiscount.planId || '',
-            totalTaxPrice: taxPrice || 0.0,
+            totalTaxPrice: authoritativeTaxPrice,
             totalPrice: authoritativeTotalPrice,
             paymentMethod,
             isPaid: false, 
@@ -1614,7 +1541,7 @@ router.post('/', protect, async (req, res) => {
                     foodCategory: item.foodCategory,
                     orderStartTime: item.orderStartTime,
                     orderEndTime: item.orderEndTime,
-                    customerNote: item.restaurantName ? restaurantOrderNote : '',
+                    customerNote: (item.restaurantName || isRestaurantProduct(item)) ? (item.customerNote || restaurantOrderNote) : '',
                     medicineAccess: item.medicineAccess,
                     isOverTheCounter: item.isOverTheCounter,
                     requiresPrescription: item.requiresPrescription,
@@ -1695,8 +1622,9 @@ router.post('/', protect, async (req, res) => {
     } catch (error) {
         await session.abortTransaction();
         session.endSession();
-        console.error('Error creating multi-vendor order:', error);
-        res.status(500).json({ message: 'Server Error during order creation.', error: error.message });
+        if (error instanceof CheckoutCatalogError) return res.status(error.statusCode).json({ message: error.message, code: error.code });
+        console.error('Error creating multi-vendor order:', { name: error.name });
+        res.status(500).json({ message: 'Unable to create your order right now. Please try again.' });
     }
 });
 
@@ -2075,7 +2003,7 @@ router.put('/:id/pay/wallet', protect, async (req, res) => {
             await shipment.save({ session });
 
             for (const item of shipment.items) {
-                await decrementPaidItemInventory({ item, session });
+                await decrementPaidItemInventory({ item, session, sellerType: shipment.sellerType, sellerId: shipment.sellerId || shipment.vendor });
             }
             await notifyVendorOfPaidShipment({ app: req.app, order: mainOrder, shipment, paymentMethod: 'Wallet', session });
         }

@@ -5,13 +5,58 @@ phase. The complete ten-page new_feature_to_add_docs.pdf was read. Its suggested
 separate releases are superseded by the user's single-release instruction, not
 its payment, privacy, inventory or acceptance requirements.
 
-## Current boundary: backend foundations, NOT four completed features
+## Current boundary: foundations and shared checkout, NOT four completed features
 
-The new domain services and schemas are local. No new public routes are mounted,
-no payment or dispatch hook has been activated, and no worker is running these
-new jobs. Existing delivery/pickup/payment/review routes have not been changed in
-this checkpoint. No app screen, release build, migration or production deployment
-is claimed. Do not enable/publish the features based on these foundations alone.
+The new domain services and schemas are local. No new planning/review public
+routes are mounted, no scheduled payment/dispatch hook is activated, and no worker
+is running these new jobs. Existing order summary/creation now share authoritative
+catalog validation; the existing wallet/provider stock hook handles offer variants
+transactionally. Provider verification and delivery pricing policies are unchanged.
+No app screen, release build, migration or production deployment is claimed.
+Do not enable/publish the four features based on these foundations alone.
+
+### Shared checkout checkpoint (2026-09-20)
+
+- `checkoutCatalogService` reads actual Product/ProductOffer and approved seller
+  records, checks publication, whole-number quantities, aggregate stock across all
+  submitted shipments, explicit offer ownership/status, variant price/stock/SKU,
+  real sizes and configured locations. Disabled offers never fall back to stale
+  product stock. Legacy no-offer products and string/object/custom-dimension sizes
+  remain supported. Ambiguous/missing structured variants fail closed.
+- Both normal checkout routes use the resolver. Submitted product names, seller
+  identities, warehouse coordinates and item prices cannot replace catalog values.
+  Different fulfilment points remain separate; mixed-point shipments are rejected.
+  No server tax calculation is configured in these routes, so tax remains zero;
+  arbitrary client-supplied tax/discount values no longer change the payable total.
+  Any future tax policy must be implemented server-side, not restored as client input.
+- `checkoutInventoryService` requires an active settlement transaction. It checks
+  parent/variant stock in the same conditional update, mirrors primary offer stock
+  to Product, leaves other sellers' stock independent, and increments sales only
+  inside the caller's payment transaction. Existing payment idempotency/verification
+  remains with the wallet/Squad/legacy settlement flow, not this inventory helper.
+- Delivery fees, zero-fee pickup, subscription free delivery, Low Cost's fixed
+  57-naira-per-unit commission and per-item restaurant notes have HTTP regressions.
+  Safe short validation errors replace raw exceptions in summary/creation responses.
+- Focused offline checks: 21 passed, zero failed (12 service + 9 real HTTP-route
+  tests with injected databases/providers). Final full regression: 277 passed,
+  zero failed, seven credential-gated Mongo suites skipped (284 total,
+  63803.3936ms). JavaScript/PowerShell parsing and tracked diff checks passed.
+  The new `Checkout` Atlas gate is PREPARED, NOT yet verified. It tests five real
+  Mongo cases plus parent using only three registered per-run collections.
+
+Next: run the Checkout gate, then connect the resolver to group/recurring adapters
+without losing legacy sizes, enforce owner acceptance of changed quotes immediately
+before payment, link slot confirmation to settlement, preserve late/stock-conflicted
+successful-payment evidence for reconciliation, and guard every dispatch entry.
+Historical pending orders without offer IDs, seller reassignment and existing
+variant-offer synchronization need compatibility/reconciliation acceptance before
+deployment. Quotes do not reserve inventory. A successful charge must never lead
+to an instruction to pay again when stock/slot confirmation needs support review.
+
+    powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\runAtlasIntegrationTests.ps1 -RunTests -Suite Checkout
+
+Use the same dedicated TEST credentials privately. No new API key, production URI,
+paid provider call, deployment or app rebuild is needed for this gate.
 
 | Feature | Local foundation | Still required for the complete feature |
 |---|---|---|
@@ -49,10 +94,12 @@ or delivery policies as authoritative.
   TTL deletion. A failed counter release is an operational inconsistency, not
   successful cancellation. Rescheduling must acquire the new capacity and release
   old capacity in one authorized order transaction.
-- Existing order creation recalculates prices, but settlement predominantly
-  checks available stock. Authoritative commercial revalidation immediately before
-  payment/confirmation is an integration prerequisite, including aggregate variant
-  quantities, offer eligibility, vendor identity, delivery fee and subscription.
+- Existing summary/order creation now share catalog, seller, price, variant and
+  aggregate-stock checks, and settlement handles variant stock transactionally.
+  Fresh quote acceptance immediately before payment, historical pending-order
+  compatibility and paid-but-unfulfillable reconciliation remain prerequisites.
+  Never treat a quote-time stock check as a reservation or automatically increase
+  an already-authorized payment when prices change.
 - Existing reviews currently permit merely paid purchases. The new delivered-only
   policy is tested but NOT yet connected to that route. Do not label this fixed
   in the live app until the route, history UI and rating aggregates are updated.

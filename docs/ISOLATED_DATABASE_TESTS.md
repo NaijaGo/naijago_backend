@@ -1,5 +1,29 @@
 # Isolated MongoDB regression tests
 
+## Next gate prepared: Checkout (not yet Atlas-verified)
+
+The existing order routes now share authoritative catalog/variant validation and
+transaction-only inventory handling. A NEW Checkout gate tests these real services
+on the dedicated test database; it does not rerun the already-passed Planning gate.
+
+    powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\runAtlasIntegrationTests.ps1 -RunTests -Suite Checkout
+
+Expected scope: five subtests plus parent; only Product, ProductOffer and User
+collections under the newly generated run prefix. The existing safety helper
+creates indexes and removes only those owned collections. No production setting
+is loaded or changed; no order, charge, provider call or paid service is invoked.
+The `All` runner now includes this seventh suite.
+
+Cases: real catalog/offer/variant resolution and aggregate stock; concurrent last
+variant sales; transaction rollback of parent/variant/sales counters; independent
+secondary-seller stock and seller/variant mismatch rejection; legacy no-offer
+variant stock. This does not prove payment idempotency, historical pending-order
+recovery, dispatch safety or app/device acceptance. Offline HTTP tests use fake
+database queries and cannot replace this real-Mongo gate.
+
+Keep credentials in the existing hidden prompt. Do not paste passwords/URIs into
+chat, put them in the repository, or substitute the live MONGO_URI.
+
 ## Latest verified gate: Planning
 
 User-supplied Atlas output (2026-09-20), after checkpoint 9f64da3, verifies run
@@ -12,7 +36,7 @@ of late hold confirmation; payment-transaction rollback and confirmed hold safet
 group membership limits/privacy; group outbox rollback; recurring occurrence and
 reminder uniqueness; recurring outbox rollback; owner-only skip/pause/cancel.
 
-All six prepared database gates have now passed: Explore (5), Search (13),
+All six previously prepared database gates passed: Explore (5), Search (13),
 Workers (5), Requests (7), Refinement (8) and Planning (10). Counts include parent
 tests. External providers and commercial adapters were simulated. This is not
 real payment, photo moderation, app/device or completed-release acceptance.
