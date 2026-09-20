@@ -118,6 +118,8 @@ Workspace root has no usable Git repository. Cross-repository tracker lives here
 
 ## Current release boundary
 
+- 2026-09-20: User's initial Atlas connection check failed with a generic error; root cause is not yet confirmed. Test cluster SRV/TXT DNS resolution and credential-free URI/driver construction checks passed locally. Added credential-safe staged diagnostics and read-only client lifecycle tests: 16/16 targeted tests passed, plus JavaScript/PowerShell syntax and whitespace checks. Actual authenticated Atlas check and transaction suite remain pending. No production setting or data changed.
+
 - 2026-09-20: User created a separate Atlas testing project/cluster and rotated the test password after a screenshot exposure. Added explicit opt-in for only naijago-testing.kwcvhix.mongodb.net and the fixed naijago_integration_tests database. Hidden-password PowerShell runner defaults to a read-only connection check. Real tests create and remove only uniquely named collections belonging to the current run; no dropDatabase or production MONGO_URI use.
 - 2026-09-20: Atlas harness safety tests: 10 passed. Full backend regression: 132 passed, 0 failed, 1 skipped (actual Mongo integration still awaiting private user-run connection). Node and PowerShell syntax checks and Git whitespace validation passed. No Atlas connection or database mutation performed by the agent.
 

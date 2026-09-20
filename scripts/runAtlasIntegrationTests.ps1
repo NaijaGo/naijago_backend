@@ -42,4 +42,7 @@ try {
     $testUri = $null
     Pop-Location
 }
-if ($testExitCode -ne 0) { throw 'The test check did not pass. Share only the safe error message, never your password or connection string.' }
+if ($testExitCode -ne 0) {
+    Write-Host 'The check did not pass. Share only the diagnostic code, stage and guidance above; never your password or connection string.'
+    exit $testExitCode
+}

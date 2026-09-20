@@ -25,8 +25,18 @@ this PowerShell process, not to the computer's persistent execution policy.
 Do not share the password, a completed URI, or screenshots containing credentials.
 
 The default command runs only ping/topology checks: no data writes or deletions.
-Expected output: TEST_DATABASE_CONNECTION_OK. Connection failures deliberately
-hide raw driver errors to avoid accidentally displaying credentials.
+Expected output: TEST_DATABASE_CONNECTION_OK. Connection failures report a safe
+diagnostic code, stage and guidance instead of raw driver errors or credentials.
+Codes distinguish authentication, permission, DNS, TLS, network/access,
+configuration and unsupported topology. NETWORK_OR_ACCESS is not proof that the
+password is wrong or that the IP allowlist is the sole cause. Share only these
+safe diagnostic lines; do not log the original driver error or completed URI.
+
+The first user-run check failed with the old generic message; its exact cause
+remains unconfirmed. A local read-only DNS check resolved the approved cluster's
+SRV/TXT records, and driver construction accepted the URI with fictitious
+credentials (no login attempted). Retry the updated connection-only script to
+identify the failed stage before changing any Atlas settings.
 
 After the connection check succeeds, explicitly run the isolated tests:
 
