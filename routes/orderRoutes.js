@@ -11,6 +11,7 @@ const AppSetting = require('../models/AppSetting');
 const User = require('../models/User');
 const { createCheckoutCatalogService, CheckoutCatalogError, hasLocation } = require('../services/checkoutCatalogService');
 const { createCheckoutInventoryService } = require('../services/checkoutInventoryService');
+const { assertCheckoutQuoteUnchanged } = require('../utils/checkoutQuoteSnapshot');
 const checkoutCatalog = createCheckoutCatalogService({ Product, ProductOffer, User });
 const checkoutInventory = createCheckoutInventoryService({ Product, ProductOffer });
 const Rider = require('../models/Rider');
@@ -1178,39 +1179,30 @@ router.post('/summary', protect, async (req, res) => {
 // @desc    Create new MainOrder and associated Shipment documents
 // @route   POST /api/orders
 // @access  Private
-router.post('/', protect, async (req, res) => {
-    // ⚠️ We now receive the entire calculated summary from Flutter.
-    const { 
-        shippingAddress, 
-        paymentMethod,
-        totalSubtotal,
-        totalShippingPrice,
-        totalPlatformFees,
-        totalPrice,
-        userLocation,
-        shipmentSummaries, // The calculated breakdown array is VITAL
-        originalShippingPrice,
-        subscriptionDeliveryDiscount,
-        subscriptionFreeDeliveryApplied,
-        subscriptionPlanId,
-    } = req.body;
-
-    const session = await mongoose.startSession();
-    session.startTransaction();
-
-    try {
+async function createUnpaidOrder({ input, userId, session, expectedQuote = null, planning = null }) {
+    // Server-only creator: the caller owns commit/rollback and approved context.
+        if (!session?.inTransaction()) throw new CheckoutCatalogError('TRANSACTION_REQUIRED', 'Order creation requires an active transaction.', 500);
+        if (planning && (!expectedQuote || !['group', 'recurring'].includes(planning.kind) || !/^[a-f\d]{24}$/i.test(String(planning.sourceId || '')) ||
+            !Number.isSafeInteger(planning.revision) || planning.revision < 0)) throw new CheckoutCatalogError('INVALID_PLANNING_SOURCE', 'Planned checkout requires a validated source and current quote.', 500);
+        const { shippingAddress, paymentMethod, userLocation } = input;
+        // Future-time pricing, reservation confirmation and dispatch guards must
+        // be integrated before a scheduled order can be persisted.
+        if (planning?.kind === 'recurring' || (input.schedule?.mode && input.schedule.mode !== 'now') || (expectedQuote?.schedule?.mode && expectedQuote.schedule.mode !== 'now')) {
+            throw new CheckoutCatalogError('SCHEDULE_UNAVAILABLE', 'Scheduled checkout is not ready yet.', 503);
+        }
+        if (!['Card', 'Bank Transfer', 'Wallet'].includes(paymentMethod)) throw new CheckoutCatalogError('INVALID_PAYMENT_METHOD', 'Choose a valid payment method.', 400);
         if (!shippingAddress || !hasLocation(userLocation)) {
             throw new CheckoutCatalogError('INVALID_ADDRESS', 'Choose a valid address and location before checkout.', 400);
         }
-        if (!Array.isArray(shipmentSummaries) || shipmentSummaries.length === 0 || shipmentSummaries.length > 100) {
-            await session.abortTransaction();
-            session.endSession();
-            return res.status(400).json({ message: 'No shipment summaries provided. Please calculate summary first.' });
+        if (!Array.isArray(input.shipmentSummaries) || input.shipmentSummaries.length === 0 || input.shipmentSummaries.length > 100) {
+            throw new CheckoutCatalogError('INVALID_ITEMS', 'No shipment summaries provided. Please calculate summary first.', 400);
         }
 
-        if (shipmentSummaries.some((summary) => !summary || !Array.isArray(summary.items) || !summary.items.length)) {
+        if (input.shipmentSummaries.some((summary) => !summary || !Array.isArray(summary.items) || !summary.items.length)) {
             throw new CheckoutCatalogError('INVALID_ITEMS', 'Each shipment must include items.', 400);
         }
+        // Preserve the caller's basket and approved snapshot while recalculating.
+        const shipmentSummaries = input.shipmentSummaries.map((summary) => ({ ...summary, items: summary.items.map((item) => item && { ...item }) }));
         const submittedItems = shipmentSummaries.flatMap((summary) => summary.items);
         const catalogLines = await checkoutCatalog.resolve(submittedItems, { session });
         const catalogByItem = new Map(submittedItems.map((item, index) => [item, catalogLines[index]]));
@@ -1241,11 +1233,7 @@ router.post('/', protect, async (req, res) => {
             let pickupVendor = null;
             if (fulfillmentMethod === 'pickup') {
                 if (summarySellerType !== 'vendor' || !summarySellerId) {
-                    await session.abortTransaction();
-                    session.endSession();
-                    return res.status(400).json({
-                        message: 'Customer pickup is currently available only from configured vendor shops.',
-                    });
+                    throw new CheckoutCatalogError('PICKUP_UNAVAILABLE', 'Customer pickup is currently available only from configured vendor shops.', 400);
                 }
                 pickupVendor = await User.findOne({
                     _id: summarySellerId,
@@ -1256,11 +1244,7 @@ router.post('/', protect, async (req, res) => {
                     .select('businessName businessLocation phoneNumber businessSupportPhone pickupSettings')
                     .session(session);
                 if (!pickupVendor) {
-                    await session.abortTransaction();
-                    session.endSession();
-                    return res.status(400).json({
-                        message: 'This vendor is not currently accepting pickup orders.',
-                    });
+                    throw new CheckoutCatalogError('PICKUP_UNAVAILABLE', 'This vendor is not currently accepting pickup orders.', 400);
                 }
                 const maximumConcurrentOrders = Math.max(
                     Number(pickupVendor.pickupSettings?.maximumConcurrentOrders) || 20,
@@ -1274,44 +1258,22 @@ router.post('/', protect, async (req, res) => {
                     },
                 }).session(session);
                 if (activePickupOrders >= maximumConcurrentOrders) {
-                    await session.abortTransaction();
-                    session.endSession();
-                    return res.status(409).json({
-                        message: 'This shop has reached its pickup capacity. Please choose delivery or try a later pickup time.',
-                    });
+                    throw new CheckoutCatalogError('PICKUP_CAPACITY', 'This shop has reached its pickup capacity. Please choose delivery or try a later pickup time.');
                 }
             }
-            if (!Array.isArray(summary.items) || summary.items.length === 0) {
-                await session.abortTransaction();
-                session.endSession();
-                return res.status(400).json({ message: 'Each shipment summary must include items.' });
-            }
-
             for (const item of summary.items) {
                 const line = catalogByItem.get(item);
                 const { product, sellerVendor } = line;
                 if (isRestrictedMedicine(product)) {
-                    await session.abortTransaction();
-                    session.endSession();
-                    return res.status(400).json({
-                        message: `${product.name} requires pharmacist consultation before purchase.`
-                    });
+                    throw new CheckoutCatalogError('CONSULTATION_REQUIRED', `${product.name} requires pharmacist consultation before purchase.`, 400);
                 }
                 if (isRestaurantProduct(product) && !isWithinRestaurantOrderWindow(product)) {
-                    await session.abortTransaction();
-                    session.endSession();
-                    return res.status(400).json({
-                        message: `${product.name} can only be ordered from ${product.orderStartTime || '09:00'} to ${product.orderEndTime || '19:00'}.`
-                    });
+                    throw new CheckoutCatalogError('RESTAURANT_CLOSED', `${product.name} can only be ordered from ${product.orderStartTime || '09:00'} to ${product.orderEndTime || '19:00'}.`, 400);
                 }
                 if (isRestaurantProduct(product)) {
                     const vendorHours = isWithinVendorOperatingHours(sellerVendor || {});
                     if (!vendorHours.open) {
-                        await session.abortTransaction();
-                        session.endSession();
-                        return res.status(400).json({
-                            message: `${sellerVendor?.businessName || product.restaurantName || 'This restaurant'} is not accepting orders now. ${vendorHours.reason}`
-                        });
+                        throw new CheckoutCatalogError('RESTAURANT_CLOSED', `${sellerVendor?.businessName || product.restaurantName || 'This restaurant'} is not accepting orders now. ${vendorHours.reason}`, 400);
                     }
 
                     if (hasLocation(userLocation) && hasLocation(sellerVendor?.businessLocation)) {
@@ -1323,11 +1285,7 @@ router.post('/', protect, async (req, res) => {
                         );
                         const radius = formatRadius(sellerVendor.deliveryRadiusKm);
                         if (distance > radius) {
-                            await session.abortTransaction();
-                            session.endSession();
-                            return res.status(400).json({
-                                message: `${sellerVendor?.businessName || product.restaurantName || 'This restaurant'} only delivers within ${radius} km.`
-                            });
+                            throw new CheckoutCatalogError('OUTSIDE_DELIVERY_AREA', `${sellerVendor?.businessName || product.restaurantName || 'This restaurant'} only delivers within ${radius} km.`, 400);
                         }
                     }
                 }
@@ -1434,7 +1392,7 @@ router.post('/', protect, async (req, res) => {
             recalculatedOriginalShippingPrice += shippingPrice;
         }
 
-        const buyerForSubscription = await User.findById(req.user._id)
+        const buyerForSubscription = await User.findById(userId)
             .select('naijagoSubscription')
             .session(session);
         const authoritativeSubscriptionDiscount = buildSubscriptionDeliveryDiscount({
@@ -1460,10 +1418,20 @@ router.post('/', protect, async (req, res) => {
             recalculatedShippingPrice +
             authoritativeTaxPrice
         ).toFixed(2));
+
+        if (expectedQuote) assertCheckoutQuoteUnchanged(expectedQuote, {
+            shippingAddress, userLocation, shipmentSummaries,
+            totalSubtotal: parseFloat(recalculatedSubtotal.toFixed(2)), totalPlatformFees: parseFloat(recalculatedPlatformFees.toFixed(2)),
+            totalShippingPrice: parseFloat(recalculatedShippingPrice.toFixed(2)), originalShippingPrice: parseFloat(recalculatedOriginalShippingPrice.toFixed(2)),
+            totalPrice: authoritativeTotalPrice, taxPrice: authoritativeTaxPrice,
+            subscriptionDeliveryDiscount: authoritativeSubscriptionDiscount.eligible ? parseFloat(authoritativeSubscriptionDiscount.discount.toFixed(2)) : 0,
+            subscriptionFreeDeliveryApplied: authoritativeSubscriptionDiscount.eligible, subscriptionPlanId: authoritativeSubscriptionDiscount.planId || '',
+        });
         
         // --- Step 2: Create the MainOrder document (The Receipt) ---
         const mainOrder = new MainOrder({ // Use MainOrder model
-            user: req.user._id,
+            user: userId,
+            ...(planning ? { planning } : {}),
             shippingAddress,
             userLocation,
             totalSubtotal: parseFloat(recalculatedSubtotal.toFixed(2)),
@@ -1507,7 +1475,7 @@ router.post('/', protect, async (req, res) => {
                 }
             }
 
-            const restaurantOrderNote = String(req.body.restaurantOrderNote || '')
+            const restaurantOrderNote = String(input.restaurantOrderNote || '')
                 .trim()
                 .replace(/\s+/g, ' ')
                 .slice(0, 500);
@@ -1580,8 +1548,19 @@ router.post('/', protect, async (req, res) => {
         createdMainOrder.shipments = shipmentIds;
         await createdMainOrder.save({ session });
 
+        return { order: createdMainOrder, shipmentSummaries };
+}
+
+router.post('/', protect, async (req, res) => {
+    let session;
+    try {
+        session = await mongoose.startSession();
+        session.startTransaction();
+        // Approval/source/session are private server arguments, never body fields.
+        const { order: createdMainOrder, shipmentSummaries } = await createUnpaidOrder({ input: req.body, userId: req.user._id, session });
+        const { paymentMethod } = req.body;
+
         await session.commitTransaction();
-        session.endSession();
 
         const foodItems = shipmentSummaries.flatMap((summary) =>
             (summary.items || []).filter((item) =>
@@ -1590,7 +1569,7 @@ router.post('/', protect, async (req, res) => {
         );
 
         if (foodItems.length > 0) {
-            trackAnalyticsEvent({
+            Promise.resolve().then(() => trackAnalyticsEvent({
                 eventType: 'food_order_created',
                 user: req.user._id,
                 source: 'checkout',
@@ -1609,8 +1588,8 @@ router.post('/', protect, async (req, res) => {
                     ).size,
                     paymentMethod,
                 },
-            }).catch((error) => {
-                console.error('Food order analytics failed:', error.message);
+            })).catch(() => {
+                console.error('Food order analytics failed.');
             });
         }
 
@@ -1618,11 +1597,12 @@ router.post('/', protect, async (req, res) => {
         res.status(201).json(createdMainOrder);
 
     } catch (error) {
-        await session.abortTransaction();
-        session.endSession();
+        if (session?.inTransaction()) await session.abortTransaction();
         if (error instanceof CheckoutCatalogError) return res.status(error.statusCode).json({ message: error.message, code: error.code });
         console.error('Error creating multi-vendor order:', { name: error.name });
         res.status(500).json({ message: 'Unable to create your order right now. Please try again.' });
+    } finally {
+        if (session) await session.endSession();
     }
 });
 
@@ -3383,6 +3363,7 @@ router.processPendingFlutterwavePayments = processPendingFlutterwavePayments;
 router.processPendingSquadPayments = processPendingSquadPayments;
 router.paymentMatchesOrder = paymentMatchesOrder;
 router.calculateCheckoutSummary = calculateCheckoutSummary;
+router.createUnpaidOrder = createUnpaidOrder;
 
 
 

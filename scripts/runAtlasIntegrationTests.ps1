@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([switch]$RunTests, [ValidateSet('Explore', 'Search', 'Workers', 'Requests', 'Refinement', 'Planning', 'Checkout', 'All')][string]$Suite = 'Explore')
+param([switch]$RunTests, [ValidateSet('Explore', 'Search', 'Workers', 'Requests', 'Refinement', 'Planning', 'Checkout', 'PlannedCheckout', 'All')][string]$Suite = 'Explore')
 
 $ErrorActionPreference = 'Stop'
 $testRepoRoot = Split-Path -Parent $PSScriptRoot
@@ -37,7 +37,8 @@ try {
             'Refinement' { 'test/integration/refinementMongo.test.js' }
             'Planning' { 'test/integration/planningMongo.test.js' }
             'Checkout' { 'test/integration/checkoutMongo.test.js' }
-            'All' { 'test/integration/exploreMongo.test.js'; 'test/integration/searchMongo.test.js'; 'test/integration/workerMongo.test.js'; 'test/integration/requestMongo.test.js'; 'test/integration/refinementMongo.test.js'; 'test/integration/planningMongo.test.js'; 'test/integration/checkoutMongo.test.js' }
+            'PlannedCheckout' { 'test/integration/plannedCheckoutMongo.test.js' }
+            'All' { 'test/integration/exploreMongo.test.js'; 'test/integration/searchMongo.test.js'; 'test/integration/workerMongo.test.js'; 'test/integration/requestMongo.test.js'; 'test/integration/refinementMongo.test.js'; 'test/integration/planningMongo.test.js'; 'test/integration/checkoutMongo.test.js'; 'test/integration/plannedCheckoutMongo.test.js' }
         })
         & node --test --test-concurrency=1 @testFiles
     } else {

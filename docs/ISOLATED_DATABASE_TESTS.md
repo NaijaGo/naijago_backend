@@ -1,5 +1,41 @@
 # Isolated MongoDB regression tests
 
+## New gate prepared: PlannedCheckout (NOT yet verified)
+
+The existing unpaid MainOrder/Shipment creator now composes with immediate group
+checkout in the source/order/outbox transaction. Test it using the same dedicated
+TEST credentials, without changing any production environment settings:
+
+    powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\runAtlasIntegrationTests.ps1 -RunTests -Suite PlannedCheckout
+
+Five subtests plus parent cover four competing checkouts yielding one unpaid
+receipt/shipment/fee and notification; rejected stale approvals and non-owners;
+actual receipt/shipment/source rollback on outbox failure; the unique planned
+source index alongside ordinary orders; and scheduled creation failing closed
+even if a test availability callback approves. Existing stock must remain unchanged
+until normal verified settlement. No order is charged, paid, delivered or dispatched.
+
+Exactly eight per-run collections are registered/created: Product, ProductOffer,
+User, AppSetting, MainOrder, Shipment, GroupOrder and BackgroundJob. The new
+MainOrder/Shipment/AppSetting registrations retain strict run-prefix cleanup;
+the harness now has 19 allowed model names, but opens only the eight requested.
+It never drops a database, other runs' data or an application collection.
+
+The test-only loader runs the ACTUAL quote and creator with these isolated models.
+It refuses mixed connections, exposes only the two helpers, and blocks provider
+modules and network/payment calls. Only delivery-fee configuration is simulated
+(a fixed test fee); stock, prices, commission settings, receipts, shipments, source
+documents, indexes, outbox and transaction behavior use the real test database.
+The runner's All selector includes this eighth suite. No authenticated run or
+pass is claimed until the user supplies its safe output. Earlier seven passing
+gates do not establish acceptance of these new changes.
+
+Final offline regression for this checkpoint: 310 passed, zero failed, eight
+credential-gated suites deliberately skipped (318 total, 48377.2536ms). New
+creator/composition tests use actual schemas but simulated storage; no Mongo
+acceptance is inferred. PowerShell runner parsing and diff checks passed. No new
+secret, production change, paid call, deployment or app build was needed.
+
 ## Follow-up planning adapters: offline checkpoint only
 
 After the verified Checkout gate below, group/recurring composition now uses real
@@ -21,7 +57,8 @@ is needed just to record this local stage.
 User-supplied Atlas output (2026-09-20), after checkpoint 9c1cd18, verifies run
 509083010de949d8b4f8f2d912e8a4ce: six passed (five subtests plus parent), zero
 failed, zero skipped, 43191.5829ms overall. No cleanup error was reported.
-All seven prepared database suites have passed; the complete release has not.
+All seven earlier database suites passed at their recorded revisions; the new
+PlannedCheckout gate above is still pending. The complete release has not passed.
 
 The existing order routes share authoritative catalog/variant validation and
 transaction-only inventory handling. Checkout tests these real services on the
@@ -34,7 +71,7 @@ Verified scope: five subtests plus parent; only Product, ProductOffer and User
 collections under the newly generated run prefix. The existing safety helper
 creates indexes and removes only those owned collections. No production setting
 is loaded or changed; no order, charge, provider call or paid service is invoked.
-The `All` runner now includes this seventh suite.
+The `All` runner includes this seventh suite and the new eighth suite above.
 
 Cases: real catalog/offer/variant resolution and aggregate stock; concurrent last
 variant sales; transaction rollback of parent/variant/sales counters; independent

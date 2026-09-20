@@ -75,7 +75,8 @@ test('malformed inputs and duplicate query keys fail closed', () => {
 test('each run gets unique collection names and immutable cleanup boundaries', () => {
     const target = resolveAtlas();
     const another = resolveAtlas(atlasUri, { runId: 'b'.repeat(32) });
-    assert.equal(Object.keys(target.collections).length, 16);
+    assert.equal(Object.keys(target.collections).length, 19);
+    for (const name of ['MainOrder', 'Shipment', 'AppSetting']) assert.ok(target.collections[name].startsWith(`ngtest_${runId}_`));
     assert.equal(Object.isFrozen(target), true);
     assert.equal(Object.isFrozen(target.collections), true);
     for (const [model, name] of Object.entries(target.collections)) {

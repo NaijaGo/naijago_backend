@@ -125,6 +125,10 @@ function createGroupOrderService({ Group, connection, queue, validateItems, chec
         const items = closedGroupItems(row, actor);
         const currentQuote = await checkout.quoteGroup({ group: row, items, session });
         checkout.approval.verify({ context: quoteContext(row), quote: currentQuote, token: approvalToken });
+        // Claim the shared group document before inserting the receipt. Competing
+        // transactions conflict here and retry against the committed order link,
+        // instead of racing two receipt inserts into the unique source index.
+        row.state = 'checkout'; await row.save({ session });
         // The shared order adapter must revalidate totals and create exactly one
         // shipment/fee for this fulfilment point; no payment is charged here.
         const order = await createOrder({ owner: row.owner, group: row, items, quote: currentQuote, session });

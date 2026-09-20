@@ -49,8 +49,9 @@ Do not enable/publish the four features based on these foundations alone.
   mismatch rejection, rollback and legacy no-offer stock protection. It does
   not verify real payment-provider settlement, dispatch or application screens.
 
-Next: finish scheduled quote/slot validation and the shared unpaid-order creation
-adapter, enforce quote freshness again at payment initiation, link slot confirmation
+Next: verify the newly connected shared unpaid-order creation adapter against
+isolated Mongo, finish scheduled quote/slot validation, enforce quote freshness
+again at payment initiation, link slot confirmation
 to settlement, preserve late/stock-conflicted
 successful-payment evidence for reconciliation, and guard every dispatch entry.
 Historical pending orders without offer IDs, seller reassignment and existing
@@ -64,14 +65,15 @@ For future inventory/catalog regressions only; no repeat is needed now:
 
 Use the same dedicated TEST credentials privately. No new API key, production URI,
 paid provider call, deployment or app rebuild is needed for this gate.
-All seven prepared Atlas gates have now passed. This is a verified backend
-checkpoint, not completion or production approval of the coordinated release.
+All seven earlier Atlas gates passed at their recorded revisions. The new
+PlannedCheckout gate below is pending. This is not completion or production
+approval of the coordinated release.
 
 | Feature | Local foundation | Still required for the complete feature |
 |---|---|---|
 | Scheduled delivery | WAT rules, calendar validation, reservation/expiry models, transactional area/vendor/rider capacity claims, idempotent confirmation/release, due-only dispatch policy | Authoritative slot generation from actual vendor hours, product restrictions and area/rider policy; checkout/price/stock/payment hooks; late-paid-slot support/reconciliation; reschedule/cancel transaction; actual dispatch guards on every rider entry point; customer/vendor/admin/rider views; reminders and analytics |
 | Photo reviews | Delivered paid-purchase eligibility including verified pickup; max five photo IDs; strict stars/optional text; JPEG/PNG/HEIC byte/10MB limits; private Cloudinary incoming resize/conversion/metadata-strip adapter and thumbnail request | Durable owned upload records/quotas, actual decode and EXIF/HEIC verification, delivered-only submit route using existing Review model, transaction-safe review/rating updates, customer editor/gallery/filter, vendor reply permissions, moderation/reporting/audit, edit/delete period, retention/takedown and notifications |
-| Group ordering | One owner/fulfilment point, private member DTOs, hashed invite, participant limits, revision-protected edits and controls, cutoff scan, outbox; real catalog/aggregate-stock adapter, shared quote and expiring owner approval with retry-safe unpaid-order link contract | Authenticated/rate-limited HTTP and deep links; creation idempotency/invite regeneration; actual one-shipment MainOrder creation adapter and payment integration; unavailable-item removal, abandoned-group expiry, payment completion state, realtime notifications and customer/vendor/admin views |
+| Group ordering | One owner/fulfilment point, private member DTOs, hashed invite, participant limits, revision-protected controls, cutoff scan/outbox; real catalog/stock adapter, shared quote and owner approval; actual one-shipment MainOrder creation composed in the same transaction and tested offline | PlannedCheckout Atlas concurrency/rollback gate; authenticated/rate-limited HTTP/deep links; creation idempotency/invite regeneration; payment integration, unavailable-item removal, abandoned-group expiry, completion state, realtime notifications and customer/vendor/admin views |
 | Recurring orders | WAT calendar retaining month-end anchor, reminder-only plans/occurrences, owner controls, bounded generation/outbox; real catalog validation retaining sizes, explicit quote approval and price-change metadata; future basket/address edits propagate to pending occurrences | Scheduled coverage/slot and future-time pricing, actual order/payment adapter, future schedule editing, expiry/completion worker, substitution approval and threshold UI, real notification delivery and customer/admin screens |
 
 ### Planned checkout approval checkpoint (2026-09-20, local only)
@@ -104,9 +106,10 @@ invalidate their estimates and require review. Paid/checkout-linked, skipped and
 past occurrences are untouched. Price-threshold metadata is available, but never
 authorizes an automatic charge. Recurrence remains reminder-to-pay only.
 
-Boundary: the actual MainOrder/Shipment creation adapter, authenticated planning
-routes, payment-initiation freshness, settlement and scheduled dispatch are not
-connected yet. Scheduled quotes deliberately fail with SCHEDULE_UNAVAILABLE (503)
+Boundary at this approval checkpoint: the actual creation adapter was still
+pending (now connected locally for immediate groups; see the next checkpoint).
+Authenticated planning routes, payment-initiation freshness, settlement and
+scheduled dispatch are still not connected. Scheduled quotes deliberately fail with SCHEDULE_UNAVAILABLE (503)
 without a real checkSchedule dependency. That future adapter must validate vendor
 hours, lead time, coverage, capacity and dispatch readiness; the shared quote must
 also gain future-time restaurant/subscription rules before schedules are enabled.
@@ -135,6 +138,51 @@ in tests are NOT runtime catalog validation. Never mount the services using the
 test adapters or accept client-supplied resource keys, totals, seller eligibility
 or delivery policies as authoritative.
 
+### Actual group order creation checkpoint (2026-09-20, local only)
+
+The existing order route now exposes a server-only `createUnpaidOrder` helper.
+Ordinary HTTP checkout still owns its session; planned checkout supplies the
+source/order/outbox transaction. The helper never commits or ends that session,
+charges a payment, or reserves/decrements inventory. It reuses the existing
+MainOrder and Shipment models, catalog validation and fee rules.
+
+Immediate group checkout claims its source document before receipt creation so
+competing transactions retry against the committed order link. A partial unique
+index on optional server-owned planning kind/source ID provides an additional
+receipt identity guard; ordinary historical orders need no planning field.
+Review/rehearse that index with a fresh backup before any production deployment.
+No production index or database was changed in this checkpoint.
+
+The owner-approved quote is checked against recalculated items, seller/location,
+individual fees, discounts and totals immediately before persistence. Equal
+grand totals cannot conceal changed components. HTTP bodies cannot supply the
+private approval, owner, transaction or planning context. Payment-initiation
+freshness and successful-payment reconciliation remain separate pending work.
+
+Scheduled and recurring creation deliberately returns SCHEDULE_UNAVAILABLE even
+if a test availability callback approves: real future-time pricing, capacity
+holds, settlement confirmation and due-only dispatch are not connected yet.
+Planning public APIs and screens remain unavailable; this is not feature launch.
+
+Offline evidence: 310 passed, zero failed, eight credential-gated database suites
+skipped (318 total, 48377.2536ms). Twelve new cases cover actual quote/creator
+composition and schema validation, identity/session boundaries, fee changes,
+receipt/shipment/outbox rollback orchestration, retry links and loader safety.
+Storage is simulated in those tests; they do not prove Mongo transaction races.
+Existing delivery, pickup, subscription, restaurant notes and Low Cost's fixed
+57-naira commission regressions passed. PowerShell parsing and diff checks passed.
+
+The new PlannedCheckout Atlas suite is prepared, NOT passed. It uses eight
+run-prefixed collections on the dedicated TEST cluster and actual models/indexes,
+without real payment/provider calls. Run only the new gate next:
+
+    powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\runAtlasIntegrationTests.ps1 -RunTests -Suite PlannedCheckout
+
+No new secret or mobile build is needed. Earlier seven Atlas passes apply to
+their recorded revisions, not to this new order-creation connection. No push,
+deployment or app build was performed. The existing temporary restaurant radius
+override is tracked separately as OLD-11 and remains a release issue.
+
 ## Shared integration rules
 
 - Reuse MainOrder, Shipment, Product/ProductOffer, Squad/legacy settlement,
@@ -145,8 +193,9 @@ or delivery policies as authoritative.
 - Do not drop legacy size selections when moving an existing cart/order into a
   group or recurring plan. Audit selectedSize versus variantId in the shared
   checkout adapter and add regression tests before connecting the screens.
-  The current domain gate rejects a legacy selectedSize without an authoritative
-  variantId rather than silently losing it; full legacy mapping remains required.
+  Legacy selections are now retained and verified against the real catalog; where
+  structured variants exist, the resolver supplies the authoritative variant ID.
+  Missing/unavailable/ambiguous selections fail rather than silently losing size.
 - Scheduling is a delivery option, not a replacement for vendor-specific pickup.
   A multi-vendor scheduled cart requires a common valid window; otherwise ask the
   customer to split it. Capacity resource rows represent area, vendor and rider

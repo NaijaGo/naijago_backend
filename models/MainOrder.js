@@ -1,6 +1,14 @@
 // models/MainOrder.js 
 const mongoose = require('mongoose');
 
+// Optional server-owned origin. Existing orders have no planning field; this is
+// not an alternative receipt, payment, stock or fulfilment model.
+const PlanningOriginSchema = new mongoose.Schema({
+    kind: { type: String, enum: ['group', 'recurring'], required: true },
+    sourceId: { type: mongoose.Schema.Types.ObjectId, required: true },
+    revision: { type: Number, required: true, min: 0, validate: Number.isSafeInteger },
+}, { _id: false });
+
 const MainOrderSchema = new mongoose.Schema({
     user: {
         type: mongoose.Schema.Types.ObjectId,
@@ -36,6 +44,7 @@ const MainOrderSchema = new mongoose.Schema({
         type: mongoose.Schema.Types.ObjectId,
         ref: 'Shipment',
     }], 
+    planning: { type: PlanningOriginSchema, default: undefined },
     
     // User's delivery details
     shippingAddress: {
@@ -159,6 +168,10 @@ MainOrderSchema.index(
 MainOrderSchema.index({ isPaid: 1, shipmentStatus: 1, isClaimed: 1, rider: 1, createdAt: -1 });
 MainOrderSchema.index({ subscriptionFreeDeliveryApplied: 1, createdAt: -1 });
 MainOrderSchema.index({ vendorPaidAt: 1, createdAt: -1 });
+MainOrderSchema.index({ 'planning.kind': 1, 'planning.sourceId': 1 }, {
+    unique: true, name: 'unique_planned_order_source',
+    partialFilterExpression: { 'planning.sourceId': { $type: 'objectId' } },
+});
 
 const MainOrder = mongoose.model('MainOrder', MainOrderSchema);
 module.exports = MainOrder;
