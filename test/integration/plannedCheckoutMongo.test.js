@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const { Types } = require('mongoose');
 const { openIsolatedTestDatabase } = require('../../scripts/lib/openIsolatedTestDatabase');
 const { loadCheckoutForTests } = require('../../scripts/lib/loadCheckoutForTests');
+const { plannedCheckoutUsers } = require('../../scripts/lib/plannedCheckoutTestFixtures');
 const { createPlannedOrderServices } = require('../../services/plannedOrderServiceFactory');
 const { createBackgroundJobService } = require('../../services/backgroundJobService');
 const oid = () => new Types.ObjectId();
@@ -15,8 +16,9 @@ test('isolated Mongo: real planned receipts, source identity and transactional c
         ['Product', 'ProductOffer', 'User', 'AppSetting', 'MainOrder', 'Shipment', 'GroupOrder', 'BackgroundJob']);
     const { Product, ProductOffer, User, AppSetting, MainOrder, Shipment, GroupOrder, BackgroundJob } = models;
     const now = () => new Date('2100-01-01T08:00:00Z'), owner = oid(), seller = oid();
-    await User.collection.insertMany([{ _id: owner }, { _id: seller, isVendor: true, vendorStatus: 'approved', businessName: 'Synthetic shop',
-        businessLocation: { latitude: 9, longitude: 7, formattedAddress: 'Synthetic shop only' } }]);
+    // Validate required fields and run password hashing instead of bypassing the
+    // User schema. Sequential writes also finish before per-run cleanup on error.
+    for (const user of plannedCheckoutUsers({ owner, seller })) await User.create(user);
     await AppSetting.create({ key: 'cost_low_store', costLowStore: { vendorId: seller, commissionKoboPerUnit: 5700 } });
     const queue = createBackgroundJobService({ Job: BackgroundJob, allowedTypes: ['group.notify', 'recurring.notify'], now });
     const checkout = loadCheckoutForTests({ models, connection });

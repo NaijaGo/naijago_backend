@@ -2,6 +2,28 @@
 
 ## New gate prepared: PlannedCheckout (NOT yet verified)
 
+First user-run attempt after f3ad920 reached Atlas but failed during synthetic
+user setup: run 36c0adf4516d4a3bad95d25346cc01f6, one failed parent, no checkout
+subtests reached (52837.6629ms). Both raw user inserts lacked email and phone,
+violating the real non-sparse unique indexes; the reported E11000 was email_1.
+One test user was inserted before failure. The registered per-run cleanup was
+still in place and no cleanup error was reported. This is a fixture defect, not
+an authentication failure or evidence that checkout logic failed.
+
+The corrected fixture supplies distinct synthetic email/phone values plus all
+required user fields. Sequential User.create calls retain schema validation and
+password hashing. A shared test-only fixture module feeds both Atlas setup and
+three offline regressions for real-schema validity, all unique User index keys
+and rejection of missing email/phone. The focused fixture/loader/harness tests
+passed 15/15. No production model, index, credential or application flow changed;
+do not drop indexes or edit production users. Atlas acceptance remains pending:
+rerun the SAME PlannedCheckout command below, not the connection-only check.
+
+Fixture-fix full offline regression: 313 passed, zero failed, eight deliberately
+skipped database suites (321 total, 36185.8851ms). JavaScript parsing and Git
+whitespace checks passed. The agent did not connect to Atlas or run paid calls;
+only a subsequent user-run PlannedCheckout pass can close this acceptance gate.
+
 The existing unpaid MainOrder/Shipment creator now composes with immediate group
 checkout in the source/order/outbox transaction. Test it using the same dedicated
 TEST credentials, without changing any production environment settings:
@@ -26,8 +48,8 @@ It refuses mixed connections, exposes only the two helpers, and blocks provider
 modules and network/payment calls. Only delivery-fee configuration is simulated
 (a fixed test fee); stock, prices, commission settings, receipts, shipments, source
 documents, indexes, outbox and transaction behavior use the real test database.
-The runner's All selector includes this eighth suite. No authenticated run or
-pass is claimed until the user supplies its safe output. Earlier seven passing
+The runner's All selector includes this eighth suite. The first authenticated
+attempt failed as recorded above; no pass is claimed. Earlier seven passing
 gates do not establish acceptance of these new changes.
 
 Final offline regression for this checkpoint: 310 passed, zero failed, eight
