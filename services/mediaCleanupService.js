@@ -4,7 +4,8 @@ const crypto = require('node:crypto');
 // assets are deliberately excluded: removal from a form is not deletion authority.
 function createMediaCleanupService({ MediaAsset, Product, CarouselSlide, cloudinary, queue, now = () => new Date() }) {
     const purposes = CarouselSlide ? ['product_video', 'campaign_video'] : ['product_video'];
-    async function schedule() {
+    async function schedule({ signal } = {}) {
+        signal?.throwIfAborted();
         const cutoff = new Date(now().getTime() - 7 * 24 * 60 * 60 * 1000);
         const assets = await MediaAsset.find({ purpose: { $in: purposes },
             status: { $in: ['invalid', 'pending_upload', 'abandoned'] },
@@ -12,8 +13,10 @@ function createMediaCleanupService({ MediaAsset, Product, CarouselSlide, cloudin
             cleanupQueuedAt: { $exists: false },
         }).select('_id owner').limit(50).lean();
         for (const asset of assets) {
+            signal?.throwIfAborted();
             await queue.enqueue({ type: 'media.cleanup', dedupeKey: String(asset._id), owner: asset.owner,
                 payload: { assetId: String(asset._id) } });
+            signal?.throwIfAborted();
             await MediaAsset.updateOne({ _id: asset._id }, { $set: { cleanupQueuedAt: now() } });
         }
         return assets.length;

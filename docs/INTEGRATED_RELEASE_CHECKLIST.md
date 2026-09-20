@@ -60,7 +60,7 @@ Workspace root has no usable Git repository. Cross-repository tracker lives here
 | RECUR-01 | Weekly/biweekly/monthly/custom; reminder-to-pay, next/all edits, pause/resume/skip/cancel, occurrence linkage | Backend/customer | Pending |
 | RECUR-02 | Current price-stock-vendor-address-slot checks, substitution preference/approval threshold, reminders/failure/admin oversight | Apps/backend/admin | Pending |
 | RECUR-03 | PDF initial scope is reminder-to-pay; automatic charges require provider support/consent verification before inclusion | Backend | Pending decision |
-| OPS-01 | Durable jobs, leases/retries/idempotency, feature flags, audit/analytics/permissions | Backend/admin | Queue/media/Explore worker and admin retries implemented; Atlas claim/lease/outbox tests passed; separate-process crash/restart suite prepared for user-run Atlas gate; production worker lifecycle, health/alerts and remaining handlers pending |
+| OPS-01 | Durable jobs, leases/retries/idempotency, feature flags, audit/analytics/permissions | Backend/admin | Atlas claim/lease/outbox and independent-process crash/restart tests passed; production startup cleanup, bounded shutdown and scheduler cancellation locally tested; hosting rehearsal, health/alerts, provider acceptance and remaining handlers pending |
 | WEB-01 | Needed product/vendor/campaign/group deep links/fallback pages, privacy/UGC/advertising terms | Website/apps | Pending |
 | RELEASE-01 | Compatibility with existing apps, migrations rehearsed, backup/rollback | All | Pending |
 | RELEASE-02 | Unit/API/concurrency/E2E/performance; payment/webhook/notification/media failures, slow networks and device matrix | All | Pending |
@@ -118,6 +118,11 @@ Workspace root has no usable Git repository. Cross-repository tracker lives here
 
 ## Current release boundary
 
+- 2026-09-20: Final worker-lifecycle checkpoint regression: 174 passed, 0 failed, 3 deliberately skipped database suites (177 total), about 53.6 seconds. No test URI was supplied to the local run; Explore, Search and Workers are independently verified by the user-run Atlas results below. All changed JavaScript files passed syntax checks; Git whitespace checks passed. No live database/provider call, worker deployment, release build or push was performed.
+
+- 2026-09-20: User ran Workers against the isolated Atlas database after checkpoint 485efdf. Run 112424a7e8be4f40a4dc8e8fc1d6bac6 passed 5 tests (four subtests plus parent), 0 failed, 0 skipped, about 50.9 seconds; no cleanup error reported. Independent processes verified competing claims, retry identity after simulated provider acceptance and crash, graceful abort and exhausted-job failure. Providers and lease clocks were simulated; actual hosting lifecycle and real delivery remain separate acceptance gates. This supersedes all earlier Workers-pending notes below.
+- 2026-09-20: Production worker review found scheduler work could outlive database shutdown and startup/index failures could leave a connection open. Added a shared, idempotent stop path: cancel scans/handlers, stop polling, drain up to 30 seconds, then close Mongo within 5 seconds; failed draining/closing exits unsuccessfully so unacknowledged leases remain recoverable. Startup failures close Mongo and report only sanitized diagnostics. Media scans check cancellation between enqueue/marker operations; retry identities remain unchanged. Targeted offline regression passed 36/36, including 17 new lifecycle tests. No production worker or provider was started.
+
 - 2026-09-20: Worker harness offline safety tests passed 6/6. Full backend regression then passed 157 tests, 0 failed, with 3 opt-in database suites deliberately skipped locally (no test URI supplied). JavaScript/PowerShell syntax and Git whitespace checks passed. No production worker, paid provider, deployment or authenticated database connection was started by the agent; Workers Atlas execution still awaits the user's private-credential run.
 
 - 2026-09-20: User ran Search against the isolated Atlas database after checkpoint 92a0f9a. Run 44e0cbffc664427e94839d4f384e002b passed 13 tests (twelve subtests plus parent), 0 failed, 0 skipped, about 57.4 seconds; no cleanup error reported. Real Mongo verified taxonomy matching, mixed category formats, seller eligibility, combined filters, offer snapshot consistency, all 125 paginated rows, literal/no-result queries, AI filter enforcement and cache/global/per-actor quota/failure recovery. AI HTTP was simulated; this is not a real Gemini/provider or customer-device result.
@@ -144,10 +149,12 @@ completion, reaction/comment deduplication and outbox rollback passed against
 the isolated database. No cleanup error was reported. This is not a production
 deployment or a whole-platform acceptance result.
 
-Latest verified database gate: Search run 44e0cbffc664427e94839d4f384e002b,
-13 passed, 0 failed, 0 skipped. It supersedes earlier Search-pending notes above.
-Both Explore and Search database gates have now passed; Workers is the next
-prepared gate. Provider, deployment and device evidence remain separate.
+Verified Search database gate: run 44e0cbffc664427e94839d4f384e002b,
+13 passed, 0 failed, 0 skipped. Latest verified database gate: Workers run
+112424a7e8be4f40a4dc8e8fc1d6bac6, 5 passed, 0 failed, 0 skipped.
+All three prepared database gates (Explore, Search and Workers) have now passed.
+These results supersede the earlier pending notes above. Provider, hosting,
+deployment and device evidence remain separate; this is not whole-platform sign-off.
 
 No commits from this phase have been pushed/deployed automatically, no paid provider
 calls have been made, no production migration/database write has run, and no AAB/IPA
@@ -162,7 +169,7 @@ Do not treat successful unit tests as permission to publish this unfinished rele
 ## Next actions
 
 1. Save verified local checkpoints; keep flags off and do not deploy the incomplete release automatically.
-2. Atlas connection, Explore transaction/lease suite and Search aggregate/filter/cache/quota suite PASSED. Next run -RunTests -Suite Workers for the prepared independent-process gate, then close production worker lifecycle/health/alerts and browser/provider acceptance. See ISOLATED_DATABASE_TESTS.md. Never change production MONGO_URI for tests.
+2. Atlas connection, Explore transaction/lease, Search aggregate/filter/cache/quota and Workers independent-process gates PASSED. Production worker lifecycle tests also pass locally. No repeated private-credential run is needed solely for these lifecycle changes; keep actual host SIGTERM/restart, health/alerts and provider/browser acceptance as release gates. See ISOLATED_DATABASE_TESTS.md. Never change production MONGO_URI for tests.
 3. Implement clearly non-purchasable AI preview + Request This Product/admin sourcing, then original-preserving image refinement with approval/bulk/retry controls.
 4. Implement PDF scheduled delivery, photo reviews, group ordering and recurring reminder-to-pay workflows with integration tests.
 5. Close prior radar/security/regression items, rehearse migrations with a fresh backup, then deploy/build/device-test the complete release.

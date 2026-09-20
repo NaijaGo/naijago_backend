@@ -7,12 +7,15 @@ function beginVideoRevocation(asset, now = new Date()) {
         toPublicId: `naijago/product_videos/${asset.owner}/revoked-${token}`, requestedAt: now };
 }
 function createMediaRevocationService({ MediaAsset, cloudinary, queue, now = () => new Date() }) {
-    async function schedule() {
+    async function schedule({ signal } = {}) {
+        signal?.throwIfAborted();
         const rows = await MediaAsset.find({ status: 'rejected', 'revocation.state': 'pending',
             'revocation.queuedAt': { $exists: false } }).select('_id owner revocation.token').sort({ _id: 1 }).limit(50).lean();
         for (const row of rows) {
+            signal?.throwIfAborted();
             await queue.enqueue({ type: 'media.revoke', dedupeKey: `${row._id}:${row.revocation.token}`, owner: row.owner,
                 payload: { assetId: String(row._id), token: row.revocation.token }, priority: 10 });
+            signal?.throwIfAborted();
             await MediaAsset.updateOne({ _id: row._id, 'revocation.token': row.revocation.token },
                 { $set: { 'revocation.queuedAt': now() } });
         }

@@ -86,7 +86,7 @@ Set NAIJAGO_TEST_MONGO_URI to that local test URL in the test terminal, then run
 
     node --test test/integration/exploreMongo.test.js
 
-Clear the test variable afterward. Normal npm test deliberately reports this
+Clear the test variable afterward. Normal npm test deliberately reports these
 suites as skipped without the variable. A skipped test is not a pass.
 
 ## Coverage and remaining verification
@@ -113,12 +113,12 @@ the deliberately injected outbox failure. No cleanup error was reported.
 It does not establish actual push delivery, independent worker process crash
 recovery, product search aggregates, media provider behavior, or device UX.
 
-Current assertions: concurrent enqueue/claim uniqueness, expired lease recovery,
+Explore assertions: concurrent enqueue/claim uniqueness, expired lease recovery,
 stale-worker acknowledgment rejection, concurrent reactions/comments with their
-transactional notification outbox, and rollback on outbox failure. Expand with
-search aggregates, media moderation races, scheduling, group carts and payment
-settlement before the integrated release. No provider calls or payments belong
-in this isolated suite.
+transactional notification outbox, and rollback on outbox failure. The subsequent
+Search and Workers gates below also passed. Further database gates for media
+moderation races, scheduling, group carts and payment settlement remain necessary
+before the integrated release. No real provider calls or payments belong here.
 
 ## Search gate verified against Atlas
 
@@ -155,9 +155,16 @@ catalog query plans/latency, HTTP/proxy limits, metadata backfill rehearsal and
 customer-device UI checks. A test fixture pass does not establish production
 performance or correctness of every existing product's inferred metadata.
 
-## Worker process gate - prepared, Atlas execution pending
+## Worker process gate verified against Atlas
 
-From the backend repository, run:
+User-supplied terminal output after checkpoint 485efdf, 2026-09-20:
+run 112424a7e8be4f40a4dc8e8fc1d6bac6, 5 passed, 0 failed, 0 skipped,
+approximately 50.9 seconds. No cleanup error was reported. All four subtests
+and their parent passed. Together with Explore (5/5) and Search (13/13), all
+three prepared database gates are verified; this does not complete the release.
+
+To repeat this gate when queue/runner/process-harness changes require it, from
+the backend repository run:
 
     powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\runAtlasIntegrationTests.ps1 -RunTests -Suite Workers
 
@@ -171,8 +178,14 @@ The provider is a local receipt map, not OneSignal. Reusing a delivery key retur
 the same simulated receipt: this verifies retry identity, not exactly-once real
 notification delivery. Test clocks are explicitly advanced past recorded leases;
 the host clock is unchanged and tests do not wait the production three-minute
-lease. Actual hosting shutdown, startup/index failure cleanup, scheduler draining,
-heartbeat timing, health alerts and real provider idempotency remain release gates.
+lease. Actual hosting shutdown, heartbeat timing, health alerts and real provider
+idempotency remain release gates. A separate offline lifecycle suite now checks
+production orchestration with simulated adapters: startup/index failure cleanup,
+single-flight scheduling, stop/drain deadlines, handler cancellation and database
+close ordering. Its 17 tests passed. The production entrypoint imports without
+loading live environment settings or starting work. This does not replace an
+actual host restart rehearsal; Workers still tests the queue/runner via test
+children, not the live production entrypoint.
 
 Child environments exclude MONGO_URI, provider credentials and NODE_OPTIONS.
 Credentials stay in the test process environment, never command-line arguments

@@ -20,6 +20,8 @@ registered explicitly; arbitrary client-supplied code/type names are not execute
 `node workers/backgroundWorker.js`
 
 Required configuration: existing `MONGO_URI`, `BACKGROUND_JOBS_ENABLED=true`.
+At least one task flag below must be enabled; an empty worker fails startup
+before connecting instead of appearing healthy without any active handlers.
 Registered tasks: `media.cleanup` (MEDIA_CLEANUP_ENABLED=true),
 `media.revoke` (PRODUCT_VIDEO_ENABLED=true) and `explore.notify` (EXPLORE_ENABLED=true).
 Media tasks reuse existing Cloudinary credentials. Explore uses the existing
@@ -28,6 +30,23 @@ Do not enable cleanup until the dry-run/rehearsal/provider acceptance checks hav
 been performed. Deployment/hosting choice remains part of the release checklist;
 no paid worker service has been created here. An always-running process is needed
 for time-sensitive jobs; sleeping web services cannot promise on-time execution.
+
+The production entrypoint now uses the locally tested managed lifecycle. It
+connects, ensures queue/Explore indexes, then starts one non-overlapping polling
+loop. Startup failures attempt database close within five seconds and emit only
+sanitized diagnostics. SIGTERM/SIGINT stops polling, aborts the scheduler/handler,
+and waits up to thirty seconds for the active tick before attempting database
+close within five seconds. If either drain or close fails/times out, the process
+exits unsuccessfully; otherwise it exits naturally once handles close. Set the
+host shutdown grace period above this 35-second total, with operational margin,
+and verify its actual behavior in staging before release. No Render worker has
+been provisioned or restarted by these tests.
+
+Media scans check cancellation before querying and between each enqueue/marker
+operation. A shutdown after enqueue but before the scheduling marker is safe to
+retry: the next scan reuses the existing queue identity. The worker never starts
+another scan or claim after stop begins. In-flight provider effects still need
+idempotency; cancellation cannot undo a request already accepted by a provider.
 
 Cleanup scans at most fifty assets/hour. It only targets invalid, abandoned or
 never-completed uploads whose ticket expired more than seven days ago. It skips
@@ -61,8 +80,8 @@ skipped. Push acceptance is not proof that a device displayed a notification.
 ## Before release
 
 - Verified 2026-09-20 from user-supplied isolated Atlas run 265adef2f39e42df98611b23ba1191ba: concurrent enqueue/claim identity, simulated lease expiry and stale completion rejection, transactionally deduplicated reaction/comment notifications, and rollback on injected outbox failure. Four subtests plus parent passed, with no failures or skips. This confirms database behavior under parallel calls, not actual delivery to a device.
-- Prepared (not yet Atlas-verified): run the isolated process suite with -RunTests -Suite Workers. It uses separate Node processes/connections and the actual queue/runner with synthetic jobs, a simulated provider and controlled lease clocks. Covers competing claims, crash after provider acceptance before acknowledgment, graceful stop and exhausted attempts. See ISOLATED_DATABASE_TESTS.md.
-- The process suite does not start the production worker entrypoint or validate Render hosting. Still verify production startup/index-failure cleanup, draining scheduler/handler work before disconnect, host SIGTERM/restart timing, worker health/alerts and real provider idempotency.
+- Verified 2026-09-20 from user-supplied isolated Atlas run 112424a7e8be4f40a4dc8e8fc1d6bac6: Workers passed 5/5 with no failures/skips or reported cleanup error. Separate Node processes/connections used the actual queue/runner with synthetic jobs, a simulated provider and controlled lease clocks. Competing claims, crash after provider acceptance before acknowledgment, graceful stop and exhausted attempts passed. See ISOLATED_DATABASE_TESTS.md.
+- Production lifecycle offline tests passed 17/17: startup/index-failure cleanup, enabled-handler validation, single-flight scheduling, bounded drain/close, cancellation between scans/queue writes, repeat-stop behavior and secret-safe diagnostics. The Atlas process suite does not start the production worker entrypoint or validate Render hosting. Still rehearse host SIGTERM/restart timing, health/alerts and actual provider idempotency; do not equate a simulated provider receipt with device delivery.
 - Verify Cloudinary deletion on a deliberately abandoned test upload only.
 - Verify admin visibility/retry/audit against a real isolated Mongo database and browser. Cancellation UI and worker-health alerts remain pending.
 - Complete image refinement/preview jobs, media takedown/revocation and scheduled workflow handlers.
