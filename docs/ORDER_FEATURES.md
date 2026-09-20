@@ -41,10 +41,15 @@ Do not enable/publish the four features based on these foundations alone.
   tests with injected databases/providers). Final full regression: 277 passed,
   zero failed, seven credential-gated Mongo suites skipped (284 total,
   63803.3936ms). JavaScript/PowerShell parsing and tracked diff checks passed.
-  The new `Checkout` Atlas gate is PREPARED, NOT yet verified. It tests five real
-  Mongo cases plus parent using only three registered per-run collections.
+  User-run `Checkout` Atlas acceptance after checkpoint 9c1cd18 passed all six
+  tests (five subtests plus parent), zero failed, zero skipped, 43191.5829ms.
+  Run: 509083010de949d8b4f8f2d912e8a4ce. No cleanup error was reported.
+  This verifies real catalog queries, aggregate variant quantities, competing
+  variant stock updates, primary mirrors, secondary-seller isolation, identity
+  mismatch rejection, rollback and legacy no-offer stock protection. It does
+  not verify real payment-provider settlement, dispatch or application screens.
 
-Next: run the Checkout gate, then connect the resolver to group/recurring adapters
+Next: connect the resolver to group/recurring adapters
 without losing legacy sizes, enforce owner acceptance of changed quotes immediately
 before payment, link slot confirmation to settlement, preserve late/stock-conflicted
 successful-payment evidence for reconciliation, and guard every dispatch entry.
@@ -53,10 +58,14 @@ variant-offer synchronization need compatibility/reconciliation acceptance befor
 deployment. Quotes do not reserve inventory. A successful charge must never lead
 to an instruction to pay again when stock/slot confirmation needs support review.
 
+For future inventory/catalog regressions only; no repeat is needed now:
+
     powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\runAtlasIntegrationTests.ps1 -RunTests -Suite Checkout
 
 Use the same dedicated TEST credentials privately. No new API key, production URI,
 paid provider call, deployment or app rebuild is needed for this gate.
+All seven prepared Atlas gates have now passed. This is a verified backend
+checkpoint, not completion or production approval of the coordinated release.
 
 | Feature | Local foundation | Still required for the complete feature |
 |---|---|---|

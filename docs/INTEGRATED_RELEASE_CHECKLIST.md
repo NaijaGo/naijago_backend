@@ -25,7 +25,7 @@ Workspace root has no usable Git repository. Cross-repository tracker lives here
 
 | ID | Requirement / acceptance criteria | Components | State |
 |---|---|---|---|
-| BASE-01 | Regression tests for payments, stock, sellers, pickup, addresses, notifications; document existing failures | Backend/apps | Working: shared authoritative checkout and transaction-only variant stock connected locally; 21 new service/HTTP regressions passed; Checkout Atlas and payment freshness/reconciliation acceptance pending |
+| BASE-01 | Regression tests for payments, stock, sellers, pickup, addresses, notifications; document existing failures | Backend/apps | Working: shared authoritative checkout and transaction-only variant stock connected locally; 21 new service/HTTP regressions and Checkout Atlas 6/6 passed; payment freshness/reconciliation and cross-app acceptance pending |
 | BASE-02 | Retain/version PDF, tracker, configuration/deployment/test evidence | All | Working |
 | BASE-03 | Backup, dry run, repeatable migrations and rollback before backfills | Backend | Pending |
 | BASE-04 | Review vulnerabilities, startup, credentials/log hygiene; no blind forced upgrades | All | Pending |
@@ -98,6 +98,8 @@ Workspace root has no usable Git repository. Cross-repository tracker lives here
 | WhatsApp | Provider connection error | Operational connection/configuration check |
 
 ## Execution evidence
+
+- 2026-09-20: User ran Checkout against isolated Atlas after checkpoint 9c1cd18. Run 509083010de949d8b4f8f2d912e8a4ce passed six tests (five subtests plus parent), zero failed, zero skipped, 43191.5829ms overall; no cleanup error reported. Real Mongo verified catalog/offer/variant resolution, aggregate quantities, competing variant settlement stock updates, primary mirrors, secondary-seller isolation, seller/variant mismatch rejection, rollback and legacy no-offer protection. Seven prepared Atlas suites are now verified. This supersedes Checkout-pending notes below, not remaining payment/provider/dispatch or app acceptance gates. Evidence-recording checkpoint only: no runtime changes, test rerun, production database access, push, deployment or build.
 
 - 2026-09-20: Final shared-checkout regression passed 277 tests, zero failed, seven deliberately skipped credential-gated Mongo suites (284 total, 63803.3936ms), including all 21 new service/HTTP cases. JavaScript/PowerShell syntax and diff checks passed. This supersedes the preliminary 275-test run below; Checkout Atlas remains unverified until the user runs it with hidden test credentials. No deployment or build.
 
@@ -219,7 +221,7 @@ Do not treat successful unit tests as permission to publish this unfinished rele
 ## Next actions
 
 1. Save verified local checkpoints; keep flags off and do not deploy the incomplete release automatically.
-2. Six prior Atlas gates (Explore, Search, Workers, Requests, Refinement and Planning) PASSED. Run the newly prepared Checkout gate next; its stock race/rollback acceptance is not yet verified. Keep actual hosting/provider/browser/device acceptance separate. Never change production MONGO_URI for tests, or repeat passed suites solely to record progress.
+2. All seven prepared Atlas gates (Explore, Search, Workers, Requests, Refinement, Planning and Checkout) PASSED. Keep actual hosting/provider/payment/browser/device acceptance separate. No additional user test command is needed at this checkpoint. Never change production MONGO_URI for tests, or repeat passed suites solely to record progress.
 3. Shared catalog/variant/stock validation is connected to existing checkout locally. Next connect group/recurring catalog adapters, current-quote acceptance and scheduled settlement/dispatch, followed by review submission/media/moderation, authenticated APIs/worker delivery and customer/vendor/admin/rider views. Historical orders and paid-but-unfulfillable reconciliation remain release gates. Preserve delivery/pickup and Squad/legacy flows. Follow ORDER_FEATURES.md; no separate feature release or automatic activation.
 4. Keep the real Photoroom sandbox/live trial, private-link checks, browser/device review and shared retention/erasure/takedown work tracked as unfinished release gates (see IMAGE_REFINEMENT.md). Keep flags off pending acceptance; no paid calls have run. Do not rerun already-passed gates solely to claim progress.
 5. Close prior radar/security/regression items, rehearse migrations with a fresh backup, then deploy/build/device-test the complete release.

@@ -1,14 +1,20 @@
 # Isolated MongoDB regression tests
 
-## Next gate prepared: Checkout (not yet Atlas-verified)
+## Latest verified gate: Checkout
 
-The existing order routes now share authoritative catalog/variant validation and
-transaction-only inventory handling. A NEW Checkout gate tests these real services
-on the dedicated test database; it does not rerun the already-passed Planning gate.
+User-supplied Atlas output (2026-09-20), after checkpoint 9c1cd18, verifies run
+509083010de949d8b4f8f2d912e8a4ce: six passed (five subtests plus parent), zero
+failed, zero skipped, 43191.5829ms overall. No cleanup error was reported.
+All seven prepared database suites have passed; the complete release has not.
+
+The existing order routes share authoritative catalog/variant validation and
+transaction-only inventory handling. Checkout tests these real services on the
+dedicated test database, independently of the already-passed Planning gate.
+Do not repeat it solely to record progress. For relevant future regressions:
 
     powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\runAtlasIntegrationTests.ps1 -RunTests -Suite Checkout
 
-Expected scope: five subtests plus parent; only Product, ProductOffer and User
+Verified scope: five subtests plus parent; only Product, ProductOffer and User
 collections under the newly generated run prefix. The existing safety helper
 creates indexes and removes only those owned collections. No production setting
 is loaded or changed; no order, charge, provider call or paid service is invoked.
@@ -24,7 +30,7 @@ database queries and cannot replace this real-Mongo gate.
 Keep credentials in the existing hidden prompt. Do not paste passwords/URIs into
 chat, put them in the repository, or substitute the live MONGO_URI.
 
-## Latest verified gate: Planning
+## Previously verified gate: Planning
 
 User-supplied Atlas output (2026-09-20), after checkpoint 9f64da3, verifies run
 e66534eddf03421eb7f0934a13ac8bcd: 10 passed (nine subtests plus parent), zero
