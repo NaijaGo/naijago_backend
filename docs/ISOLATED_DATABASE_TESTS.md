@@ -85,10 +85,18 @@ pipeline and fixed by wrapping randomUUID in a zero-argument callback.
 
 Four new regression tests cover upsert defaults, ordinary documents, preserving
 explicit/retried delivery keys, and session propagation. Full local backend
-suite after the fix: 142 passed, 0 failed, 1 skipped (real Mongo). An Atlas rerun
-with the private test password is still required; do not count local tests as
-proof that the real concurrency suite has passed. Concurrent test batches now
-settle every request before cleanup; rollback asserts the exact injected error.
+suite after the fix: 142 passed, 0 failed, 1 skipped (real Mongo). Concurrent test
+batches settle every request before cleanup; rollback asserts the exact injected
+error.
+
+Verified Atlas result (user-supplied terminal output, 2026-09-20): run
+265adef2f39e42df98611b23ba1191ba, after local fix e4d9a2d, passed all four
+subtests and their parent test: 5 passed, 0 failed, 0 skipped, about 22.8 seconds.
+This verifies concurrent enqueue/claim identity and lease fencing, reaction and
+comment retry uniqueness with transactional notification jobs, and rollback on
+the deliberately injected outbox failure. No cleanup error was reported.
+It does not establish actual push delivery, independent worker process crash
+recovery, product search aggregates, media provider behavior, or device UX.
 
 Current assertions: concurrent enqueue/claim uniqueness, expired lease recovery,
 stale-worker acknowledgment rejection, concurrent reactions/comments with their

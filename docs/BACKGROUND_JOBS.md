@@ -60,7 +60,8 @@ skipped. Push acceptance is not proof that a device displayed a notification.
 
 ## Before release
 
-- Test two workers against an isolated MongoDB instance: unique indexes, competing claims, lease expiry, restarts and stale completion.
+- Verified 2026-09-20 from user-supplied isolated Atlas run 265adef2f39e42df98611b23ba1191ba: concurrent enqueue/claim identity, simulated lease expiry and stale completion rejection, transactionally deduplicated reaction/comment notifications, and rollback on injected outbox failure. Four subtests plus parent passed, with no failures or skips. This confirms database behavior under parallel calls, not actual delivery to a device.
+- Still test two independent worker processes and process crash/restart recovery against the isolated database; the parallel-call suite does not replace this check.
 - Verify Cloudinary deletion on a deliberately abandoned test upload only.
 - Verify admin visibility/retry/audit against a real isolated Mongo database and browser. Cancellation UI and worker-health alerts remain pending.
 - Complete image refinement/preview jobs, media takedown/revocation and scheduled workflow handlers.

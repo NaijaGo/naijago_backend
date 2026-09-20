@@ -39,7 +39,7 @@ Workspace root has no usable Git repository. Cross-repository tracker lives here
 | MEDIA-04 | Video moderation/admin reason/approval, publish gates, processing retries, abandoned upload cleanup | Admin/backend | Implemented with mock tests; actual provider cleanup/revocation and browser checks pending |
 | EXP-01 | Explore tab, paginated mixed feed, pinned active admin campaigns, Sponsored labels and vendor/product links | Customer/backend | Implemented; service/widget tests passed; Mongo/device/performance pending |
 | EXP-02 | Admin banner/video form; advertiser/vendor/destination, preview, WAT scheduling/expiry, pause/reject | Admin/backend | Implemented; policy/syntax tests passed; browser/provider pending |
-| EXP-03 | Like/Love/Wow/Thumbs Down; one current reaction/user, comments/replies, reporting/blocking and moderation | Apps/backend/admin | Implemented; mock/API tests passed; real transaction races and device tests pending |
+| EXP-03 | Like/Love/Wow/Thumbs Down; one current reaction/user, comments/replies, reporting/blocking and moderation | Apps/backend/admin | Implemented; mock/API tests and Atlas reaction/comment retry uniqueness + outbox rollback passed; browser/device/moderation acceptance pending |
 | EXP-04 | Defined views/watch time/impressions; deduplicated server counters, concurrency/idempotency | Backend/customer | Qualified video watches implemented/tested with mocks; banner impressions, real races/device checks pending |
 | EXP-05 | Vendor engagement notices and replies; aggregation/preferences and deep links | Vendor/backend | Outbox, preferences, dedupe, replies/deep links implemented; provider delivery and aggregation acceptance pending |
 | EXP-06 | Visible-only video playback, caching, data usage, performance/accessibility | Customer | Manual muted playback and lifecycle/expiry guards implemented; device/data/performance/accessibility pending |
@@ -60,7 +60,7 @@ Workspace root has no usable Git repository. Cross-repository tracker lives here
 | RECUR-01 | Weekly/biweekly/monthly/custom; reminder-to-pay, next/all edits, pause/resume/skip/cancel, occurrence linkage | Backend/customer | Pending |
 | RECUR-02 | Current price-stock-vendor-address-slot checks, substitution preference/approval threshold, reminders/failure/admin oversight | Apps/backend/admin | Pending |
 | RECUR-03 | PDF initial scope is reminder-to-pay; automatic charges require provider support/consent verification before inclusion | Backend | Pending decision |
-| OPS-01 | Durable jobs, leases/retries/idempotency, feature flags, audit/analytics/permissions | Backend/admin | Queue/media/Explore worker and admin audited retries implemented; health/alerts, isolated Mongo and remaining handlers pending |
+| OPS-01 | Durable jobs, leases/retries/idempotency, feature flags, audit/analytics/permissions | Backend/admin | Queue/media/Explore worker and admin retries implemented; Atlas competing claims/lease fencing/outbox tests passed; independent worker restart, health/alerts and remaining handlers pending |
 | WEB-01 | Needed product/vendor/campaign/group deep links/fallback pages, privacy/UGC/advertising terms | Website/apps | Pending |
 | RELEASE-01 | Compatibility with existing apps, migrations rehearsed, backup/rollback | All | Pending |
 | RELEASE-02 | Unit/API/concurrency/E2E/performance; payment/webhook/notification/media failures, slow networks and device matrix | All | Pending |
@@ -126,6 +126,14 @@ Workspace root has no usable Git repository. Cross-repository tracker lives here
 - 2026-09-20: Atlas harness safety tests: 10 passed. Full backend regression: 132 passed, 0 failed, 1 skipped (actual Mongo integration still awaiting private user-run connection). Node and PowerShell syntax checks and Git whitespace validation passed. No Atlas connection or database mutation performed by the agent.
 
 This is a local development checkpoint, NOT completion of the integrated phase.
+Latest verified database gate: user-supplied Atlas run
+265adef2f39e42df98611b23ba1191ba after fix e4d9a2d passed 5 tests, 0 failed,
+0 skipped (four subtests plus parent; about 22.8 seconds). This supersedes the
+earlier pending-rerun notes above. The tested queue claims, lease recovery/stale
+completion, reaction/comment deduplication and outbox rollback passed against
+the isolated database. No cleanup error was reported. This is not a production
+deployment or a whole-platform acceptance result.
+
 No commits from this phase have been pushed/deployed automatically, no paid provider
 calls have been made, no production migration/database write has run, and no AAB/IPA
 has been produced here. All new runtime features remain gated off by default.
@@ -139,7 +147,7 @@ Do not treat successful unit tests as permission to publish this unfinished rele
 ## Next actions
 
 1. Save verified local checkpoints; keep flags off and do not deploy the incomplete release automatically.
-2. Verify the dedicated Atlas test connection, then run the isolated Mongo transaction/lease suite; extend search acceptance and finish worker health/alerts and browser/provider acceptance. See ISOLATED_DATABASE_TESTS.md. Never change production MONGO_URI for tests.
+2. Atlas connection and the initial transaction/lease suite PASSED. Next extend isolated database coverage to smart-search aggregates/combined filters and AI cache/quota races, then independent worker restarts, health/alerts and browser/provider acceptance. See ISOLATED_DATABASE_TESTS.md. Never change production MONGO_URI for tests.
 3. Implement clearly non-purchasable AI preview + Request This Product/admin sourcing, then original-preserving image refinement with approval/bulk/retry controls.
 4. Implement PDF scheduled delivery, photo reviews, group ordering and recurring reminder-to-pay workflows with integration tests.
 5. Close prior radar/security/regression items, rehearse migrations with a fresh backup, then deploy/build/device-test the complete release.
