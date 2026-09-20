@@ -53,6 +53,8 @@ test('requeries Squad and selects only the exact transaction reference', async (
   try {
     const result = await verifySquadPayment({ transactionRef: 'NGS_1', initiatedAt: new Date(), httpClient });
     assert.equal(options.params.reference, 'NGS_1');
+    assert.equal('perpage' in options.params, false);
+    assert.equal('page' in options.params, false);
     assert.equal(result.data.transaction_ref, 'NGS_1');
   } finally {
     if (previousKey === undefined) delete process.env.SQUAD_SECRET_KEY; else process.env.SQUAD_SECRET_KEY = previousKey;

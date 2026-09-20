@@ -2380,7 +2380,7 @@ router.put('/:id/pay', protect, async (req, res) => {
         console.error(`[PAY ENDPOINT] CRITICAL ERROR for order ${req.params.id}:`, {
             message: error.message,
             stack: error.stack,
-            flutterwaveError: error.response?.data || null
+            providerError: error.response?.data || null
         });
         res.status(error.statusCode || 500).json({
             message: error.statusCode ? error.message : 'Unable to confirm payment right now.'
@@ -3203,7 +3203,10 @@ router.post('/webhooks/squad', async (req, res) => {
     return res.sendStatus(200);
   } catch (error) {
     await session.abortTransaction();
-    console.error('Squad webhook processing error:', error);
+    console.error('Squad webhook processing error:', {
+      message: error.message,
+      providerError: error.response?.data || null,
+    });
     return res.status(500).send('Internal error');
   } finally {
     session.endSession();

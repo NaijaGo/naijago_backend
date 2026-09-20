@@ -31,7 +31,9 @@ const { isApprovedPharmacistUser } = require('./utils/pharmacistEligibility');
 const orderRoutes = require('./routes/orderRoutes');
 
 const app = express();
-app.set('trust proxy', true);
+// Render places one trusted reverse proxy in front of the service. Trusting
+// every proxy lets clients spoof X-Forwarded-For and bypass IP rate limits.
+app.set('trust proxy', 1);
 
 const PORT = process.env.PORT || 5000;
 

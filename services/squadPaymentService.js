@@ -69,8 +69,6 @@ const verifySquadPayment = async ({ transactionRef, initiatedAt, httpClient = ax
       start_date: formatDate(start),
       end_date: formatDate(end),
       reference: transactionRef,
-      page: 1,
-      perpage: 20,
     },
     headers: { Authorization: `Bearer ${secretKey}` },
     timeout: 30000,
