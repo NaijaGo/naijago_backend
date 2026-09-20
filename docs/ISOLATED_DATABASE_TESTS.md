@@ -14,10 +14,29 @@ Share only its diagnostic code, stage and guidance, never the password or URI.
 Check only the TEST project's cluster/IP access and database user as indicated;
 do not change production MONGO_URI or allow access from everywhere as a shortcut.
 
-Local follow-up validation passed 248 tests with zero failures and six deliberate
+Local foundation validation passed 248 tests with zero failures and six deliberate
 Mongo-suite skips. The test cluster SRV records resolved successfully from this
-workspace; current database authentication and IP access remain unverified. The
-read-only diagnostic above is still required before retrying Planning.
+workspace. The user subsequently obtained TEST_DATABASE_CONNECTION_OK from the
+read-only diagnostic, then Planning failed again during connection setup in
+13.2 seconds, before any fixtures or subtests. A passing earlier connection is
+not evidence that this later connection succeeded; the cause is still unknown.
+
+The read-only probe uses the MongoClient exposed by Mongoose, while integration
+tests use mongoose.createConnection(). Both use the validated test target, TLS
+and a 10-second server selection timeout. Their pool ceilings differ (1 and 20),
+and the Mongoose path also disables automatic collection/index creation. These
+differences are not proven causes and have not been changed speculatively.
+
+The shared integration helper now uses the existing credential-safe classifier
+instead of discarding its connection error. It reports TEST_DATABASE_* code,
+stage and guidance, recognizes MongooseServerSelectionError, unwraps nested
+authentication/DNS/TLS errors, and never retains the raw driver error as a cause.
+Focused diagnostics/harness/safety tests: 29 passed, zero failed. Full offline
+regression after this change: 256 passed, zero failed, six credential-gated Mongo
+suites deliberately skipped (262 total, 68189.5904ms). Production
+settings, timeout/pool policy, TLS validation and collection guards are unchanged.
+Rerun Planning using the command below and share its safe final output. Do not
+repeat the raw-driver check as evidence that the Mongoose integration passed.
 
 The original five gates below passed. The coordinated four-feature phase adds
 test/integration/planningMongo.test.js: nine subtests plus parent for concrete

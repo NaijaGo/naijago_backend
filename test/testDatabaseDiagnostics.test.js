@@ -11,7 +11,8 @@ test('database diagnostics identify known failures without returning raw provide
         [{ code: 13 }, 'PERMISSION'], [{ code: 'ENOTFOUND' }, 'DNS'],
         [{ message: 'querySrv ECONNREFUSED' }, 'DNS'], [{ code: 'CERT_HAS_EXPIRED' }, 'TLS'],
         [{ code: 'NAIJAGO_TEST_TOPOLOGY' }, 'TOPOLOGY'],
-        [{ name: 'MongoServerSelectionError' }, 'NETWORK_OR_ACCESS'], [{ code: 'ECONNRESET' }, 'NETWORK_OR_ACCESS'],
+        [{ name: 'MongoServerSelectionError' }, 'NETWORK_OR_ACCESS'], [{ name: 'MongooseServerSelectionError' }, 'NETWORK_OR_ACCESS'],
+        [{ code: 'ECONNRESET' }, 'NETWORK_OR_ACCESS'],
         [{ name: 'MongoParseError' }, 'CONFIGURATION'], [{ message: 'unexpected' }, 'UNKNOWN'],
     ];
     for (const [error, suffix] of cases) {

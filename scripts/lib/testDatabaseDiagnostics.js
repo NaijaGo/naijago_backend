@@ -27,7 +27,7 @@ function testDatabaseDiagnostic(error, stage) {
         code = 'TLS'; guidance = 'A secure connection failed. Check the computer clock, Node version and VPN/security software. Do not disable certificate validation.';
     } else if (has((n) => n.code === 'NAIJAGO_TEST_TOPOLOGY')) {
         code = 'TOPOLOGY'; guidance = 'The connected test server did not report the replica-set/session support required by these tests.';
-    } else if (has((n) => ['MongoServerSelectionError', 'MongoNetworkError', 'MongoNetworkTimeoutError'].includes(n.name) || ['ETIMEDOUT', 'ECONNREFUSED', 'ECONNRESET'].includes(n.code))) {
+    } else if (has((n) => ['MongoServerSelectionError', 'MongooseServerSelectionError', 'MongoNetworkError', 'MongoNetworkTimeoutError'].includes(n.name) || ['ETIMEDOUT', 'ECONNREFUSED', 'ECONNRESET'].includes(n.code))) {
         code = 'NETWORK_OR_ACCESS'; guidance = 'The database could not be reached. In the TEST project, check cluster availability and your current IP access; also check VPN/firewall connectivity. This alone does not prove the password is wrong.';
     }
     return { code: `TEST_DATABASE_${code}`, stage: safeStage, guidance };

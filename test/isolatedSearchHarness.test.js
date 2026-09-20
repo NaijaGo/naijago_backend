@@ -4,7 +4,7 @@ const mongoose = require('mongoose');
 const { openIsolatedTestDatabase } = require('../scripts/lib/openIsolatedTestDatabase');
 const { ATLAS_TEST_HOST, ATLAS_TEST_DATABASE } = require('../scripts/lib/integrationTestDatabase');
 
-function harness(t, { exists = false, indexFailure = false, connectFailure = false } = {}) {
+function harness(t, { exists = false, indexFailure = false, connectFailure = false, connectError, setupError, closeError } = {}) {
     const previousUri = process.env.NAIJAGO_TEST_MONGO_URI;
     const previousAllow = process.env.NAIJAGO_ALLOW_ATLAS_TESTS;
     process.env.NAIJAGO_TEST_MONGO_URI = 'mongodb+srv://fixture-user:synthetic-test-only@' + ATLAS_TEST_HOST;
@@ -18,8 +18,12 @@ function harness(t, { exists = false, indexFailure = false, connectFailure = fal
     const events = [], hooks = [], names = [];
     const connection = {
         name: ATLAS_TEST_DATABASE,
-        async asPromise() { if (connectFailure) throw new Error('synthetic-test-only must not be echoed'); return this; },
-        async close() { events.push('close'); },
+        async asPromise() {
+            if (connectError) throw connectError;
+            if (connectFailure) throw new Error('synthetic-test-only must not be echoed');
+            return this;
+        },
+        async close() { events.push('close'); if (closeError) throw closeError; },
         db: {
             admin: () => ({ command: async () => ({ setName: 'isolated-rs', logicalSessionTimeoutMinutes: 30 }) }),
             listCollections: () => ({ hasNext: async () => exists }),
@@ -37,6 +41,7 @@ function harness(t, { exists = false, indexFailure = false, connectFailure = fal
         events.push('connect');
         assert.equal(options.dbName, ATLAS_TEST_DATABASE); assert.equal(options.tls, true);
         assert.equal(options.autoCreate, false); assert.equal(options.autoIndex, false);
+        if (setupError) throw setupError;
         return connection;
     });
     t.mock.method(console, 'log', () => {});
@@ -54,9 +59,62 @@ test('isolated search harness sanitizes connection errors and closes failed conn
     const f = harness(t, { connectFailure: true });
     await assert.rejects(openIsolatedTestDatabase(f.context, ['User']), (error) => {
         assert.match(error.message, /Isolated TEST database connection failed/);
+        assert.equal(error.code, 'TEST_DATABASE_UNKNOWN');
+        assert.equal(error.stage, 'connection');
         assert.doesNotMatch(error.message, /synthetic-test-only|mongodb/); return true;
     });
     assert.deepEqual(f.events, ['connect', 'close']);
+});
+
+test('isolated harness reports safe setup errors without opening or cleaning collections', async (t) => {
+    const f = harness(t, { setupError: { name: 'MongoParseError', message: 'synthetic-test-only' } });
+    await assert.rejects(openIsolatedTestDatabase(f.context, ['User']), (error) => {
+        assert.equal(error.code, 'TEST_DATABASE_CONFIGURATION');
+        assert.equal(error.stage, 'client setup');
+        assert.doesNotMatch(error.stack, /synthetic-test-only/);
+        assert.equal(error.cause, undefined);
+        return true;
+    });
+    assert.deepEqual(f.events, ['connect']);
+    assert.deepEqual(f.names, []);
+    assert.deepEqual(f.hooks, []);
+});
+
+test('isolated harness classifies nested connection failures without leaking driver data', async (t) => {
+    const cases = [
+        ['AUTHENTICATION', { code: 18 }], ['PERMISSION', { code: 13 }],
+        ['DNS', { code: 'ENOTFOUND' }], ['TLS', { code: 'CERT_HAS_EXPIRED' }],
+        ['NETWORK_OR_ACCESS', { code: 'ECONNRESET' }],
+    ];
+    for (const [suffix, nested] of cases) {
+        await t.test(suffix, async (child) => {
+            const raw = { name: 'MongooseServerSelectionError', message: 'synthetic-test-only',
+                reason: { servers: new Map([['PRIVATE_HOST', { error: { ...nested, message: 'PRIVATE_PASSWORD' } }]]) },
+                stack: 'PRIVATE_STACK', config: { headers: { Authorization: 'PRIVATE_KEY' } } };
+            raw.cause = raw;
+            const f = harness(child, { connectError: raw, closeError: new Error('PRIVATE_CLOSE_ERROR') });
+            await assert.rejects(openIsolatedTestDatabase(f.context, ['User']), (error) => {
+                assert.equal(error.code, `TEST_DATABASE_${suffix}`);
+                assert.equal(error.stage, 'connection');
+                assert.match(error.message, new RegExp(`TEST_DATABASE_${suffix}`));
+                assert.match(error.message, /Stage: connection/);
+                assert.equal(error.cause, undefined);
+                assert.deepEqual(Object.keys(error).sort(), ['code', 'guidance', 'stage']);
+                assert.doesNotMatch(error.stack + JSON.stringify(error), /synthetic-test-only|PRIVATE_|mongodb\+srv/);
+                return true;
+            });
+            assert.deepEqual(f.events, ['connect', 'close']);
+            assert.deepEqual(f.names, []);
+            assert.deepEqual(f.hooks, []);
+        });
+    }
+});
+
+test('isolated harness recognizes a Mongoose selection timeout without nested errors', async (t) => {
+    const f = harness(t, { connectError: { name: 'MongooseServerSelectionError', message: 'synthetic-test-only' } });
+    await assert.rejects(openIsolatedTestDatabase(f.context, ['User']), { code: 'TEST_DATABASE_NETWORK_OR_ACCESS', stage: 'connection' });
+    assert.deepEqual(f.events, ['connect', 'close']);
+    assert.deepEqual(f.names, []);
 });
 test('isolated search harness creates/indexes only requested models and cleans only owned collections', async (t) => {
     const f = harness(t);
