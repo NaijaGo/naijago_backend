@@ -25,7 +25,7 @@ const buildGroupedSlidesPayload = (slides) => {
   };
 
   for (const slide of slides) {
-    if (!VALID_CAROUSEL_PLACEMENTS.includes(slide.placement)) {
+    if (!['main', 'promo'].includes(slide.placement)) {
       continue;
     }
 
@@ -36,7 +36,7 @@ const buildGroupedSlidesPayload = (slides) => {
 };
 
 const fetchActiveSlidesByPlacement = async (placement) => {
-  if (!VALID_CAROUSEL_PLACEMENTS.includes(placement)) {
+  if (!['main', 'promo'].includes(placement)) {
     return null;
   }
 
@@ -47,7 +47,7 @@ const fetchActiveSlidesByPlacement = async (placement) => {
 
 router.get('/home', async (req, res) => {
   try {
-    const slides = await CarouselSlide.find({ isActive: true })
+    const slides = await CarouselSlide.find({ isActive: true, placement: { $in: ['main', 'promo'] } })
       .sort({ placement: 1, sortOrder: 1, updatedAt: -1, createdAt: 1 })
       .lean();
 

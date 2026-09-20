@@ -29,6 +29,16 @@ test('children are not silently classified as adult fashion', () => {
     assert.equal(readIntent('female dresses').ageGroup, null);
     assert.equal(readIntent('boys shirts').gender, 'male');
 });
+
+test('View all broadens types without dropping audience, literal terms or price filters', () => {
+    const input = parseSearchInput({ q: 'red female dresses', productType: 'all', maxPrice: '50000' });
+    assert.deepEqual(input.intent.productTypes, []);
+    assert.equal(input.intent.gender, 'female');
+    assert.equal(input.intent.categoryFamily, 'fashion');
+    assert.deepEqual(input.intent.terms, ['red']);
+    assert.equal(input.maxPrice, 50000);
+    assert.deepEqual(parseSearchInput({ q: 'female dresses' }).intent.productTypes, ['dress']);
+});
 test('search attributes derive from taxonomy and tags, not an exact title phrase', () => {
     const attributes = deriveSearchAttributes({ name: 'Long Sleeve Classic', category: 'Fashion', subcategory: 'Dresses', searchTags: ['women', 'cotton'], brand: 'Sample Brand' });
     assert.equal(attributes.categoryFamily, 'fashion');

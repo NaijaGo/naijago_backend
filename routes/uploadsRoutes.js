@@ -5,6 +5,7 @@ const cloudinary = require('cloudinary').v2;
 const fileUpload = require('express-fileupload');
 const fs = require('fs'); // Moved to top so all routes can use it
 const path = require('path');
+const { cleanupUploadedFiles } = require('../utils/uploadTempFiles');
 
 // Cloudinary configuration
 cloudinary.config({
@@ -13,10 +14,16 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
-router.use(fileUpload({
+const legacyUpload = fileUpload({
   useTempFiles: true,
   tempFileDir: '/tmp/'
-}));
+});
+// Campaign files are parsed only AFTER admin authorization and have a hard
+// streaming size limit. Keep unrelated existing upload contracts unchanged.
+router.use((req, res, next) => req.path === '/cloudinary/carousel' ? next() : legacyUpload(req, res, next));
+const campaignUpload = fileUpload({ useTempFiles: true, tempFileDir: '/tmp/',
+  limits: { fileSize: 10 * 1024 * 1024, files: 1 }, abortOnLimit: true,
+  responseOnLimit: 'Campaign images must be 10 MB or smaller.' });
 
 const imageMimeByExtension = {
   '.jpg': 'image/jpeg',
@@ -51,27 +58,34 @@ router.post('/cloudinary', protect, async (req, res) => {
   }
 });
 
-router.post('/cloudinary/carousel', protect, authorizeRoles('admin'), async (req, res) => {
+router.post('/cloudinary/carousel', protect, authorizeRoles('admin'), campaignUpload, async (req, res) => {
   try {
     if (!req.files || Object.keys(req.files).length === 0) {
       return res.status(400).json({ message: 'No image was uploaded.' });
     }
 
     const file = req.files.image;
-    const placement = ['main', 'promo'].includes(String(req.body?.placement || '').toLowerCase())
+    const placement = ['main', 'promo', 'explore'].includes(String(req.body?.placement || '').toLowerCase())
       ? String(req.body.placement).toLowerCase()
       : 'misc';
 
+    if (!file || Array.isArray(file) || !['image/jpeg', 'image/png', 'image/webp'].includes(normalizedImageMime(file)) || file.size > 10 * 1024 * 1024) {
+      return res.status(400).json({ message: 'Upload one JPG, PNG or WebP banner no larger than 10 MB.' });
+    }
+
     const result = await cloudinary.uploader.upload(file.tempFilePath, {
       folder: `carousel-slides/${placement}`,
+      resource_type: 'image', timeout: 30000,
     });
 
     if (fs.existsSync(file.tempFilePath)) fs.unlinkSync(file.tempFilePath);
 
     res.json({ url: result.secure_url });
   } catch (error) {
-    console.error('Carousel upload failed:', error);
+    console.error('Carousel upload failed.', { status: error.http_code || error.response?.status });
     res.status(500).json({ message: 'Failed to upload carousel image.' });
+  } finally {
+    await cleanupUploadedFiles(req.files);
   }
 });
 

@@ -122,3 +122,11 @@ test('feature flag disables public media without a database or provider call', a
     t.mock.method(Product, 'findOne', () => { throw new Error('Database must not be called'); });
     assert.deepEqual(await (await request(`/products/${productId}`)).json(), { videos: [] });
 });
+
+test('rejected media cannot be reapproved while old URL revocation is pending', async (t) => {
+    const request = await fixture(t, { _id: vendorId, isAdmin: true, role: 'admin' });
+    t.mock.method(MediaAsset, 'findById', async () => ({ _id: assetId, owner: vendorId, status: 'rejected', __v: 3,
+        revocation: { state: 'pending' }, save: () => assert.fail('must not publish') }));
+    const response = await request(`/assets/${assetId}/review`, { method: 'PUT', body: JSON.stringify({ status: 'approved', revision: 3 }) });
+    assert.equal(response.status, 409);
+});

@@ -6,6 +6,7 @@ const Product = require('../models/Product');
 const MediaAsset = require('../models/MediaAsset');
 const cloudinary = require('../utils/cloudinary');
 const { createProductVideoService } = require('../services/productVideoService');
+const { beginVideoRevocation } = require('../services/mediaRevocationService');
 const {
     VIDEO_POLICY_VERSION, VIDEO_WARNINGS, MAX_VIDEO_BYTES, MAX_VIDEO_SECONDS,
     ALLOWED_VIDEO_MIMES, MediaValidationError,
@@ -48,6 +49,7 @@ router.get('/products/:productId', async (req, res) => {
     try {
         const product = await Product.findOne({
             _id: req.params.productId,
+            isActive: true,
             moderationStatus: 'approved', productStatus: { $in: ['active', 'out_of_stock'] },
         }).select('videoAssetId').lean();
         if (!product) return res.status(404).json({ message: 'Product not available.' });
@@ -68,6 +70,9 @@ router.post('/uploads', authorizeRoles('vendor', 'admin'), uploadLimit, async (r
     try {
         if (!isAdmin(req.user) && req.user.vendorStatus !== 'approved') {
             return res.status(403).json({ message: 'Only approved vendors can upload product videos.' });
+        }
+        if (req.body.purpose === 'campaign_video' && !isAdmin(req.user)) {
+            return res.status(403).json({ message: 'Only administrators can upload campaign videos.' });
         }
         const ticket = await service.issueUpload(req.user._id, req.body);
         return res.status(201).json(ticket);
@@ -132,6 +137,14 @@ router.put('/assets/:assetId/review', authorizeRoles('admin'), async (req, res) 
             throw new MediaValidationError('This video changed. Refresh it before reviewing.', 409);
         }
         if (asset.status !== status || asset.rejectionReason !== reason) {
+            if (status === 'approved' && asset.revocation?.state === 'pending') {
+                throw new MediaValidationError('Wait for video access revocation to complete before approving again.', 409);
+            }
+            // Persist the pending revocation with the rejection. The worker
+            // discovers this record even if the request ends before enqueue.
+            if (status === 'rejected' && asset.status !== 'rejected' && asset.version != null && asset.publicId) {
+                asset.revocation = beginVideoRevocation(asset);
+            }
             asset.status = status;
             asset.rejectionReason = status === 'rejected' ? reason : '';
             asset.reviewedBy = req.user._id;

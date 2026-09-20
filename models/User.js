@@ -484,6 +484,7 @@ const UserSchema = new mongoose.Schema({
         type: String,
         enum: [
           'Product',
+          'CarouselSlide',
           'Order',
           'Transaction',
           'User',
@@ -491,6 +492,12 @@ const UserSchema = new mongoose.Schema({
           'Shipment'            // ← ADDED THIS LINE
         ],
         sparse: true,
+      },
+      explore: {
+        targetType: { type: String, enum: ['product', 'campaign'] },
+        target: mongoose.Schema.Types.ObjectId,
+        comment: mongoose.Schema.Types.ObjectId,
+        parent: mongoose.Schema.Types.ObjectId,
       },
     }
   ],
@@ -508,6 +515,7 @@ const UserSchema = new mongoose.Schema({
     
     // Notification preferences
     notificationPreferences: {
+        exploreActivity: { type: Boolean, default: true },
         orderUpdates: { type: Boolean, default: true },
         appOrderAlerts: { type: Boolean, default: true },
         whatsappOrderAlerts: { type: Boolean, default: true },

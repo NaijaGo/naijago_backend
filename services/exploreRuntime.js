@@ -1,0 +1,22 @@
+const mongoose = require('mongoose');
+const Product = require('../models/Product');
+const { CarouselSlide } = require('../models/CarouselSlide');
+const FeedReaction = require('../models/FeedReaction');
+const FeedComment = require('../models/FeedComment');
+const FeedView = require('../models/FeedView');
+const UserBlock = require('../models/UserBlock');
+const MediaAsset = require('../models/MediaAsset');
+const BackgroundJob = require('../models/BackgroundJob');
+const { attachPrimaryOffers } = require('./productCatalogPresentation');
+const { createProductVideoService } = require('./productVideoService');
+const { createBackgroundJobService } = require('./backgroundJobService');
+const { createExploreService } = require('./exploreService');
+const { createExploreInteractionService } = require('./exploreInteractionService');
+const { createFeatureReadiness } = require('./featureReadiness');
+const videoService = createProductVideoService({ MediaAsset, cloudinary: require('../utils/cloudinary') });
+const explore = createExploreService({ Product, CarouselSlide, FeedReaction, FeedComment, FeedView, UserBlock,
+    enrichProducts: attachPrimaryOffers, videoService });
+const queue = createBackgroundJobService({ Job: BackgroundJob, allowedTypes: ['explore.notify'] });
+const interactions = createExploreInteractionService({ connection: mongoose.connection, FeedReaction, FeedComment, FeedView, queue, explore });
+const ready = createFeatureReadiness({ models: [BackgroundJob, FeedReaction, FeedComment, FeedView, UserBlock, require('../models/FeedReport')] });
+module.exports = { explore, interactions, ready };

@@ -1,6 +1,6 @@
 const mongoose = require('mongoose');
 
-const VALID_CAROUSEL_PLACEMENTS = ['main', 'promo'];
+const VALID_CAROUSEL_PLACEMENTS = ['main', 'promo', 'explore'];
 
 const CarouselSlideSchema = new mongoose.Schema(
   {
@@ -15,6 +15,13 @@ const CarouselSlideSchema = new mongoose.Schema(
       trim: true,
       default: '',
     },
+    advertiserName: { type: String, trim: true, maxlength: 140 },
+    vendor: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    mediaKind: { type: String, enum: ['image', 'video'], default: 'image' },
+    videoAssetId: { type: mongoose.Schema.Types.ObjectId, ref: 'MediaAsset', default: null },
+    startsAt: Date,
+    endsAt: Date,
+    imageRightsConfirmed: { type: Boolean, default: false },
     subtitle: {
       type: String,
       trim: true,
@@ -32,7 +39,7 @@ const CarouselSlideSchema = new mongoose.Schema(
     },
     actionType: {
       type: String,
-      enum: ['none', 'restaurant', 'pharmacy', 'category', 'product', 'external'],
+      enum: ['none', 'restaurant', 'pharmacy', 'category', 'product', 'vendor', 'external'],
       default: 'none',
     },
     actionValue: {
@@ -66,6 +73,7 @@ const CarouselSlideSchema = new mongoose.Schema(
 );
 
 CarouselSlideSchema.index({ placement: 1, isActive: 1, sortOrder: 1 });
+CarouselSlideSchema.index({ placement: 1, isActive: 1, endsAt: 1, startsAt: 1 });
 
 const CarouselSlide = mongoose.model('CarouselSlide', CarouselSlideSchema);
 

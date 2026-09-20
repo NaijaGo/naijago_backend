@@ -1,9 +1,11 @@
 // routes/productRoutes.js
 
 const express = require('express');
+const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
 const router = express.Router();
 const Product = require('../models/Product');
 const ProductOffer = require('../models/ProductOffer');
+const { attachPrimaryOffers, vendorPopulateFields } = require('../services/productCatalogPresentation');
 const Shipment = require('../models/Shipment');
 const User = require('../models/User');
 const AppSetting = require('../models/AppSetting');
@@ -14,6 +16,10 @@ const path = require('path');
 const { resolveProductVideoAttachment } = require('../services/productMediaAttachment');
 const { MediaValidationError } = require('../utils/productVideoPolicy');
 const { createCatalogSearchService, SearchInputError } = require('../services/catalogSearchService');
+const { createGeminiSearchService } = require('../services/geminiSearchService');
+const aiSearch = createGeminiSearchService({
+    Cache: require('../models/SearchIntentCache'), Usage: require('../models/AiUsageBucket'),
+});
 const { PRODUCT_TYPES, CATEGORY_FAMILIES, SEARCH_SCHEMA_VERSION } = require('../utils/catalogSearch');
 const {
     buildHierarchicalCategoryFilter,
@@ -101,7 +107,6 @@ const generateProductSku = async ({ category, brand }) => {
     throw new Error('Unable to create a unique product SKU.');
 };
 
-const vendorPopulateFields = 'businessName businessLocation phoneNumber businessLogoUrl businessWhatsAppNumber businessSupportPhone deliveryRadiusKm prepTimeMinutes isTemporarilyClosed temporaryClosureReason operatingHours';
 
 const parsePagination = (query, defaults = {}) => {
     const maxLimit = defaults.maxLimit || 100;
@@ -223,46 +228,6 @@ const buildCategoryFilter = (category) => {
             },
         ],
     };
-};
-
-const attachPrimaryOffers = async (products) => {
-    const list = Array.isArray(products) ? products : [products];
-    const productIds = list.filter(Boolean).map((product) => product._id);
-    if (!productIds.length) return Array.isArray(products) ? [] : products;
-    const offers = await ProductOffer.find({
-        product: { $in: productIds },
-        status: { $in: ['active', 'out_of_stock'] },
-    })
-        .populate('sellerId', vendorPopulateFields)
-        .sort({ isPrimary: -1, price: 1, _id: 1 })
-        .lean();
-    const byProduct = new Map();
-    for (const offer of offers) {
-        const key = String(offer.product);
-        if (!byProduct.has(key)) byProduct.set(key, []);
-        byProduct.get(key).push(offer);
-    }
-    const enriched = list.map((product) => {
-        const availableOffers = byProduct.get(String(product._id)) || [];
-        const selectedOffer = availableOffers.find((offer) => offer.isPrimary) || availableOffers[0] || null;
-        const selectedDiscount = selectedOffer ? selectedOffer.discountPrice ?? null : product.discountPrice ?? null;
-        const selectedPrice = selectedOffer?.price ?? product.price;
-        return {
-            ...product,
-            offers: availableOffers,
-            selectedOffer,
-            sellerType: selectedOffer?.sellerType || (product.vendor ? 'vendor' : product.sellerType || 'naijago'),
-            sellerId: selectedOffer?.sellerId?._id || selectedOffer?.sellerId || product.sellerId || product.vendor?._id || product.vendor || null,
-            sellerName: selectedOffer?.sellerType === 'naijago'
-                ? 'NaijaGo'
-                : selectedOffer?.sellerId?.businessName || product.vendor?.businessName || 'Vendor',
-            effectivePrice: selectedDiscount !== null && selectedDiscount >= 0 && selectedDiscount < selectedPrice ? selectedDiscount : selectedPrice,
-            price: selectedPrice,
-            discountPrice: selectedDiscount,
-            stockQuantity: selectedOffer?.stockQuantity ?? product.stockQuantity,
-        };
-    });
-    return Array.isArray(products) ? enriched : enriched[0];
 };
 
 const escapeRegex = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -1208,12 +1173,14 @@ router.get('/search/attributes', (_req, res) => res.json({
     categoryFamilies: CATEGORY_FAMILIES.map(({ key, label }) => ({ key, label })),
 }));
 
-router.get('/search', async (req, res) => {
+const searchLimit = rateLimit({ windowMs: 60000, limit: 60, standardHeaders: 'draft-7', legacyHeaders: false,
+  message: { message: 'Please wait a moment before searching again.' } });
+router.get('/search', searchLimit, async (req, res) => {
   try {
     if (req.query.format === 'discovery') {
       const searchService = createCatalogSearchService({ Product, ProductOffer, User,
-        enrichProducts: attachPrimaryOffers, categoryFilter: buildCategoryFilter, vendorPopulateFields });
-      return res.json(await searchService.search(req.query));
+        enrichProducts: attachPrimaryOffers, categoryFilter: buildCategoryFilter, vendorPopulateFields, aiSearch });
+      return res.json(await searchService.search(req.query, { actorKey: req.ip ? ipKeyGenerator(req.ip) : undefined }));
     }
     const { q } = req.query;
 

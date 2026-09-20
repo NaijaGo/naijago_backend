@@ -1655,6 +1655,7 @@ router.put('/notification-preferences', protect, async (req, res) => {
             'whatsappOrderAlerts',
             'promotions',
             'priceAlerts',
+            'exploreActivity',
         ];
         const update = {};
         for (const key of allowed) {

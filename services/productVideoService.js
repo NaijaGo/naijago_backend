@@ -20,11 +20,13 @@ function createProductVideoService({ cloudinary, MediaAsset, now = () => new Dat
 
     async function issueUpload(owner, input) {
         validateVideoRequest(input);
+        const purpose = input.purpose || 'product_video';
+        if (!['product_video', 'campaign_video'].includes(purpose)) throw new MediaValidationError('Invalid video purpose.');
         const config = configuration();
         const date = now();
         const publicId = `naijago/product_videos/${owner}/${crypto.randomUUID()}`;
         const asset = await MediaAsset.create({
-            owner, purpose: 'product_video', publicId,
+            owner, purpose, publicId,
             declaredMimeType: input.mimeType, declaredBytes: input.bytes,
             policyVersion: input.policyVersion, policyAcceptedAt: date,
             uploadExpiresAt: new Date(date.getTime() + 60 * 60 * 1000),
@@ -50,12 +52,14 @@ function createProductVideoService({ cloudinary, MediaAsset, now = () => new Dat
     function serialize(asset, { preview = false } = {}) {
         const result = {
             id: String(asset._id), status: asset.status,
+            purpose: asset.purpose,
             duration: asset.duration, bytes: asset.bytes,
             width: asset.width, height: asset.height,
             rejectionReason: asset.rejectionReason || '',
             revision: asset.__v || 0,
+            revocationState: asset.revocation?.state || null,
         };
-        if ((asset.status === 'approved' || preview) && asset.version != null) {
+        if ((asset.status === 'approved' || preview) && asset.version != null && asset.revocation?.state !== 'pending') {
             const options = {
                 resource_type: 'video', type: 'authenticated',
                 sign_url: true, secure: true, version: asset.version,

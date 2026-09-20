@@ -3,7 +3,7 @@ const { MAX_VIDEO_BYTES, MAX_VIDEO_SECONDS } = require('../utils/productVideoPol
 
 const mediaAssetSchema = new mongoose.Schema({
     owner: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
-    purpose: { type: String, enum: ['product_video'], required: true },
+    purpose: { type: String, enum: ['product_video', 'campaign_video'], required: true },
     provider: { type: String, enum: ['cloudinary'], default: 'cloudinary' },
     publicId: { type: String, required: true, unique: true },
     status: {
@@ -22,6 +22,18 @@ const mediaAssetSchema = new mongoose.Schema({
     height: Number,
     format: String,
     version: Number,
+    cleanedAt: Date,
+    cleanupQueuedAt: Date,
+    cleanupReceipt: String,
+    revocation: {
+        token: String,
+        state: { type: String, enum: ['pending', 'completed'] },
+        fromPublicId: String,
+        toPublicId: String,
+        requestedAt: Date,
+        queuedAt: Date,
+        completedAt: Date,
+    },
     rejectionReason: { type: String, default: '', maxlength: 1000 },
     reviewedAt: Date,
     reviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
@@ -34,4 +46,6 @@ const mediaAssetSchema = new mongoose.Schema({
 }, { timestamps: true, optimisticConcurrency: true });
 
 mediaAssetSchema.index({ status: 1, createdAt: -1 });
+mediaAssetSchema.index({ purpose: 1, status: 1, cleanupQueuedAt: 1, uploadExpiresAt: 1 });
+mediaAssetSchema.index({ 'revocation.state': 1, 'revocation.queuedAt': 1, _id: 1 });
 module.exports = mongoose.model('MediaAsset', mediaAssetSchema);

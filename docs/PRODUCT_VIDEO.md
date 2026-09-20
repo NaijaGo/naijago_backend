@@ -14,7 +14,7 @@ Upload contract:
 
 Limits: 60 seconds, 50 MiB input, MP4/MOV/WebM, one optional video per listing in this initial product form. Media assets remain independent so Explore and image processing can extend the model. A unique sparse product video reference prevents one uploaded asset from attaching to several listings.
 
-Cloudinary `authenticated` delivery protects originals and generated derivatives; backend generates signed delivery URLs only for authorized previews or approved public playback. MP4/H.264 playback and JPEG poster derivatives are generated eagerly. Original upload is retained separately. Rejected and invalid uploads stay private. Abandoned-upload retention/cleanup still needs implementing before release.
+Cloudinary `authenticated` delivery protects originals and generated derivatives; backend generates signed delivery URLs only for authorized previews or approved public playback. MP4/H.264 playback and JPEG poster derivatives are generated eagerly. Original upload is retained separately. The public API excludes rejected/invalid uploads. Rejection now schedules a rename and CDN invalidation without deleting the original; reapproval is blocked until the worker records revocation completion. Provider propagation and previously downloaded copies cannot be treated as instantaneous takedown. Real-provider acceptance is still required. Expired invalid/uncompleted-upload cleanup is implemented in the disabled-by-default durable worker; see BACKGROUND_JOBS.md for its narrow scope and outstanding acceptance tests.
 
 Provider references checked 2026-09-20:
 

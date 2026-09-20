@@ -22,10 +22,10 @@ function parseSearchInput(input) {
     const productType = scalar(input.productType, 'product type', 60);
     if (gender && !['female', 'male', 'unisex'].includes(gender)) throw new SearchInputError('Invalid gender filter.');
     if (ageGroup && !['adult', 'child', 'all'].includes(ageGroup)) throw new SearchInputError('Invalid age filter.');
-    if (productType && !PRODUCT_TYPES.some(([key]) => key === productType)) throw new SearchInputError('Invalid product type.');
+    if (productType && productType !== 'all' && !PRODUCT_TYPES.some(([key]) => key === productType)) throw new SearchInputError('Invalid product type.');
     if (gender) intent.gender = gender;
     if (ageGroup) intent.ageGroup = ageGroup === 'all' ? null : ageGroup;
-    if (productType) intent.productTypes = [productType];
+    if (productType) intent.productTypes = productType === 'all' ? [] : [productType];
     const minPrice = number(input.minPrice, 'minimum price');
     const maxPrice = number(input.maxPrice, 'maximum price');
     if (minPrice !== null && maxPrice !== null && minPrice > maxPrice) throw new SearchInputError('Minimum price cannot exceed maximum price.');
@@ -36,7 +36,10 @@ function parseSearchInput(input) {
     if (!Number.isInteger(page) || page < 1 || !Number.isInteger(limit) || limit < 1) throw new SearchInputError('Invalid pagination.');
     const sort = scalar(input.sort, 'sort', 30) || 'relevance';
     if (!['relevance', 'newest', 'price_low', 'price_high', 'popular', 'most_sold', 'rating', 'best_rated'].includes(sort)) throw new SearchInputError('Invalid sort.');
-    return { q, intent, minPrice, maxPrice, vendor, page, limit, sort,
+    const ai = scalar(input.ai, 'smart matching', 5);
+    if (ai && !['true', 'false'].includes(ai)) throw new SearchInputError('Invalid smart matching option.');
+    return { q, intent, minPrice, maxPrice, vendor, page, limit, sort, allowAi: ai !== 'false',
+        explicitIntent: { gender: Boolean(gender), ageGroup: Boolean(ageGroup), productTypes: Boolean(productType) },
         category: scalar(input.category, 'category'), subcategory: scalar(input.subcategory, 'subcategory'),
         brand: scalar(input.brand, 'brand', 120), minRating: number(input.minRating, 'rating', 5),
         inStock: scalar(input.inStock, 'stock filter', 5) === 'true' };
@@ -96,9 +99,19 @@ function buildSearchPipeline(input, { vendorIdsByTerm = {}, categoryFilter = {},
     return pipeline;
 }
 
-function createCatalogSearchService({ Product, ProductOffer, User, enrichProducts, categoryFilter, vendorPopulateFields }) {
-    async function search(query) {
-        const input = parseSearchInput(query);
+function mergeInterpretedIntent(input, interpretation) {
+    const original = input.intent;
+    return { ...original,
+        categoryFamily: original.categoryFamily || interpretation.categoryFamily,
+        gender: input.explicitIntent.gender || original.gender ? original.gender : interpretation.gender,
+        ageGroup: input.explicitIntent.ageGroup || original.ageGroup ? original.ageGroup : interpretation.ageGroup,
+        productTypes: input.explicitIntent.productTypes || original.productTypes.length ? original.productTypes : interpretation.productTypes,
+        terms: interpretation.terms,
+    };
+}
+
+function createCatalogSearchService({ Product, ProductOffer, User, enrichProducts, categoryFilter, vendorPopulateFields, aiSearch }) {
+    async function run(input) {
         const vendorIdsByTerm = {};
         // Resolve store names to IDs; never interpolate user input as a regex.
         await Promise.all(input.intent.terms.map(async (term) => {
@@ -119,7 +132,20 @@ function createCatalogSearchService({ Product, ProductOffer, User, enrichProduct
             page: input.page, limit: input.limit, total, hasMore: input.page * input.limit < total,
             interpretation: 'catalog_attributes' };
     }
+    async function search(query, { actorKey } = {}) {
+        const input = parseSearchInput(query);
+        const original = await run(input);
+        if (original.total || !input.q || !input.allowAi || !aiSearch || !actorKey) return original;
+        // AI supplies taxonomy/words only. Re-run the SAME catalog pipeline so
+        // publication, price, stock, seller and explicit filters remain authoritative.
+        try {
+            const interpreted = await aiSearch.interpret({ query: input.q, actorKey });
+            if (!interpreted) return original;
+            const result = await run({ ...input, intent: mergeInterpretedIntent(input, interpreted) });
+            return { ...result, interpretation: 'gemini_intent' };
+        } catch (_) { return original; }
+    }
     return { search };
 }
 
-module.exports = { createCatalogSearchService, parseSearchInput, buildSearchPipeline, SearchInputError };
+module.exports = { createCatalogSearchService, parseSearchInput, buildSearchPipeline, mergeInterpretedIntent, SearchInputError };
