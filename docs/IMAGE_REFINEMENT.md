@@ -1,7 +1,8 @@
 # Product image refinement
 
-Local implementation for REFINE-01 / REFINE-02. Disabled by default. Not yet
-accepted against Atlas, real Photoroom/Cloudinary, the admin browser or devices.
+Local implementation for REFINE-01 / REFINE-02. Disabled by default. The isolated
+Atlas gate passed with simulated providers. Real Photoroom/Cloudinary, admin
+browser and device acceptance remain pending.
 This document does not authorize production activation or a paid provider call.
 
 ## Existing architecture, not a second catalog
@@ -146,7 +147,14 @@ original preservation, concurrent publication/stale vendor saves, reassignment,
 global budgets and durable upload scheduling. Test records stay in this run's
 isolated collections on the already-approved test cluster. Never use MONGO_URI.
 
-Still required: Atlas pass evidence; actual sandbox processing and private-link
+User-supplied Atlas result (2026-09-20), after checkpoint e2afcfe: run
+14f152de66ce4493b7257c05ee47223b, 8 passed, 0 failed, 0 skipped, about 71.8 seconds
+overall. All seven subtests plus the parent passed; no cleanup error was reported.
+Photoroom and Cloudinary were simulated, so this is database/workflow evidence,
+not actual image-quality, paid-provider or storage-access acceptance. Retain the
+command above for relevant regressions; no repeat is needed to record this pass.
+
+Still required: actual sandbox processing and private-link
 expiry/access checks; approved small live provider test; budget visibility and
 alerts; admin browser/a11y/error/permission tests; vendor/customer device regression;
 worker hosting/restart rehearsal; updated processing/privacy copy. Original and

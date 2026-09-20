@@ -51,7 +51,7 @@ Workspace root has no usable Git repository. Cross-repository tracker lives here
 | REQUEST-02 | Request This Product; admin sourcing queue/status/vendor match, customer history/notifications | Customer/admin/backend | Offline tests and isolated Atlas request privacy, concurrent submission, outbox rollback and inbox dedupe passed; browser/device/provider acceptance pending |
 | REQUEST-03 | Request/media retention, account erasure and authenticated orphan cleanup; storage/rate limits and privacy copy | Backend/apps/admin | Release gate pending; no automatic deletion or erasure coverage claimed |
 | REFINE-01 | Preserve original; automatic derivative refinement, background/light/centering/shadow; product identity preserved | Backend | Implemented locally with Photoroom adapter and durable upload marker; real provider/identity acceptance pending. See IMAGE_REFINEMENT.md |
-| REFINE-02 | Original/refined compare, approve/reject/regenerate, versioned publication; bulk/retries/rate-cost controls | Admin/backend | Implemented locally; offline checks, Atlas Refinement gate and browser/device acceptance tracked separately; shared retention/takedown gate still open |
+| REFINE-02 | Original/refined compare, approve/reject/regenerate, versioned publication; bulk/retries/rate-cost controls | Admin/backend | Offline tests and isolated Atlas dedupe/quota/rollback/publication/stale-save/reassignment checks passed; real provider/browser/device acceptance and shared retention/takedown gate still open |
 | SCHED-01 | Now/scheduled, WAT windows/lead time/cutoffs/advance bounds/capacity; expiring payment holds and booking races | Backend/customer | Pending |
 | SCHED-02 | Multi-vendor split rules, reminders/reschedule/cancel, due-only dispatch and ops visibility | All relevant | Pending |
 | REVIEW-01 | Delivered verified purchase; stars/text/max 5 JPEG-PNG-HEIC images, max 10MB originals, conversion/thumbnails/EXIF stripping | Backend/customer | Pending |
@@ -120,6 +120,8 @@ Workspace root has no usable Git repository. Cross-repository tracker lives here
 
 ## Current release boundary
 
+- 2026-09-20: User ran Refinement against the isolated Atlas cluster after backend checkpoint e2afcfe. Run 14f152de66ce4493b7257c05ee47223b passed 8 tests (seven subtests plus parent), 0 failed, 0 skipped, about 71.8 seconds overall; no cleanup error reported. Real Mongo verified concurrent image/job/quota identity, transaction rollback, private original preservation, approval/publication and stale-save protection, seller reassignment isolation, bounded global reservations and durable vendor-upload recovery. Photoroom and Cloudinary were simulated. All five prepared Atlas gates have passed; real-provider, browser/device and release acceptance remain outstanding.
+
 - 2026-09-20: User ran Requests against the isolated Atlas cluster after backend checkpoint c67194b. Run 82f2a8d915cd4ac0b4ee2d9d7ff8c109 passed 7 tests (six subtests plus parent), 0 failed, 0 skipped, about 78.0 seconds overall; no cleanup error reported. Real Mongo verified owner-isolated draft retry identity, concurrent submission with one notification job, rollback after injected outbox failure, simultaneous preview reservations, bounded concurrent global quota with rollback and unique inbox delivery despite preview revision changes. External providers were simulated; no paid AI/storage/push acceptance was established. This supersedes earlier Requests-Atlas-pending notes below. All four prepared database gates have now passed; the integrated release is not complete.
 
 - 2026-09-20: Final request-checkpoint backend rerun: 194 passed, 0 failed, 4 deliberately skipped database suites (198 total), approximately 156.0 seconds, including audited request notification retries that exclude paid preview jobs. Customer request/search rerun: 9 passed, 0 failed; the consent finder and API-field assertions are corrected. These successful runs supersede the intermediate Flutter failures below. Changed JavaScript, PowerShell runner syntax and Git whitespace checks passed. No provider/database call, deployment or build was performed.
@@ -157,8 +159,9 @@ boundary, original/candidate privacy, transactional rollback, quotas, stale save
 approval, bounded regeneration and shutdown safety. Admin JavaScript and the Atlas
 PowerShell runner passed syntax checks. The vendor notice passed Dart parsing;
 no Flutter build or new analyzer/device pass is claimed. Git whitespace checks
-passed. The new Atlas Refinement gate and real-provider/browser acceptance remain
-pending. Only local commits are being saved; no push, deployment or paid call.
+passed. The user subsequently verified the Atlas Refinement gate: 8 passed,
+0 failed, 0 skipped. Real-provider/browser acceptance remains pending. Only local
+commits are being saved; no push, deployment or paid call.
 
 This is a local development checkpoint, NOT completion of the integrated phase.
 Previously verified database gate: user-supplied Atlas run
@@ -172,10 +175,11 @@ deployment or a whole-platform acceptance result.
 Verified Search database gate: run 44e0cbffc664427e94839d4f384e002b,
 13 passed, 0 failed, 0 skipped. Verified Workers database gate: run
 112424a7e8be4f40a4dc8e8fc1d6bac6, 5 passed, 0 failed, 0 skipped.
-Latest verified database gate: Requests run 82f2a8d915cd4ac0b4ee2d9d7ff8c109,
-7 passed, 0 failed, 0 skipped. The four prior database gates (Explore, Search,
-Workers and Requests) have passed against the isolated Atlas database. The newly
-prepared Refinement gate has not yet been run against Atlas.
+Verified Requests database gate: run 82f2a8d915cd4ac0b4ee2d9d7ff8c109,
+7 passed, 0 failed, 0 skipped. Latest verified database gate: Refinement run
+14f152de66ce4493b7257c05ee47223b, 8 passed, 0 failed, 0 skipped. All five prepared
+database gates (Explore, Search, Workers, Requests and Refinement) have passed
+against the isolated Atlas database with external providers simulated.
 These results supersede the earlier pending notes above. Provider, hosting,
 deployment and device evidence remain separate; this is not whole-platform sign-off.
 
@@ -186,8 +190,9 @@ has been produced here. All new runtime features remain gated off by default.
 AI concept preview + sourcing requests now have a local implementation and a
 verified isolated database gate; real provider, privacy/retention, browser and
 device acceptance remain outstanding.
-Image refinement now has a local backend/admin implementation; Atlas, real-provider,
-browser/device, privacy/retention and takedown acceptance remain open.
+Image refinement now has a local backend/admin implementation and verified Atlas
+gate; real-provider, browser/device, privacy/retention and takedown acceptance
+remain open.
 Still required in full:
 PDF scheduled delivery/photo reviews/group carts/recurring reminder-to-pay, previous
 radar and security audit, website/privacy/deep links, full regression and device
@@ -197,8 +202,8 @@ Do not treat successful unit tests as permission to publish this unfinished rele
 ## Next actions
 
 1. Save verified local checkpoints; keep flags off and do not deploy the incomplete release automatically.
-2. Atlas connection, Explore transaction/lease, Search aggregate/filter/cache/quota, Workers independent-process and Requests privacy/outbox/quota gates PASSED. Production worker lifecycle tests also pass locally. Keep actual host SIGTERM/restart, health/alerts and provider/browser/device acceptance as release gates. See ISOLATED_DATABASE_TESTS.md. Never change production MONGO_URI for tests.
-3. Next immediate gate: run the new isolated Atlas Refinement suite (see IMAGE_REFINEMENT.md). The original-preserving image studio, approval/rejection/regeneration, bulk markers, versioned publication and finite budgets are implemented locally. Keep flags off until provider/browser/privacy acceptance; no paid calls have run. Do not rerun already-passed gates solely to claim progress.
-4. Implement PDF scheduled delivery, photo reviews, group ordering and recurring reminder-to-pay workflows with integration tests.
+2. Atlas connection and all five prepared database gates (Explore, Search, Workers, Requests and Refinement) PASSED. Production worker lifecycle tests also pass locally. Keep actual host SIGTERM/restart, health/alerts and provider/browser/device acceptance as release gates. See ISOLATED_DATABASE_TESTS.md. Never change production MONGO_URI for tests.
+3. Next implementation block: PDF scheduled delivery (SCHED-01/02). Inspect existing checkout, payment, stock, pickup and dispatch flows before extending them; implement booking/hold/concurrency safeguards and cross-app acceptance tests. Then address photo reviews, group ordering and recurring reminder-to-pay in that order.
+4. Keep the real Photoroom sandbox/live trial, private-link checks, browser/device review and shared retention/erasure/takedown work tracked as unfinished release gates (see IMAGE_REFINEMENT.md). Keep flags off pending acceptance; no paid calls have run. Do not rerun already-passed gates solely to claim progress.
 5. Close prior radar/security/regression items, rehearse migrations with a fresh backup, then deploy/build/device-test the complete release.
 6. Do not mark the programme complete with required items unresolved. Record local tests, deployment and device evidence separately.

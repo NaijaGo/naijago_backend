@@ -1,8 +1,17 @@
 # Isolated MongoDB regression tests
 
-## Newest prepared gate: Refinement (not yet run against Atlas)
+## Latest verified gate: Refinement
 
-From the backend repository:
+User-supplied Atlas output (2026-09-20), after checkpoint e2afcfe, verifies run
+14f152de66ce4493b7257c05ee47223b: 8 passed, 0 failed, 0 skipped, about 71.8 seconds
+overall. All seven subtests and their parent passed; no cleanup error was reported.
+
+All five prepared gates have now passed: Explore (5), Search (13), Workers (5),
+Requests (7) and Refinement (8). These counts include the parent tests; they do
+not mean the entire release is tested or ready to deploy.
+
+For relevant future regressions, from the backend repository (no repeat needed
+solely to record this successful run):
 
     powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\runAtlasIntegrationTests.ps1 -RunTests -Suite Refinement
 
@@ -11,8 +20,9 @@ BackgroundJob and AiUsageBucket collections: concurrent dedupe/quotas, outbox
 rollback, preserved originals, approval/publication concurrency, stale vendor-save
 rejection, seller reassignment, global budget bounds and durable upload scheduling.
 Photoroom and Cloudinary are simulated; no provider key or paid call is needed.
-Existing Explore/Search/Workers/Requests passes remain recorded below; they do not
-count as evidence for this newly prepared gate. See IMAGE_REFINEMENT.md.
+Existing Explore/Search/Workers/Requests passes remain recorded below. Actual
+Photoroom quality, Cloudinary access/expiry, browser/device review, retention and
+hosting acceptance remain separate release gates. See IMAGE_REFINEMENT.md.
 
 The opt-in suites are test/integration/exploreMongo.test.js,
 test/integration/searchMongo.test.js, test/integration/workerMongo.test.js,
