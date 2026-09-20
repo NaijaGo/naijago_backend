@@ -1,0 +1,73 @@
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const { readIntent, deriveSearchAttributes, buildIntentFilter, collectionForIntent, escapeRegex } = require('../utils/catalogSearch');
+const { parseSearchInput, buildSearchPipeline } = require('../services/catalogSearchService');
+const Product = require('../models/Product');
+
+test('broad female fashion synonyms produce one structured collection', () => {
+    for (const q of ['female clothes', 'women clothing', 'ladies wear', 'female fashion', 'women clothes']) {
+        const intent = readIntent(q);
+        assert.equal(intent.gender, 'female', q);
+        assert.equal(intent.categoryFamily, 'fashion', q);
+        assert.deepEqual(intent.terms, [], q);
+        assert.equal(collectionForIntent(intent).title, 'Women Fashion');
+    }
+});
+test('specific types and unknown brand/model words retain their meaning', () => {
+    for (const [q, gender, type] of [['female dresses', 'female', 'dress'], ['men shoes', 'male', 'shoes'], ['female bags', 'female', 'bag'], ['men shirts', 'male', 'shirt'], ['men t-shirts', 'male', 't_shirt']]) {
+        const intent = readIntent(q);
+        assert.equal(intent.gender, gender);
+        assert.deepEqual(intent.productTypes, [type], q);
+    }
+    assert.deepEqual(readIntent('iPhone 15 Pro').terms, ['iphone', '15', 'pro']);
+    assert.equal(readIntent('food').categoryFamily, 'food');
+    assert.equal(readIntent('electronics').categoryFamily, 'electronics');
+});
+test('children are not silently classified as adult fashion', () => {
+    assert.equal(readIntent('girls dresses').ageGroup, 'child');
+    assert.equal(readIntent('women dresses').ageGroup, 'adult');
+    assert.equal(readIntent('female dresses').ageGroup, null);
+    assert.equal(readIntent('boys shirts').gender, 'male');
+});
+test('search attributes derive from taxonomy and tags, not an exact title phrase', () => {
+    const attributes = deriveSearchAttributes({ name: 'Long Sleeve Classic', category: 'Fashion', subcategory: 'Dresses', searchTags: ['women', 'cotton'], brand: 'Sample Brand' });
+    assert.equal(attributes.categoryFamily, 'fashion');
+    assert.equal(attributes.gender, 'female');
+    assert.deepEqual(attributes.productTypes, ['dress']);
+    assert.ok(attributes.tokens.includes('cotton'));
+    assert.equal(deriveSearchAttributes({ name: 'Dress', category: 'Fashion', gender: 'unisex', productType: 'dresses' }).gender, 'unisex');
+});
+test('gender matching uses boundaries and regex input is literal', () => {
+    const query = buildIntentFilter(readIntent('men shoes'));
+    const text = JSON.stringify(query);
+    assert.match(text, /searchAttributes.gender/);
+    const pattern = query.$and[1].$or[1].$and[1].$or[0].name;
+    const regex = new RegExp(pattern.$regex, pattern.$options);
+    assert.equal(regex.test('Women fashion'), false);
+    assert.equal(regex.test('Men fashion'), true);
+    assert.equal(new RegExp(escapeRegex('a.*(b)')).test('aXXXb'), false);
+});
+test('filters validate before a database call and combine with intent', () => {
+    assert.throws(() => parseSearchInput({ q: { $ne: '' } }));
+    assert.throws(() => parseSearchInput({ q: 'dress', minPrice: '5000', maxPrice: '100' }));
+    assert.throws(() => parseSearchInput({ q: 'dress', vendor: 'invalid' }));
+    assert.throws(() => parseSearchInput({ q: 'dress', page: '1.5' }));
+    const input = parseSearchInput({ q: 'female clothes', productType: 'shoes', minPrice: '10000', maxPrice: '50000', sort: 'price_low', inStock: 'true' });
+    const pipeline = buildSearchPipeline(input);
+    assert.equal(pipeline[0].$match.isActive, true);
+    assert.equal(pipeline[0].$match.moderationStatus, 'approved');
+    assert.equal(pipeline[0].$match.productStatus, 'active');
+    assert.deepEqual(pipeline.find((stage) => stage.$match?.__searchPrice).$match.__searchPrice, { $gte: 10000, $lte: 50000 });
+    assert.equal(pipeline.at(-1).$facet.products[0].$sort.__searchPrice, 1);
+    assert.ok(pipeline.some((stage) => stage.$lookup?.from === 'productoffers'));
+});
+test('product validation stores the same versioned search attributes', async () => {
+    const product = new Product({ name: 'Blue Linen Shirt', description: 'Long sleeve', category: 'Fashion', subcategory: 'Mens Fashion', gender: 'male', ageGroup: 'adult', productType: 'shirt', price: 20000, stockQuantity: 1 });
+    await product.validate();
+    assert.equal(product.searchAttributes.version, 1);
+    assert.equal(product.searchAttributes.gender, 'male');
+    assert.deepEqual([...product.searchAttributes.productTypes], ['shirt']);
+    product.gender = 'female';
+    await product.validate();
+    assert.equal(product.searchAttributes.gender, 'female');
+});

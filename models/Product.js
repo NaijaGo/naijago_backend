@@ -1,6 +1,7 @@
 // models/Product.js
 
 const mongoose = require('mongoose');
+const { deriveSearchAttributes } = require('../utils/catalogSearch');
 
 const productSchema = mongoose.Schema(
   {
@@ -26,8 +27,21 @@ const productSchema = mongoose.Schema(
     },
     subcategory: { type: String, trim: true, default: '', index: true },
     searchTags: [{ type: String, trim: true, lowercase: true }],
+    gender: { type: String, enum: ['female', 'male', 'unisex', 'unspecified'] },
+    ageGroup: { type: String, enum: ['adult', 'child', 'all'] },
+    productType: { type: String, trim: true, lowercase: true, maxlength: 60 },
+    searchAttributes: {
+      type: new mongoose.Schema({
+        version: Number, categoryPath: [String], categoryFamily: String,
+        gender: String, ageGroup: String, productTypes: [String], tokens: [String],
+      }, { _id: false }),
+      default: undefined,
+    },
     sku: { type: String, trim: true, uppercase: true },
     gtin: { type: String, trim: true },
+    // Optional; the actual URL is served only after media moderation. A unique
+    // sparse reference prevents a video from being attached to two listings.
+    videoAssetId: { type: mongoose.Schema.Types.ObjectId, ref: 'MediaAsset', unique: true, sparse: true },
     discountPrice: { type: Number, default: null, min: 0 },
     stockQuantity: {
       type: Number,
@@ -283,6 +297,7 @@ productSchema.set('toJSON', { virtuals: true });
 productSchema.set('toObject', { virtuals: true });
 
 productSchema.pre('validate', function normalizeSeller(next) {
+  this.searchAttributes = deriveSearchAttributes(this);
   if (this.vendor && !this.sellerId) this.sellerId = this.vendor;
   if (this.sellerId && !this.vendor) this.vendor = this.sellerId;
   if (this.sellerId || this.vendor) this.sellerType = 'vendor';
@@ -312,6 +327,8 @@ productSchema.pre('validate', function normalizeSeller(next) {
 });
 
 productSchema.index({ vendor: 1, createdAt: -1 });
+productSchema.index({ isActive: 1, 'searchAttributes.categoryFamily': 1, 'searchAttributes.gender': 1 });
+productSchema.index({ isActive: 1, 'searchAttributes.tokens': 1 });
 productSchema.index({ sellerType: 1, sellerId: 1, createdAt: -1 });
 productSchema.index({ category: 1, subcategory: 1, productStatus: 1, createdAt: -1 });
 productSchema.index({ sku: 1 }, { unique: true, sparse: true });

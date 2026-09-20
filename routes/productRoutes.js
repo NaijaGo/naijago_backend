@@ -11,6 +11,10 @@ const { protect, authorizeRoles } = require('../middleware/authMiddleware');
 const multer = require('multer');
 const cloudinary = require('../utils/cloudinary');
 const path = require('path');
+const { resolveProductVideoAttachment } = require('../services/productMediaAttachment');
+const { MediaValidationError } = require('../utils/productVideoPolicy');
+const { createCatalogSearchService, SearchInputError } = require('../services/catalogSearchService');
+const { PRODUCT_TYPES, CATEGORY_FAMILIES, SEARCH_SCHEMA_VERSION } = require('../utils/catalogSearch');
 const {
     buildHierarchicalCategoryFilter,
     buildEffectivePriceExpression,
@@ -230,7 +234,7 @@ const attachPrimaryOffers = async (products) => {
         status: { $in: ['active', 'out_of_stock'] },
     })
         .populate('sellerId', vendorPopulateFields)
-        .sort({ isPrimary: -1, price: 1 })
+        .sort({ isPrimary: -1, price: 1, _id: 1 })
         .lean();
     const byProduct = new Map();
     for (const offer of offers) {
@@ -241,6 +245,8 @@ const attachPrimaryOffers = async (products) => {
     const enriched = list.map((product) => {
         const availableOffers = byProduct.get(String(product._id)) || [];
         const selectedOffer = availableOffers.find((offer) => offer.isPrimary) || availableOffers[0] || null;
+        const selectedDiscount = selectedOffer ? selectedOffer.discountPrice ?? null : product.discountPrice ?? null;
+        const selectedPrice = selectedOffer?.price ?? product.price;
         return {
             ...product,
             offers: availableOffers,
@@ -250,9 +256,9 @@ const attachPrimaryOffers = async (products) => {
             sellerName: selectedOffer?.sellerType === 'naijago'
                 ? 'NaijaGo'
                 : selectedOffer?.sellerId?.businessName || product.vendor?.businessName || 'Vendor',
-            effectivePrice: selectedOffer?.discountPrice ?? selectedOffer?.price ?? product.discountPrice ?? product.price,
-            price: selectedOffer?.price ?? product.price,
-            discountPrice: selectedOffer?.discountPrice ?? product.discountPrice ?? null,
+            effectivePrice: selectedDiscount !== null && selectedDiscount >= 0 && selectedDiscount < selectedPrice ? selectedDiscount : selectedPrice,
+            price: selectedPrice,
+            discountPrice: selectedDiscount,
             stockQuantity: selectedOffer?.stockQuantity ?? product.stockQuantity,
         };
     });
@@ -414,6 +420,8 @@ router.post(
                 });
             }
 
+            const videoAttachment = await resolveProductVideoAttachment(req.body.videoAssetId, req.user);
+
             // -----------------------------------------------------
             // HANDLE IMAGE UPLOAD TO CLOUDINARY
             // -----------------------------------------------------
@@ -535,12 +543,16 @@ router.post(
                 category,
                 subcategory: subcategory || '',
                 searchTags: parsedTags,
+                gender: req.body.gender || undefined,
+                ageGroup: req.body.ageGroup || undefined,
+                productType: req.body.productType || undefined,
                 sku: resolvedSku,
                 gtin,
                 specifications: parseJsonField(specifications, {}),
                 variants: parseJsonField(variants, []),
                 stockQuantity: Number(stockQuantity),
                 imageUrls: uploadedImages,
+                videoAssetId: videoAttachment.id,
                 sizeData, // NEW: Add size data to product
                 sellerType: requestedSellerType,
                 sellerId: requestedSellerId,
@@ -629,6 +641,12 @@ router.post(
                 product: createdProduct,
             });
         } catch (error) {
+            if (error instanceof MediaValidationError) {
+                return res.status(error.status).json({ message: error.message });
+            }
+            if (error.code === 11000 && error.keyPattern?.videoAssetId) {
+                return res.status(409).json({ message: 'This video is already used by another product.' });
+            }
             console.error('Error adding product:', error);
             res.status(500).json({ message: 'Server error adding product.' });
         }
@@ -799,6 +817,9 @@ router.put(
                 });
             }
 
+            const videoAttachment = await resolveProductVideoAttachment(req.body.videoAssetId, req.user);
+            if (videoAttachment.supplied) product.videoAssetId = videoAttachment.id;
+
             const vendor = await User.findById(req.user._id);
             const nextCategory = category || product.category;
             if (!isAdmin && isMedicineCategory(nextCategory) && vendor?.role !== 'pharmacist') {
@@ -890,6 +911,9 @@ router.put(
             if (brand !== undefined) product.brand = String(brand).trim();
             if (category !== undefined) product.category = String(category).trim();
             if (subcategory !== undefined) product.subcategory = String(subcategory).trim();
+            for (const field of ['gender', 'ageGroup', 'productType']) {
+                if (req.body[field] !== undefined) product[field] = req.body[field] || undefined;
+            }
             if (sku !== undefined) product.sku = String(sku).trim();
             if (gtin !== undefined) product.gtin = String(gtin).trim();
             if (searchTags !== undefined) {
@@ -994,6 +1018,12 @@ router.put(
                 product: updatedProduct,
             });
         } catch (error) {
+            if (error instanceof MediaValidationError) {
+                return res.status(error.status).json({ message: error.message });
+            }
+            if (error.code === 11000 && error.keyPattern?.videoAssetId) {
+                return res.status(409).json({ message: 'This video is already used by another product.' });
+            }
             console.error('Error updating product:', error);
             res.status(500).json({ message: 'Server error updating product.' });
         }
@@ -1171,15 +1201,27 @@ router.get('/vendor/:vendorId', async (req, res) => {
  * @access  Public
  * @query   ?q=search term
  */
+router.get('/search/attributes', (_req, res) => res.json({
+    version: SEARCH_SCHEMA_VERSION,
+    genders: ['female', 'male', 'unisex', 'unspecified'], ageGroups: ['adult', 'child', 'all'],
+    productTypes: PRODUCT_TYPES.map(([key, label]) => ({ key, label })),
+    categoryFamilies: CATEGORY_FAMILIES.map(({ key, label }) => ({ key, label })),
+}));
+
 router.get('/search', async (req, res) => {
   try {
+    if (req.query.format === 'discovery') {
+      const searchService = createCatalogSearchService({ Product, ProductOffer, User,
+        enrichProducts: attachPrimaryOffers, categoryFilter: buildCategoryFilter, vendorPopulateFields });
+      return res.json(await searchService.search(req.query));
+    }
     const { q } = req.query;
 
-    if (!q || q.trim() === '') {
+    if (!q || typeof q !== 'string' || q.trim() === '') {
       return res.status(200).json([]); // or 400 - your choice
     }
 
-    const searchTerm = q.trim();
+    const searchTerm = escapeRegex(q.trim().slice(0, 200));
 
     const products = await Product.find({
       isActive: true,
@@ -1201,6 +1243,7 @@ router.get('/search', async (req, res) => {
     res.status(200).json(await attachPrimaryOffers(products));
   } catch (error) {
     console.error('Search error:', error);
+    if (error instanceof SearchInputError) return res.status(400).json({ message: error.message });
     res.status(500).json({ message: 'Error performing search' });
   }
 });
