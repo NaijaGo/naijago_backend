@@ -30,7 +30,10 @@ test('job list excludes raw payload, result and provider identity', async (t) =>
     const request = await setup(t, { find: () => chain });
     const response = await request('?state=failed', { headers: auth });
     assert.equal(response.status, 200);
-    assert.deepEqual((await response.json()).jobs, []);
+    const body = await response.json();
+    assert.deepEqual(body.jobs, []);
+    assert.ok(body.retryableTypes.includes('request.notify'));
+    assert.equal(body.retryableTypes.includes('request.preview'), false);
 });
 test('retry is conditional, audited and preserves provider deduplication identity', async (t) => {
     let args;
@@ -39,7 +42,7 @@ test('retry is conditional, audited and preserves provider deduplication identit
     assert.equal(response.status, 200);
     assert.equal(args[0].__v, 2);
     assert.equal(args[0].state, 'failed');
-    assert.deepEqual(args[0].type.$in, ['explore.notify', 'media.cleanup', 'media.revoke']);
+    assert.deepEqual(args[0].type.$in, ['explore.notify', 'request.notify', 'media.cleanup', 'media.revoke']);
     assert.equal(args[0].createdAt.$gt.toISOString(), '2026-09-13T12:00:00.000Z');
     assert.equal(args[1].$inc.manualRetries, 1);
     assert.equal(args[1].$push.reviewHistory.actor, id);

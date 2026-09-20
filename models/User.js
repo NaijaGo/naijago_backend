@@ -485,6 +485,7 @@ const UserSchema = new mongoose.Schema({
         enum: [
           'Product',
           'CarouselSlide',
+          'ProductRequest',
           'Order',
           'Transaction',
           'User',

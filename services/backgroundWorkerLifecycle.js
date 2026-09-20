@@ -83,6 +83,7 @@ async function startManagedWorker({ env, db, ensureIndexes, createRuntime, host 
         if (env.MEDIA_CLEANUP_ENABLED === 'true') allowedTypes.push('media.cleanup');
         if (env.PRODUCT_VIDEO_ENABLED === 'true') allowedTypes.push('media.revoke');
         if (env.EXPLORE_ENABLED === 'true') allowedTypes.push('explore.notify');
+        if (env.PRODUCT_REQUESTS_ENABLED === 'true') allowedTypes.push('request.preview', 'request.notify');
         if (!allowedTypes.length) throw new Error('No worker handlers are enabled.');
         await db.connect(env.MONGO_URI, { serverSelectionTimeoutMS: 10000 });
         await ensureIndexes(allowedTypes);

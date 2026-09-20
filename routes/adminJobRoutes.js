@@ -3,7 +3,7 @@ const { rateLimit } = require('express-rate-limit');
 const { protect, authorizeRoles } = require('../middleware/authMiddleware');
 const { objectId, text } = require('../utils/explorePolicy');
 
-const RETRYABLE_TYPES = ['explore.notify', 'media.cleanup', 'media.revoke'];
+const RETRYABLE_TYPES = ['explore.notify', 'request.notify', 'media.cleanup', 'media.revoke'];
 const SAFE_FIELDS = '_id type state attempts maxAttempts manualRetries runAt leaseUntil startedAt finishedAt createdAt updatedAt errorCode reviewHistory __v';
 
 function createAdminJobsRouter({ Job, authenticate = protect, admin = authorizeRoles('admin'), now = () => new Date() }) {
@@ -29,7 +29,7 @@ function createAdminJobsRouter({ Job, authenticate = protect, admin = authorizeR
         objectId(req.params.id, 'job');
         if (!Number.isInteger(req.body.revision) || req.body.revision < 0) return res.status(400).json({ message: 'Refresh this job before retrying.' });
         const reason = text(req.body.reason, 500, 'retry reason', true);
-        // Payment/capture/refund jobs are deliberately not exposed here. Retain
+        // Paid preview generation and payment/capture/refund jobs are deliberately not exposed here. Retain
         // original dedupe/provider keys and creation date to avoid duplicate work.
         const date = now();
         const job = await Job.findOneAndUpdate({ _id: req.params.id, __v: req.body.revision, state: 'failed',

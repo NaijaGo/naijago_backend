@@ -17,6 +17,9 @@ async function main() {
         ensureIndexes: async (types) => {
             await BackgroundJob.createCollection();
             await BackgroundJob.createIndexes();
+            if (types.includes('request.notify') && !await require('../services/productRequestRuntime').ready()) {
+                throw new Error('Product request indexes are not ready.');
+            }
             if (types.includes('explore.notify') && !await require('../services/exploreRuntime').ready()) {
                 throw new Error('Explore indexes are not ready.');
             }
@@ -26,6 +29,7 @@ async function main() {
             const media = createMediaCleanupService({ MediaAsset, Product, CarouselSlide, cloudinary, queue });
             const revocation = createMediaRevocationService({ MediaAsset, cloudinary, queue });
             const handlers = {};
+            if (allowedTypes.includes('request.notify')) Object.assign(handlers, require('../services/productRequestRuntime').handlers());
             if (allowedTypes.includes('media.cleanup')) handlers['media.cleanup'] = media.cleanup;
             if (allowedTypes.includes('media.revoke')) handlers['media.revoke'] = revocation.revoke;
             if (allowedTypes.includes('explore.notify')) {

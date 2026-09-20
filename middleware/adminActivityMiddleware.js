@@ -1,6 +1,7 @@
 const { publishAdminActivity } = require('../services/adminActivityService');
 
 const CATEGORY_RULES = [
+  ['/product-requests', 'product', 'product-moderation.html'],
   ['/orders', 'order', 'orders.html'],
   ['/riders', 'rider', 'riders.html'],
   ['/vendor', 'vendor', 'vendors.html'],

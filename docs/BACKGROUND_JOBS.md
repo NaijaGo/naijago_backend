@@ -23,7 +23,12 @@ Required configuration: existing `MONGO_URI`, `BACKGROUND_JOBS_ENABLED=true`.
 At least one task flag below must be enabled; an empty worker fails startup
 before connecting instead of appearing healthy without any active handlers.
 Registered tasks: `media.cleanup` (MEDIA_CLEANUP_ENABLED=true),
-`media.revoke` (PRODUCT_VIDEO_ENABLED=true) and `explore.notify` (EXPLORE_ENABLED=true).
+`media.revoke` (PRODUCT_VIDEO_ENABLED=true), `explore.notify` (EXPLORE_ENABLED=true),
+and `request.preview` / `request.notify` (PRODUCT_REQUESTS_ENABLED=true).
+Paid previews also require PRODUCT_REQUEST_PREVIEWS_ENABLED, existing provider
+credentials and finite daily budgets. See PRODUCT_REQUESTS.md. Preview crash
+recovery never automatically repeats a paid generation call; admin job retries
+expose request notifications only, not paid previews.
 Media tasks reuse existing Cloudinary credentials. Explore uses the existing
 audience-specific OneSignal credentials, including the vendor audience.
 Do not enable cleanup until the dry-run/rehearsal/provider acceptance checks have

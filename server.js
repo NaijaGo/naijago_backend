@@ -78,6 +78,7 @@ app.use('/api/admin', require('./routes/adminCarouselRoutes'));
 app.use('/api/products', require('./routes/productRoutes'));
 app.use('/api/product-media', require('./routes/productMediaRoutes'));
 app.use('/api/explore', require('./routes/exploreRoutes'));
+app.use('/api/product-requests', require('./routes/productRequestRoutes'));
 app.use('/api/admin/background-jobs', require('./routes/adminJobRoutes'));
 app.use('/api/locations', require('./routes/locationRoutes'));
 app.use('/api/orders', orderRoutes);

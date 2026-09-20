@@ -47,8 +47,9 @@ Workspace root has no usable Git repository. Cross-repository tracker lives here
 | SEARCH-02 | Structured intent/synonyms, broad/specific searches and combined filters; true availability; relevance tests | Backend | Unit and real Atlas search/filter/offer/pagination tests passed; representative data audit/performance/device acceptance pending |
 | SEARCH-03 | Collection heading/View All/subcategory chips/products across vendors, filters and pagination | Customer | Implemented; contract/device checks in progress |
 | SEARCH-04 | Gemini strict-schema ambiguous-query classification; fast deterministic path, cache/timeouts/fallback/rate-cost limits | Backend | Unit and real Atlas cache/quota/lease tests passed with simulated AI; real model and latency acceptance pending |
-| REQUEST-01 | Explicit zero-result AI preview; AI concept/not for sale label; no fake price/cart; async generation | Customer/backend | Pending |
-| REQUEST-02 | Request This Product; admin sourcing queue/status/vendor match, customer history/notifications | Customer/admin/backend | Pending |
+| REQUEST-01 | Explicit zero-result AI preview; AI concept/not for sale label; no fake price/cart; async generation | Customer/backend | Implemented behind flags; offline backend and customer consent tests passed; Atlas budgets and real provider/device acceptance pending |
+| REQUEST-02 | Request This Product; admin sourcing queue/status/vendor match, customer history/notifications | Customer/admin/backend | Implemented with owner privacy, revision/outbox and customer history/intent tests; new Requests Atlas gate and browser/device/provider acceptance pending |
+| REQUEST-03 | Request/media retention, account erasure and authenticated orphan cleanup; storage/rate limits and privacy copy | Backend/apps/admin | Release gate pending; no automatic deletion or erasure coverage claimed |
 | REFINE-01 | Preserve original; automatic derivative refinement, background/light/centering/shadow; product identity preserved | Backend | Pending |
 | REFINE-02 | Original/refined compare, approve/reject/regenerate, versioned publication; bulk/retries/rate-cost controls | Admin/backend | Pending |
 | SCHED-01 | Now/scheduled, WAT windows/lead time/cutoffs/advance bounds/capacity; expiring payment holds and booking races | Backend/customer | Pending |
@@ -86,6 +87,7 @@ Workspace root has no usable Git repository. Cross-repository tracker lives here
 | Service | Known state | Required work |
 |---|---|---|
 | Gemini | Existing catalog integration | Verify supported APIs; reuse backend key/models; classify/preview limits |
+| Product requests | Implemented, disabled by default | PRODUCT_REQUESTS_ENABLED, BACKGROUND_JOBS_ENABLED; separate PRODUCT_REQUEST_PREVIEWS_ENABLED and GEMINI_PREVIEW_DAILY_LIMIT / GEMINI_PREVIEW_USER_DAILY_LIMIT; reuse existing backend Gemini/Cloudinary/customer OneSignal; see PRODUCT_REQUESTS.md |
 | Cloudinary | Existing images/carousels | Signed video uploads/transcoding/storage capacity |
 | Geoapify | Existing autocomplete | Preserve config and test resolution |
 | Squad | Hosted checkout/recovery live | Preserve rotated secret/webhook/recovery; wallet coverage audit |
@@ -117,6 +119,12 @@ Workspace root has no usable Git repository. Cross-repository tracker lives here
 - 2026-09-20: Added opt-in loopback-only replica-set race/rollback suite. Docker Desktop engine was unavailable; test deliberately skipped. Never reuse production MONGO_URI for it. See ISOLATED_DATABASE_TESTS.md.
 
 ## Current release boundary
+
+- 2026-09-20: Final request-checkpoint backend rerun: 194 passed, 0 failed, 4 deliberately skipped database suites (198 total), approximately 156.0 seconds, including audited request notification retries that exclude paid preview jobs. Customer request/search rerun: 9 passed, 0 failed; the consent finder and API-field assertions are corrected. These successful runs supersede the intermediate Flutter failures below. Changed JavaScript, PowerShell runner syntax and Git whitespace checks passed. No provider/database call, deployment or build was performed.
+- 2026-09-20: Admin sourcing queue saved locally as fdbedd4; customer request workflow saved as 2d1ade4. Final targeted customer analyzer exited 0 with no errors/warnings and three pre-existing home-screen informational notices (680.2 seconds). Backend implementation and this evidence are saved in the corresponding local feature checkpoint. No push/deployment/build. The existing untracked customer screenshots folder is preserved and excluded, as are secrets/signing files.
+
+- 2026-09-20: AI concepts and sourcing requests implemented as a separate non-purchasable, owner-private request model with explicit submission/consent, authenticated expiring image links, transactional quotas/status outbox, bounded recovery, customer history/deep links and admin matching to revalidated real products. No invented Product/ProductOffer, price, stock or payment path. See PRODUCT_REQUESTS.md. Retention/erasure/orphan cleanup remain release gates.
+- 2026-09-20: Request-checkpoint full offline backend regression: 194 passed, 0 failed, 4 deliberately skipped isolated database suites (198 total), approximately 235.3 seconds. Twenty new offline request/API tests are included. No database URI or paid provider calls supplied. The new Requests Atlas suite is prepared, not yet passed; earlier Explore/Search/Workers evidence remains valid. Flutter initial run passed 8/9: consent-button test used an exact widget-type finder that excludes the icon-button subclass; correcting and rerunning before checkpoint. Initial targeted analyzer reported no errors and four informational lints (one new braces lint corrected).
 
 - 2026-09-20: Final worker-lifecycle checkpoint regression: 174 passed, 0 failed, 3 deliberately skipped database suites (177 total), about 53.6 seconds. No test URI was supplied to the local run; Explore, Search and Workers are independently verified by the user-run Atlas results below. All changed JavaScript files passed syntax checks; Git whitespace checks passed. No live database/provider call, worker deployment, release build or push was performed.
 
@@ -152,7 +160,8 @@ deployment or a whole-platform acceptance result.
 Verified Search database gate: run 44e0cbffc664427e94839d4f384e002b,
 13 passed, 0 failed, 0 skipped. Latest verified database gate: Workers run
 112424a7e8be4f40a4dc8e8fc1d6bac6, 5 passed, 0 failed, 0 skipped.
-All three prepared database gates (Explore, Search and Workers) have now passed.
+The original three database gates (Explore, Search and Workers) have passed.
+The newly prepared fourth gate, Requests, has not yet been verified against Atlas.
 These results supersede the earlier pending notes above. Provider, hosting,
 deployment and device evidence remain separate; this is not whole-platform sign-off.
 
@@ -160,7 +169,9 @@ No commits from this phase have been pushed/deployed automatically, no paid prov
 calls have been made, no production migration/database write has run, and no AAB/IPA
 has been produced here. All new runtime features remain gated off by default.
 
-Still required in full: AI concept preview + sourcing requests, image refinement,
+AI concept preview + sourcing requests now have a local implementation; Atlas,
+provider, privacy/retention, browser and device acceptance remain outstanding.
+Still required in full: image refinement,
 PDF scheduled delivery/photo reviews/group carts/recurring reminder-to-pay, previous
 radar and security audit, website/privacy/deep links, full regression and device
 acceptance, real provider tests, deployment/worker monitoring and signed release.
@@ -170,7 +181,7 @@ Do not treat successful unit tests as permission to publish this unfinished rele
 
 1. Save verified local checkpoints; keep flags off and do not deploy the incomplete release automatically.
 2. Atlas connection, Explore transaction/lease, Search aggregate/filter/cache/quota and Workers independent-process gates PASSED. Production worker lifecycle tests also pass locally. No repeated private-credential run is needed solely for these lifecycle changes; keep actual host SIGTERM/restart, health/alerts and provider/browser acceptance as release gates. See ISOLATED_DATABASE_TESTS.md. Never change production MONGO_URI for tests.
-3. Implement clearly non-purchasable AI preview + Request This Product/admin sourcing, then original-preserving image refinement with approval/bulk/retry controls.
+3. Complete the new isolated Requests gate and record its evidence; keep preview/provider/browser/device acceptance explicit. Then implement original-preserving image refinement with approval/bulk/retry controls. Do not rerun already-passed gates solely to claim progress.
 4. Implement PDF scheduled delivery, photo reviews, group ordering and recurring reminder-to-pay workflows with integration tests.
 5. Close prior radar/security/regression items, rehearse migrations with a fresh backup, then deploy/build/device-test the complete release.
 6. Do not mark the programme complete with required items unresolved. Record local tests, deployment and device evidence separately.

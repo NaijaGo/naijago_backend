@@ -1,7 +1,8 @@
 # Isolated MongoDB regression tests
 
 The opt-in suites are test/integration/exploreMongo.test.js,
-test/integration/searchMongo.test.js and test/integration/workerMongo.test.js.
+test/integration/searchMongo.test.js, test/integration/workerMongo.test.js and
+test/integration/requestMongo.test.js.
 They never read MONGO_URI to connect. Do not modify
 the production connection or Render configuration. They accept either a loopback
 replica set or the one user-approved, separate Atlas
@@ -46,11 +47,24 @@ That command keeps running the original Explore suite. Run the new Search gate:
 
     powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\runAtlasIntegrationTests.ps1 -RunTests -Suite Search
 
-Use -Suite All to run all three sequentially. Search uses the actual Mongoose schemas,
+Use -Suite All to run all four sequentially. Search uses the actual Mongoose schemas,
 indexes, aggregation, population, cache leases and quota writes, with synthetic
 fixtures and simulated Gemini responses. It does not contact a paid AI provider,
 create real listings, or change deployment flags. The user-run Search Atlas gate
 passed 13 tests with no failures/skips; evidence is recorded below.
+
+The new Requests gate has six subtests plus its parent (seven expected tests),
+not yet a verified Atlas result:
+
+    powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\runAtlasIntegrationTests.ps1 -RunTests -Suite Requests
+
+It exercises real request uniqueness/owner isolation, concurrent submission with
+transactional notification outbox, rollback on outbox failure, simultaneous
+preview taps, concurrent global quotas and notification inbox deduplication.
+Only synthetic ProductRequest/BackgroundJob/AiUsageBucket/User collections are
+created under the same per-run cleanup guards. AI, storage, catalog eligibility
+and push providers are simulated here (real catalog rules have the Search gate).
+It makes no paid call, order, payment or production change. See PRODUCT_REQUESTS.md.
 
 The script restores the previous test environment variables on exit. Atlas use
 requires NAIJAGO_ALLOW_ATLAS_TESTS=true; the interactive script supplies it only
