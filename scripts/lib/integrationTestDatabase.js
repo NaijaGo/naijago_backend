@@ -4,7 +4,8 @@ const crypto = require('node:crypto');
 const ATLAS_TEST_HOST = 'naijago-testing.kwcvhix.mongodb.net';
 const ATLAS_TEST_DATABASE = 'naijago_integration_tests';
 const MODEL_COLLECTIONS = Object.freeze({ BackgroundJob: 'backgroundjobs', FeedReaction: 'feedreactions', FeedComment: 'feedcomments', FeedView: 'feedviews',
-    Product: 'products', ProductOffer: 'productoffers', User: 'users', AiUsageBucket: 'aiusagebuckets', SearchIntentCache: 'searchintentcaches', ProductRequest: 'productrequests', ImageRefinement: 'imagerefinements' });
+    Product: 'products', ProductOffer: 'productoffers', User: 'users', AiUsageBucket: 'aiusagebuckets', SearchIntentCache: 'searchintentcaches', ProductRequest: 'productrequests', ImageRefinement: 'imagerefinements',
+    DeliveryWindow: 'deliverywindows', DeliveryReservation: 'deliveryreservations', GroupOrder: 'grouporders', RecurringPlan: 'recurringplans', RecurringOccurrence: 'recurringoccurrences' });
 const fail = () => { throw new Error('Unsafe test database configuration. Use the approved test cluster or a loopback replica set; never MONGO_URI.'); };
 
 function resolveTestDatabase({ uri, allowAtlas = false, runId = crypto.randomUUID().replaceAll('-', '') }) {

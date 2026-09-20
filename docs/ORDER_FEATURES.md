@@ -1,0 +1,139 @@
+# Coordinated scheduled, photo-review, group and recurring order phase
+
+Started 2026-09-20 after the user asked to implement all four in one coordinated
+phase. The complete ten-page new_feature_to_add_docs.pdf was read. Its suggested
+separate releases are superseded by the user's single-release instruction, not
+its payment, privacy, inventory or acceptance requirements.
+
+## Current boundary: backend foundations, NOT four completed features
+
+The new domain services and schemas are local. No new public routes are mounted,
+no payment or dispatch hook has been activated, and no worker is running these
+new jobs. Existing delivery/pickup/payment/review routes have not been changed in
+this checkpoint. No app screen, release build, migration or production deployment
+is claimed. Do not enable/publish the features based on these foundations alone.
+
+| Feature | Local foundation | Still required for the complete feature |
+|---|---|---|
+| Scheduled delivery | WAT rules, calendar validation, reservation/expiry models, transactional area/vendor/rider capacity claims, idempotent confirmation/release, due-only dispatch policy | Authoritative slot generation from actual vendor hours, product restrictions and area/rider policy; checkout/price/stock/payment hooks; late-paid-slot support/reconciliation; reschedule/cancel transaction; actual dispatch guards on every rider entry point; customer/vendor/admin/rider views; reminders and analytics |
+| Photo reviews | Delivered paid-purchase eligibility including verified pickup; max five photo IDs; strict stars/optional text; JPEG/PNG/HEIC byte/10MB limits; private Cloudinary incoming resize/conversion/metadata-strip adapter and thumbnail request | Durable owned upload records/quotas, actual decode and EXIF/HEIC verification, delivered-only submit route using existing Review model, transaction-safe review/rating updates, customer editor/gallery/filter, vendor reply permissions, moderation/reporting/audit, edit/delete period, retention/takedown and notifications |
+| Group ordering | One owner/fulfilment point, private member DTOs, hashed invite, participant limits, revision-protected own-item edits, owner close/extend/remove/cancel, cutoff scan, transactional event outbox, shared-transaction checkout adapter with retry identity | Authenticated/rate-limited HTTP and deep links; creation idempotency/invite regeneration; real catalog/variant/aggregate-stock validation; current quote/fee acceptance and exactly-one-shipment checkout integration; unavailable-item removal, abandoned-group expiry, payment completion state, realtime notifications and customer/vendor/admin views |
+| Recurring orders | WAT weekly/biweekly/monthly/custom-day calendar retaining month-end anchor, reminder-only model, private plans/occurrences, skip/pause/resume/cancel and quantity/address edit services, bounded generation with transactional reminder outbox, no catch-up charges | Real catalog/coverage/slot validation adapter, owner-approved checkout/payment linkage, future schedule editing and propagation to already-generated unpaid occurrences, expiry/completion worker, price threshold display/substitution approval, notification delivery and customer/admin screens |
+
+The new services require injected trusted catalog/order adapters. The mocks used
+in tests are NOT runtime catalog validation. Never mount the services using the
+test adapters or accept client-supplied resource keys, totals, seller eligibility
+or delivery policies as authoritative.
+
+## Shared integration rules
+
+- Reuse MainOrder, Shipment, Product/ProductOffer, Squad/legacy settlement,
+  current shipping quotes, pickup handling and Mongo background jobs.
+- A group is one seller/fulfilment point, one owner payment and one delivery fee.
+  Participants see their own submitted items and the owner's explicitly shared
+  destination label, never the exact address/phone or other baskets/payment data.
+- Do not drop legacy size selections when moving an existing cart/order into a
+  group or recurring plan. Audit selectedSize versus variantId in the shared
+  checkout adapter and add regression tests before connecting the screens.
+  The current domain gate rejects a legacy selectedSize without an authoritative
+  variantId rather than silently losing it; full legacy mapping remains required.
+- Scheduling is a delivery option, not a replacement for vendor-specific pickup.
+  A multi-vendor scheduled cart requires a common valid window; otherwise ask the
+  customer to split it. Capacity resource rows represent area, vendor and rider
+  pool constraints and must all reserve in one database transaction.
+- Confirm a reservation inside the same transaction as the verified paid order
+  and inventory update. If an already-successful payment arrives after hold
+  expiry, preserve the payment evidence and raise an operational exception;
+  never silently dispatch, reserve over capacity, or ask the customer to pay twice.
+- Capacity release is transactional and idempotent; reservation records have no
+  TTL deletion. A failed counter release is an operational inconsistency, not
+  successful cancellation. Rescheduling must acquire the new capacity and release
+  old capacity in one authorized order transaction.
+- Existing order creation recalculates prices, but settlement predominantly
+  checks available stock. Authoritative commercial revalidation immediately before
+  payment/confirmation is an integration prerequisite, including aggregate variant
+  quantities, offer eligibility, vendor identity, delivery fee and subscription.
+- Existing reviews currently permit merely paid purchases. The new delivered-only
+  policy is tested but NOT yet connected to that route. Do not label this fixed
+  in the live app until the route, history UI and rating aggregates are updated.
+- Recurring templates never freeze prices or authorize charges. Each occurrence
+  needs the owner's current-price approval/payment; automatic charging remains
+  unavailable. Cancelling a plan does not automatically cancel/refund a linked
+  paid order. Existing order/refund policy governs that separately.
+- Reminder/group jobs contain IDs, event and revision, not private addresses.
+  Register authenticated audience-aware handlers before runtime activation. No
+  generic worker retry should create a second order or payment.
+
+## Image adapter contract and configuration
+
+Reuse existing CLOUDINARY_CLOUD_NAME / CLOUDINARY_API_KEY /
+CLOUDINARY_API_SECRET privately on the backend/worker. No new mobile key and no
+new AI-image subscription is needed for review photos. This is ordinary customer
+photo conversion, not generative refinement of the product image.
+
+The adapter requests authenticated, non-overwriting assets under an owned review
+path, incoming JPEG conversion with fl_force_strip, bounded 1600px output and a
+320px eager thumbnail. Private admin previews expire after five minutes. The
+caller must create a durable owned upload record and enforce permission/quotas
+before invoking it; ambiguous timeouts reconcile that same asset identity.
+Provider errors must not expose credentials or uploaded bytes.
+
+Official contracts inspected (not actual provider-test evidence):
+
+- https://cloudinary.com/documentation/eager_and_incoming_transformations
+- https://cloudinary.com/documentation/transformation_reference#fl_force_strip
+- https://cloudinary.com/documentation/image_format_support
+
+Real tests must verify HEIC decoding, orientation, GPS/EXIF removal, stored and
+delivered bytes, thumbnails, URL expiry, rejection/revocation and slow/error paths.
+No upload or paid provider request has been made by this checkpoint.
+
+## Validation evidence and next gate
+
+Local checks so far: 17 policy/schema tests, six photo-adapter tests and eleven
+service-orchestration tests passed. The fake transactional tests exercise rollback
+orchestration; they do not prove real Mongo isolation, index or race behavior.
+The first full regression run passed 231 tests, failed zero and deliberately
+skipped six isolated suites; it preceded the final photo/service-test additions.
+The completed final local regression on 2026-09-20 passed 248 tests, failed zero
+and deliberately skipped all six credential-gated Mongo suites (254 total,
+179541.7217ms). This includes the final input/legacy-variant guards and all 34
+new focused tests. PowerShell runner parsing and tracked diff checks also passed.
+No real database or paid-provider acceptance is inferred from this offline run.
+
+The combined Planning Atlas gate has nine subtests plus its parent. It checks
+competing last-slot claims, all-resource rollback, checkout retry identity,
+expiry/late confirmation, settlement rollback, group join capacity/privacy,
+outbox rollback and recurring occurrence/reminder uniqueness and controls.
+Only synthetic data and simulated catalog/order/notification adapters are used.
+It does not test real stock/fees/payments, review moderation, apps or providers.
+
+From the backend repository, when asked to validate this new gate:
+
+    powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\runAtlasIntegrationTests.ps1 -RunTests -Suite Planning
+
+Use the same TEST credentials and dedicated Atlas cluster. No production URI or
+new secret is needed. This creates/cleans only six registered collections with
+this run's unique prefix. It never drops a database. Atlas success has NOT yet
+been reported for Planning. The previous five passed gates remain separate evidence.
+
+The first user-run Planning attempt failed during database connection setup,
+before fixtures or any of the nine subtests ran. The connection-only runner
+(omit -RunTests and -Suite) provides a safe diagnostic for the next step. This
+failure neither verifies nor disproves the planning logic; do not bypass the
+test-cluster restrictions, disable TLS validation or change production settings.
+
+## Completion checklist for this coordinated phase
+
+- [x] Read all PDF requirements and preserve one-release scope.
+- [x] Map existing order/payment/pickup/review paths and record gaps.
+- [x] Add shared domain rules, models and service foundations for all four.
+- [x] Run focused offline validation without provider/database calls.
+- [ ] Verify the new combined Planning gate against isolated Atlas.
+- [ ] Finish authoritative shared checkout/variant/stock/payment/dispatch integration.
+- [ ] Finish review submission, media lifecycle and moderation integration.
+- [ ] Connect authenticated/rate-limited APIs and bounded worker handlers.
+- [ ] Build customer, vendor, rider/admin views and website deep-link fallbacks.
+- [ ] Test failures, permissions, concurrency, provider behavior and all-app flows.
+- [ ] Confirm policies/configuration, update privacy/terms and rehearse rollout/rollback.
+- [ ] Commit/push the completed release, deploy, build and device-test.

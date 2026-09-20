@@ -1,5 +1,38 @@
 # Isolated MongoDB regression tests
 
+## New prepared gate: Planning (connection blocked; not yet verified)
+
+The first user-run attempt on 2026-09-20 reported one failed parent and no
+subtests because openIsolatedTestDatabase could not connect. It stopped before
+collection creation or fixtures. This is connection-setup evidence, not a failed
+capacity/privacy/recurrence assertion. The root cause is not identified by the
+generic error. First run the existing credential-safe, read-only diagnostic:
+
+    powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\runAtlasIntegrationTests.ps1
+
+Share only its diagnostic code, stage and guidance, never the password or URI.
+Check only the TEST project's cluster/IP access and database user as indicated;
+do not change production MONGO_URI or allow access from everywhere as a shortcut.
+
+Local follow-up validation passed 248 tests with zero failures and six deliberate
+Mongo-suite skips. The test cluster SRV records resolved successfully from this
+workspace; current database authentication and IP access remain unverified. The
+read-only diagnostic above is still required before retrying Planning.
+
+The original five gates below passed. The coordinated four-feature phase adds
+test/integration/planningMongo.test.js: nine subtests plus parent for concrete
+window capacity/reservation/expiry/settlement rollback, group join limits/privacy
+and outbox rollback, and recurring occurrence/reminder identity and controls.
+Catalog/checkout/provider adapters are simulated; this is not real payment,
+inventory, photo-moderation, browser or app acceptance. See ORDER_FEATURES.md.
+
+    powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\runAtlasIntegrationTests.ps1 -RunTests -Suite Planning
+
+The gate uses six isolated collections: DeliveryWindow, DeliveryReservation,
+GroupOrder, RecurringPlan, RecurringOccurrence and BackgroundJob. The whitelist
+now contains 16 model names, but each suite can create/clean only its own declared
+collections with a unique run prefix. Production settings remain untouched.
+
 ## Latest verified gate: Refinement
 
 User-supplied Atlas output (2026-09-20), after checkpoint e2afcfe, verifies run
@@ -71,7 +104,7 @@ That command keeps running the original Explore suite. Run the new Search gate:
 
     powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\runAtlasIntegrationTests.ps1 -RunTests -Suite Search
 
-Use -Suite All to run all five sequentially. Search uses the actual Mongoose schemas,
+Use -Suite All to run all six sequentially. Search uses the actual Mongoose schemas,
 indexes, aggregation, population, cache leases and quota writes, with synthetic
 fixtures and simulated Gemini responses. It does not contact a paid AI provider,
 create real listings, or change deployment flags. The user-run Search Atlas gate

@@ -52,14 +52,14 @@ Workspace root has no usable Git repository. Cross-repository tracker lives here
 | REQUEST-03 | Request/media retention, account erasure and authenticated orphan cleanup; storage/rate limits and privacy copy | Backend/apps/admin | Release gate pending; no automatic deletion or erasure coverage claimed |
 | REFINE-01 | Preserve original; automatic derivative refinement, background/light/centering/shadow; product identity preserved | Backend | Implemented locally with Photoroom adapter and durable upload marker; real provider/identity acceptance pending. See IMAGE_REFINEMENT.md |
 | REFINE-02 | Original/refined compare, approve/reject/regenerate, versioned publication; bulk/retries/rate-cost controls | Admin/backend | Offline tests and isolated Atlas dedupe/quota/rollback/publication/stale-save/reassignment checks passed; real provider/browser/device acceptance and shared retention/takedown gate still open |
-| SCHED-01 | Now/scheduled, WAT windows/lead time/cutoffs/advance bounds/capacity; expiring payment holds and booking races | Backend/customer | Pending |
-| SCHED-02 | Multi-vendor split rules, reminders/reschedule/cancel, due-only dispatch and ops visibility | All relevant | Pending |
-| REVIEW-01 | Delivered verified purchase; stars/text/max 5 JPEG-PNG-HEIC images, max 10MB originals, conversion/thumbnails/EXIF stripping | Backend/customer | Pending |
+| SCHED-01 | Now/scheduled, WAT windows/lead time/cutoffs/advance bounds/capacity; expiring payment holds and booking races | Backend/customer | Working: reservation/calendar foundations and offline tests added; Planning Atlas gate and actual checkout/slot integration pending. See ORDER_FEATURES.md |
+| SCHED-02 | Multi-vendor split rules, reminders/reschedule/cancel, due-only dispatch and ops visibility | All relevant | Working: due-only dispatch policy tested; actual dispatch guards, rescheduling, notifications and all-app views not connected |
+| REVIEW-01 | Delivered verified purchase; stars/text/max 5 JPEG-PNG-HEIC images, max 10MB originals, conversion/thumbnails/EXIF stripping | Backend/customer | Working: eligibility/byte rules and private Cloudinary conversion adapter tested with mocks; existing review route, UI and real decoder/metadata acceptance pending |
 | REVIEW-02 | Reports/admin moderation/audit/customer notice; vendor replies without deleting criticism; photo filter/lazy load | Apps/admin/backend | Pending |
-| GROUP-01 | Single vendor; owner pays; one destination/fee; invite/code, configurable limit (default 10), cutoff/realtime cart | Backend/customer | Pending |
-| GROUP-02 | Member permissions/privacy, stock-price-availability rechecks, failure/cancel/expiry, analytics/order linkage | All relevant | Pending |
-| RECUR-01 | Weekly/biweekly/monthly/custom; reminder-to-pay, next/all edits, pause/resume/skip/cancel, occurrence linkage | Backend/customer | Pending |
-| RECUR-02 | Current price-stock-vendor-address-slot checks, substitution preference/approval threshold, reminders/failure/admin oversight | Apps/backend/admin | Pending |
+| GROUP-01 | Single vendor; owner pays; one destination/fee; invite/code, configurable limit (default 10), cutoff/realtime cart | Backend/customer | Working: private transactional group service and checkout adapter contract; actual shared checkout, real-time API/screens and Atlas acceptance pending |
+| GROUP-02 | Member permissions/privacy, stock-price-availability rechecks, failure/cancel/expiry, analytics/order linkage | All relevant | Working: privacy, revisions, outbox rollback and checkout retry tests passed with fake storage; actual catalog/aggregate stock, abandonment, notifications and payment linkage pending |
+| RECUR-01 | Weekly/biweekly/monthly/custom; reminder-to-pay, next/all edits, pause/resume/skip/cancel, occurrence linkage | Backend/customer | Working: month-end-safe calendar and private plan/occurrence service tested locally; full future schedule edits, API/screens/payment integration and Atlas acceptance pending |
+| RECUR-02 | Current price-stock-vendor-address-slot checks, substitution preference/approval threshold, reminders/failure/admin oversight | Apps/backend/admin | Working: validation adapter/outbox boundaries added; real catalog, price/substitution approval, slot/payment and delivered notifications remain pending |
 | RECUR-03 | PDF initial scope is reminder-to-pay; automatic charges require provider support/consent verification before inclusion | Backend | Pending decision |
 | OPS-01 | Durable jobs, leases/retries/idempotency, feature flags, audit/analytics/permissions | Backend/admin | Atlas claim/lease/outbox and independent-process crash/restart tests passed; production startup cleanup, bounded shutdown and scheduler cancellation locally tested; hosting rehearsal, health/alerts, provider acceptance and remaining handlers pending |
 | WEB-01 | Needed product/vendor/campaign/group deep links/fallback pages, privacy/UGC/advertising terms | Website/apps | Pending |
@@ -119,6 +119,12 @@ Workspace root has no usable Git repository. Cross-repository tracker lives here
 - 2026-09-20: Added opt-in loopback-only replica-set race/rollback suite. Docker Desktop engine was unavailable; test deliberately skipped. Never reuse production MONGO_URI for it. See ISOLATED_DATABASE_TESTS.md.
 
 ## Current release boundary
+
+- 2026-09-20: Final local foundation regression completed: 248 passed, 0 failed, 6 credential-gated Mongo suites skipped, 254 total, 179541.7217ms. Includes all 34 new planning/review policy and service tests and final legacy-variant/input guards. Atlas runner PowerShell syntax and tracked whitespace checks passed. The dedicated test cluster SRV records resolved in a read-only DNS check; that does not establish database authentication, IP access or transaction acceptance. No production configuration, payment route, public API, runtime worker, app build, push or deployment changed in this checkpoint.
+
+- 2026-09-20: The first user-run Planning Atlas attempt failed during openIsolatedTestDatabase connection setup (one failed parent, zero subtests reached). No test fixtures/collections were created by this attempt, and it does not establish a planning-logic regression. The underlying cause is not yet known: use the existing connection-only runner to obtain a credential-safe diagnostic before changing passwords or retrying the full suite. Planning remains unverified; the original five passed gates remain separate evidence. Save the local foundation checkpoint without pushing/deploying the incomplete release.
+
+- 2026-09-20: User authorized scheduled orders, photo reviews, groups and recurring reminders as one coordinated phase. All ten PDF pages reviewed. Shared domain rules/models/services and a combined Planning Atlas gate added locally; services are not mounted in public APIs or the runtime worker. Existing live payment/order/review behavior is unchanged. Focused offline tests passed (17 policy/schema, six photo adapter, eleven service tests). Planning Atlas, actual catalog/checkout/payment/dispatch integration and all-app UI remain pending. See ORDER_FEATURES.md; do not treat foundations as completed features.
 
 - 2026-09-20: User ran Refinement against the isolated Atlas cluster after backend checkpoint e2afcfe. Run 14f152de66ce4493b7257c05ee47223b passed 8 tests (seven subtests plus parent), 0 failed, 0 skipped, about 71.8 seconds overall; no cleanup error reported. Real Mongo verified concurrent image/job/quota identity, transaction rollback, private original preservation, approval/publication and stale-save protection, seller reassignment isolation, bounded global reservations and durable vendor-upload recovery. Photoroom and Cloudinary were simulated. All five prepared Atlas gates have passed; real-provider, browser/device and release acceptance remain outstanding.
 
@@ -193,8 +199,9 @@ device acceptance remain outstanding.
 Image refinement now has a local backend/admin implementation and verified Atlas
 gate; real-provider, browser/device, privacy/retention and takedown acceptance
 remain open.
-Still required in full:
-PDF scheduled delivery/photo reviews/group carts/recurring reminder-to-pay, previous
+Still required for completion:
+PDF scheduled delivery/photo reviews/group carts/recurring reminder-to-pay integration
+and acceptance (shared foundations are now local), previous
 radar and security audit, website/privacy/deep links, full regression and device
 acceptance, real provider tests, deployment/worker monitoring and signed release.
 Do not treat successful unit tests as permission to publish this unfinished release.
@@ -202,8 +209,8 @@ Do not treat successful unit tests as permission to publish this unfinished rele
 ## Next actions
 
 1. Save verified local checkpoints; keep flags off and do not deploy the incomplete release automatically.
-2. Atlas connection and all five prepared database gates (Explore, Search, Workers, Requests and Refinement) PASSED. Production worker lifecycle tests also pass locally. Keep actual host SIGTERM/restart, health/alerts and provider/browser/device acceptance as release gates. See ISOLATED_DATABASE_TESTS.md. Never change production MONGO_URI for tests.
-3. Next implementation block: PDF scheduled delivery (SCHED-01/02). Inspect existing checkout, payment, stock, pickup and dispatch flows before extending them; implement booking/hold/concurrency safeguards and cross-app acceptance tests. Then address photo reviews, group ordering and recurring reminder-to-pay in that order.
+2. Atlas connection and the original five database gates (Explore, Search, Workers, Requests and Refinement) PASSED. The new combined Planning gate is prepared but NOT yet verified against Atlas. Production worker lifecycle tests also pass locally. Keep actual host SIGTERM/restart, health/alerts and provider/browser/device acceptance separate. Never change production MONGO_URI for tests.
+3. Continue the four-feature coordinated phase: verify Planning on isolated Atlas, then wire authoritative checkout/stock/variant/payment/dispatch adapters, review submission/moderation and the customer/vendor/admin/rider views with cross-app acceptance tests. Follow ORDER_FEATURES.md; no separate feature release and no automatic production activation.
 4. Keep the real Photoroom sandbox/live trial, private-link checks, browser/device review and shared retention/erasure/takedown work tracked as unfinished release gates (see IMAGE_REFINEMENT.md). Keep flags off pending acceptance; no paid calls have run. Do not rerun already-passed gates solely to claim progress.
 5. Close prior radar/security/regression items, rehearse migrations with a fresh backup, then deploy/build/device-test the complete release.
 6. Do not mark the programme complete with required items unresolved. Record local tests, deployment and device evidence separately.
