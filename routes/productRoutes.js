@@ -22,7 +22,7 @@ const aiSearch = createGeminiSearchService({
 });
 const { PRODUCT_TYPES, CATEGORY_FAMILIES, SEARCH_SCHEMA_VERSION } = require('../utils/catalogSearch');
 const {
-    buildHierarchicalCategoryFilter,
+    buildCategoryFilter,
     buildEffectivePriceExpression,
 } = require('../utils/productFilters');
 
@@ -211,23 +211,6 @@ const resolveProductLocation = (product) => {
     return product.productLocation?.latitude && product.productLocation?.longitude
         ? product.productLocation
         : product.vendor?.businessLocation;
-};
-
-const buildCategoryFilter = (category) => {
-    const normalized = String(category || '').trim();
-    const parts = normalized.split('>').map((part) => part.trim()).filter(Boolean);
-    if (parts.length < 2) return buildHierarchicalCategoryFilter(normalized);
-    const parent = parts[0];
-    const child = parts.slice(1).join(' > ');
-    return {
-        $or: [
-            buildHierarchicalCategoryFilter(normalized),
-            {
-                category: { $regex: new RegExp(`^${escapeRegex(parent)}$`, 'i') },
-                subcategory: { $regex: new RegExp(`^${escapeRegex(child)}$`, 'i') },
-            },
-        ],
-    };
 };
 
 const escapeRegex = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');

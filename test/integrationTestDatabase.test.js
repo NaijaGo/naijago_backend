@@ -75,7 +75,7 @@ test('malformed inputs and duplicate query keys fail closed', () => {
 test('each run gets unique collection names and immutable cleanup boundaries', () => {
     const target = resolveAtlas();
     const another = resolveAtlas(atlasUri, { runId: 'b'.repeat(32) });
-    assert.equal(Object.keys(target.collections).length, 4);
+    assert.equal(Object.keys(target.collections).length, 9);
     assert.equal(Object.isFrozen(target), true);
     assert.equal(Object.isFrozen(target.collections), true);
     for (const [model, name] of Object.entries(target.collections)) {
@@ -92,7 +92,7 @@ test('cleanup refuses other databases, existing application collections and othe
     assert.doesNotThrow(() => assertOwnedCollections(target, target.dbName, names));
     assert.doesNotThrow(() => assertOwnedCollections(target, target.dbName, []));
     assert.throws(() => assertOwnedCollections(target, 'naijago_db', names));
-    for (const unsafe of [['products'], [`ngtest_${runId}_products`],
+    for (const unsafe of [['products'], [`ngtest_${runId}_unregistered`],
         [resolveAtlas(atlasUri, { runId: 'b'.repeat(32) }).collections.BackgroundJob],
         [names[0], names[0]], ['*'], null]) {
         assert.throws(() => assertOwnedCollections(target, target.dbName, unsafe));

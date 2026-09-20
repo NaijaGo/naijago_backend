@@ -72,6 +72,15 @@ discount and stock used in filtering; database sorting uses the same effective
 price. Count and pagination are computed on the server, not a capped first page.
 Existing payment/cart stock validation remains authoritative at order time.
 
+Discovery also requires an approved vendor owner (or a vendor-free NaijaGo
+product) and an eligible approved offer seller. A product with only disabled or
+ineligible offers cannot fall back to stale product-level prices/stock. Legacy
+products with no offers retain the product-level fallback. Search presents the
+one selected offer snapshot used by the aggregate, not a second offer query that
+could change the displayed budget/stock after filtering. Checkout must still
+revalidate current price and stock. This does not alter the legacy listing/search
+API or replace their separate seller/availability regression audit.
+
 ## Backfill - not yet run against production
 
 1. Take a fresh database backup and rehearse on an isolated restored database.
@@ -89,6 +98,12 @@ have a bounded regex fallback until migration; performance testing on real data
 and index review are still required before release.
 
 ## Required release checks
+
+Prepared database gate: from the backend run
+`powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\runAtlasIntegrationTests.ps1 -RunTests -Suite Search`.
+It exercises the real aggregation and concurrent cache/quota writes with synthetic
+fixtures, injected per-run collection names and simulated AI responses only.
+Authenticated Atlas Search execution is pending; see ISOLATED_DATABASE_TESTS.md.
 
 - Run aggregate queries against an isolated MongoDB copy (unit tests do not replace this).
 - Audit category/audience/type inference, especially generic bags, shoes and unisex goods.

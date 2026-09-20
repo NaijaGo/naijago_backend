@@ -17,6 +17,20 @@ const buildHierarchicalCategoryFilter = (category) => {
   };
 };
 
+// Shared by the HTTP route and isolated search tests. Support both legacy
+// hierarchical category strings and separately stored category/subcategory.
+const buildCategoryFilter = (category) => {
+  const normalized = String(category || '').trim();
+  const parts = normalized.split('>').map((part) => part.trim()).filter(Boolean);
+  if (parts.length < 2) return buildHierarchicalCategoryFilter(normalized);
+  const parent = parts[0];
+  const child = parts.slice(1).join(' > ');
+  return { $or: [buildHierarchicalCategoryFilter(normalized), {
+    category: { $regex: new RegExp(`^${escapeRegex(parent)}$`, 'i') },
+    subcategory: { $regex: new RegExp(`^${escapeRegex(child)}$`, 'i') },
+  }] };
+};
+
 const buildPriceFilter = (minPrice, maxPrice) => {
   const minimum = minPrice === undefined || minPrice === '' ? null : Number(minPrice);
   const maximum = maxPrice === undefined || maxPrice === '' ? null : Number(maxPrice);
@@ -43,4 +57,4 @@ const buildEffectivePriceExpression = (minPrice, maxPrice) => {
   return conditions.length === 1 ? conditions[0] : { $and: conditions };
 };
 
-module.exports = { buildHierarchicalCategoryFilter, buildPriceFilter, buildEffectivePriceExpression, escapeRegex };
+module.exports = { buildCategoryFilter, buildHierarchicalCategoryFilter, buildPriceFilter, buildEffectivePriceExpression, escapeRegex };

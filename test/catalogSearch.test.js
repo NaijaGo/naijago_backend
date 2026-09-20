@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { readIntent, deriveSearchAttributes, buildIntentFilter, collectionForIntent, escapeRegex } = require('../utils/catalogSearch');
-const { parseSearchInput, buildSearchPipeline } = require('../services/catalogSearchService');
+const { createCatalogSearchService, parseSearchInput, buildSearchPipeline } = require('../services/catalogSearchService');
 const Product = require('../models/Product');
 
 test('broad female fashion synonyms produce one structured collection', () => {
@@ -80,4 +80,44 @@ test('product validation stores the same versioned search attributes', async () 
     product.gender = 'female';
     await product.validate();
     assert.equal(product.searchAttributes.gender, 'female');
+});
+
+test('search lookups use injected collections and verify owners and offer sellers', () => {
+    const input = parseSearchInput({ q: '$price', vendor: 'aaaaaaaaaaaaaaaaaaaaaaaa' });
+    const pipeline = buildSearchPipeline(input, { offersCollection: 'isolated_offers', usersCollection: 'isolated_users' });
+    const owner = pipeline.find((stage) => stage.$lookup?.as === '__ownerApproval').$lookup;
+    assert.equal(owner.from, 'isolated_users');
+    assert.deepEqual(owner.pipeline[0].$match, { isVendor: true, vendorStatus: 'approved' });
+    const offers = pipeline.find((stage) => stage.$lookup?.as === '__offers').$lookup;
+    assert.equal(offers.from, 'isolated_offers');
+    assert.equal(String(offers.pipeline[0].$match.sellerId), input.vendor);
+    assert.equal(offers.pipeline.find((stage) => stage.$lookup).$lookup.from, 'isolated_users');
+    assert.ok(pipeline.find((stage) => stage.$lookup?.as === '__anyOffers'));
+    assert.ok(pipeline.find((stage) => stage.$match?.$or?.some((clause) => clause['__anyOffers.0'])));
+    const relevance = pipeline.find((stage) => stage.$set?.__relevance).$set.__relevance;
+    assert.deepEqual(relevance.$add[0].$cond[0].$eq[1], { $literal: '$price' });
+    assert.equal(pipeline.at(-1).$facet.products.at(-1).$unset.includes('__offers'), false);
+});
+
+test('search passes aggregate offer snapshots into presentation without leaking internal fields', async () => {
+    const offer = { _id: 'offer', product: 'product', price: 500, stockQuantity: 2 };
+    let presented = false;
+    const service = createCatalogSearchService({
+        Product: {
+            aggregate() { return { option: async () => [{ products: [{ _id: 'product', __offers: [offer] }], totals: [{ count: 1 }] }] }; },
+            populate: async (rows) => rows,
+        },
+        ProductOffer: { collection: { name: 'isolated_offers' } },
+        User: { collection: { name: 'isolated_users' } },
+        categoryFilter: () => ({}), vendorPopulateFields: '',
+        async enrichProducts(rows, { offers }) {
+            presented = true;
+            assert.deepEqual(offers, [offer]);
+            assert.deepEqual(rows, [{ _id: 'product' }]);
+            return rows;
+        },
+    });
+    const result = await service.search({});
+    assert.equal(presented, true);
+    assert.equal(result.total, 1);
 });

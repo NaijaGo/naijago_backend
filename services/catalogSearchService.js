@@ -45,7 +45,7 @@ function parseSearchInput(input) {
         inStock: scalar(input.inStock, 'stock filter', 5) === 'true' };
 }
 
-function buildSearchPipeline(input, { vendorIdsByTerm = {}, categoryFilter = {}, offersCollection = 'productoffers' } = {}) {
+function buildSearchPipeline(input, { vendorIdsByTerm = {}, categoryFilter = {}, offersCollection = 'productoffers', usersCollection = 'users' } = {}) {
     const match = { isActive: true, moderationStatus: 'approved', productStatus: 'active',
         ...buildIntentFilter(input.intent, { vendorIdsByTerm }) };
     match.$and ||= [];
@@ -60,13 +60,27 @@ function buildSearchPipeline(input, { vendorIdsByTerm = {}, categoryFilter = {},
     const offerPrice = { $ifNull: ['$__offer.price', '$price'] };
     const offerDiscount = { $ifNull: ['$__offer.discountPrice', { $cond: [{ $eq: [{ $type: '$__offer' }, 'missing'] }, '$discountPrice', null] }] };
     const title = { $toLower: { $ifNull: ['$name', ''] } };
-    const text = input.q.toLowerCase();
+    const text = { $literal: input.q.toLowerCase() };
+    const approvedSellerLookup = (localField, as) => ({ $lookup: { from: usersCollection, localField, foreignField: '_id',
+        pipeline: [{ $match: { isVendor: true, vendorStatus: 'approved' } }, { $project: { _id: 1 } }], as } });
     const pipeline = [
         { $match: match },
+        { $set: { __ownerId: { $ifNull: ['$vendor', { $ifNull: ['$sellerId', null] }] } } },
+        approvedSellerLookup('__ownerId', '__ownerApproval'),
+        { $match: { $or: [{ __ownerId: null, sellerType: { $in: ['naijago', null] } }, { '__ownerApproval.0': { $exists: true } }] } },
+        // Existing but disabled/ineligible offers must not resurrect stale
+        // product-level stock/prices via the legacy no-offer fallback.
+        { $lookup: { from: offersCollection, localField: '_id', foreignField: 'product',
+            pipeline: [{ $limit: 1 }, { $project: { _id: 1 } }], as: '__anyOffers' } },
         { $lookup: { from: offersCollection, let: { productId: '$_id' }, pipeline: [
-            { $match: { $expr: { $eq: ['$product', '$$productId'] }, status: { $in: ['active', 'out_of_stock'] } } },
+            { $match: { $expr: { $eq: ['$product', '$$productId'] }, status: { $in: ['active', 'out_of_stock'] },
+                ...(input.vendor ? { sellerType: 'vendor', sellerId: new mongoose.Types.ObjectId(input.vendor) } : {}) } },
+            approvedSellerLookup('sellerId', '__sellerApproval'),
+            { $match: { $or: [{ sellerType: 'naijago', sellerId: null }, { sellerType: 'vendor', '__sellerApproval.0': { $exists: true } }] } },
             { $sort: { isPrimary: -1, price: 1, _id: 1 } }, { $limit: 1 },
+            { $unset: '__sellerApproval' },
         ], as: '__offers' } },
+        { $match: { $or: [{ '__offers.0': { $exists: true } }, { '__anyOffers.0': { $exists: false } }] } },
         { $set: { __offer: { $arrayElemAt: ['$__offers', 0] } } },
         { $set: {
             __searchPrice: { $cond: [{ $and: [{ $ne: [offerDiscount, null] }, { $gte: [offerDiscount, 0] }, { $lt: [offerDiscount, offerPrice] }] }, offerDiscount, offerPrice] },
@@ -92,7 +106,7 @@ function buildSearchPipeline(input, { vendorIdsByTerm = {}, categoryFilter = {},
     pipeline.push({ $facet: {
         products: [{ $sort: { ...sorts[input.sort], createdAt: -1, _id: -1 } },
             { $skip: (input.page - 1) * input.limit }, { $limit: input.limit },
-            { $unset: ['__offers', '__offer', '__searchPrice', '__searchStock', '__relevance'] }],
+            { $unset: ['__anyOffers', '__ownerId', '__ownerApproval', '__offer', '__searchPrice', '__searchStock', '__relevance'] }],
         totals: [{ $count: 'count' }],
         types: [{ $unwind: '$searchAttributes.productTypes' }, { $group: { _id: '$searchAttributes.productTypes', count: { $sum: 1 } } }],
     } });
@@ -121,14 +135,18 @@ function createCatalogSearchService({ Product, ProductOffer, User, enrichProduct
         }));
         const pipeline = buildSearchPipeline(input, { vendorIdsByTerm,
             categoryFilter: input.category ? categoryFilter(input.category) : {},
-            offersCollection: ProductOffer.collection.name });
+            offersCollection: ProductOffer.collection.name, usersCollection: User.collection?.name || 'users' });
         const [result] = await Product.aggregate(pipeline).option({ maxTimeMS: 5000 });
-        const populated = await Product.populate(result?.products || [], { path: 'vendor', select: vendorPopulateFields });
+        const offers = (result?.products || []).flatMap((product) => product.__offers || []);
+        const rows = (result?.products || []).map(({ __offers, ...product }) => product);
+        const populated = await Product.populate(rows, { path: 'vendor', select: vendorPopulateFields });
         const total = result?.totals?.[0]?.count || 0;
         const collection = collectionForIntent(input.intent);
         const counts = new Map((result?.types || []).map((type) => [type._id, type.count]));
         if (collection) collection.chips = collection.chips.map((chip) => ({ ...chip, count: counts.get(chip.key) || 0 }));
-        return { query: input.q, intent: input.intent, collection, products: await enrichProducts(populated),
+        // Present the exact offer snapshot used by this aggregate's filters and
+        // ordering. A second offer query could change the displayed price/stock.
+        return { query: input.q, intent: input.intent, collection, products: await enrichProducts(populated, { offers }),
             page: input.page, limit: input.limit, total, hasMore: input.page * input.limit < total,
             interpretation: 'catalog_attributes' };
     }

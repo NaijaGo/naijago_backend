@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const ProductOffer = require('../models/ProductOffer');
-const { attachPrimaryOffers } = require('../services/productCatalogPresentation');
+const { attachPrimaryOffers, createProductCatalogPresentation } = require('../services/productCatalogPresentation');
 
 test('presentation preserves real offers, discounts, stock and NaijaGo seller identity', async (t) => {
     let queries = 0;
@@ -27,4 +27,31 @@ test('presentation preserves real offers, discounts, stock and NaijaGo seller id
     assert.equal(products[2].effectivePrice, 50);
     assert.deepEqual(await attachPrimaryOffers([]), []);
     assert.equal(queries, 1);
+});
+
+test('preloaded search offers preserve the filtered snapshot without another offer query', async () => {
+    let populations = 0;
+    const Offer = {
+        find() { assert.fail('Search must not re-fetch offers after filtering.'); },
+        async populate(offers, options) {
+            populations++;
+            assert.equal(options.path, 'sellerId');
+            return offers.map((offer) => ({ ...offer, sellerId: { _id: 'v1', businessName: 'Approved store' } }));
+        },
+    };
+    const { attachPrimaryOffers: present } = createProductCatalogPresentation({ Offer });
+    const product = { _id: 'p1', price: 999, discountPrice: 1, stockQuantity: 99 };
+    const [result] = await present([product], { offers: [
+        { _id: 'chosen', product: 'p1', sellerType: 'vendor', sellerId: 'v1', price: 120,
+            discountPrice: null, stockQuantity: 2, isPrimary: true },
+    ] });
+    assert.equal(result.effectivePrice, 120);
+    assert.equal(result.discountPrice, null);
+    assert.equal(result.stockQuantity, 2);
+    assert.equal(result.selectedOffer._id, 'chosen');
+    assert.equal(result.sellerName, 'Approved store');
+    const [legacy] = await present([product], { offers: [] });
+    assert.equal(legacy.selectedOffer, null);
+    assert.equal(legacy.effectivePrice, 1);
+    assert.equal(populations, 2);
 });
