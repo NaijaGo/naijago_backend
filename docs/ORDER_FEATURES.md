@@ -88,7 +88,7 @@ Real tests must verify HEIC decoding, orientation, GPS/EXIF removal, stored and
 delivered bytes, thumbnails, URL expiry, rejection/revocation and slow/error paths.
 No upload or paid provider request has been made by this checkpoint.
 
-## Validation evidence and next gate
+## Validation evidence and next integration stage
 
 Local checks so far: 17 policy/schema tests, six photo-adapter tests and eleven
 service-orchestration tests passed. The fake transactional tests exercise rollback
@@ -100,6 +100,8 @@ and deliberately skipped all six credential-gated Mongo suites (254 total,
 179541.7217ms). This includes the final input/legacy-variant guards and all 34
 new focused tests. PowerShell runner parsing and tracked diff checks also passed.
 No real database or paid-provider acceptance is inferred from this offline run.
+The subsequent diagnostic-only checkpoint 9f64da3 passed 256 offline tests,
+zero failed, with six credential-gated Mongo suites deliberately skipped.
 
 The combined Planning Atlas gate has nine subtests plus its parent. It checks
 competing last-slot claims, all-resource rollback, checkout retry identity,
@@ -108,20 +110,29 @@ outbox rollback and recurring occurrence/reminder uniqueness and controls.
 Only synthetic data and simulated catalog/order/notification adapters are used.
 It does not test real stock/fees/payments, review moderation, apps or providers.
 
-From the backend repository, when asked to validate this new gate:
+Verified user-run Atlas result after checkpoint 9f64da3 (2026-09-20): run
+e66534eddf03421eb7f0934a13ac8bcd passed all ten tests (nine subtests plus parent),
+zero failed, zero skipped, 43644.541ms overall. No cleanup error was reported.
+This proves the tested Mongo capacity, retry, expiry, privacy and transactional
+rollback cases with simulated external adapters, not full customer-facing flows.
+
+For future relevant regressions from the backend repository (no repeat needed
+just to confirm this already-passed checkpoint):
 
     powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\runAtlasIntegrationTests.ps1 -RunTests -Suite Planning
 
 Use the same TEST credentials and dedicated Atlas cluster. No production URI or
 new secret is needed. This creates/cleans only six registered collections with
-this run's unique prefix. It never drops a database. Atlas success has NOT yet
-been reported for Planning. The previous five passed gates remain separate evidence.
+this run's unique prefix. It never drops a database. All six prepared Atlas
+gates have now passed; the previous five remain separate evidence. Actual
+checkout/payment/dispatch, review moderation, APIs/workers and app screens still
+need integration and acceptance before release.
 
-The first user-run Planning attempt failed during database connection setup,
-before fixtures or any of the nine subtests ran. The connection-only runner
-(omit -RunTests and -Suite) provides a safe diagnostic for the next step. This
-failure neither verifies nor disproves the planning logic; do not bypass the
-test-cluster restrictions, disable TLS validation or change production settings.
+Earlier Planning attempts failed during connection setup before fixtures or
+subtests. The successful run supersedes that current blocker, but does not
+identify the earlier failure's cause. The diagnostic fix exposed safe errors;
+it did not change credentials, TLS, network or timeout settings. Preserve the
+test-cluster restrictions and never change production settings for tests.
 
 ## Completion checklist for this coordinated phase
 
@@ -129,7 +140,7 @@ test-cluster restrictions, disable TLS validation or change production settings.
 - [x] Map existing order/payment/pickup/review paths and record gaps.
 - [x] Add shared domain rules, models and service foundations for all four.
 - [x] Run focused offline validation without provider/database calls.
-- [ ] Verify the new combined Planning gate against isolated Atlas.
+- [x] Verify the new combined Planning gate against isolated Atlas (10/10).
 - [ ] Finish authoritative shared checkout/variant/stock/payment/dispatch integration.
 - [ ] Finish review submission, media lifecycle and moderation integration.
 - [ ] Connect authenticated/rate-limited APIs and bounded worker handlers.

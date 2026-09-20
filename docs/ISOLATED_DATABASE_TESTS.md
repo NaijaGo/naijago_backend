@@ -1,12 +1,33 @@
 # Isolated MongoDB regression tests
 
-## New prepared gate: Planning (connection blocked; not yet verified)
+## Latest verified gate: Planning
+
+User-supplied Atlas output (2026-09-20), after checkpoint 9f64da3, verifies run
+e66534eddf03421eb7f0934a13ac8bcd: 10 passed (nine subtests plus parent), zero
+failed, zero skipped, 43644.541ms overall. No cleanup error was reported.
+
+Verified scenarios: competing capacity claims across area/vendor/rider resources;
+retry identity without partial reservations; one-time expiry release and rejection
+of late hold confirmation; payment-transaction rollback and confirmed hold safety;
+group membership limits/privacy; group outbox rollback; recurring occurrence and
+reminder uniqueness; recurring outbox rollback; owner-only skip/pause/cancel.
+
+All six prepared database gates have now passed: Explore (5), Search (13),
+Workers (5), Requests (7), Refinement (8) and Planning (10). Counts include parent
+tests. External providers and commercial adapters were simulated. This is not
+real payment, photo moderation, app/device or completed-release acceptance.
+Next: finish real checkout/payment/dispatch and review integration plus all-app
+interfaces. Do not rerun passed gates solely to claim progress or deploy the
+incomplete release. See ORDER_FEATURES.md and INTEGRATED_RELEASE_CHECKLIST.md.
+
+### Earlier connection investigation (superseded by the passing run)
 
 The first user-run attempt on 2026-09-20 reported one failed parent and no
 subtests because openIsolatedTestDatabase could not connect. It stopped before
 collection creation or fixtures. This is connection-setup evidence, not a failed
 capacity/privacy/recurrence assertion. The root cause is not identified by the
-generic error. First run the existing credential-safe, read-only diagnostic:
+generic error. For any future connection-only investigation, the existing
+credential-safe, read-only diagnostic remains available:
 
     powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\runAtlasIntegrationTests.ps1
 
@@ -18,8 +39,8 @@ Local foundation validation passed 248 tests with zero failures and six delibera
 Mongo-suite skips. The test cluster SRV records resolved successfully from this
 workspace. The user subsequently obtained TEST_DATABASE_CONNECTION_OK from the
 read-only diagnostic, then Planning failed again during connection setup in
-13.2 seconds, before any fixtures or subtests. A passing earlier connection is
-not evidence that this later connection succeeded; the cause is still unknown.
+13.2 seconds, before any fixtures or subtests. The subsequent successful Planning
+run resolves the current blocker, but the earlier failures' cause remains unknown.
 
 The read-only probe uses the MongoClient exposed by Mongoose, while integration
 tests use mongoose.createConnection(). Both use the validated test target, TLS
@@ -35,8 +56,9 @@ Focused diagnostics/harness/safety tests: 29 passed, zero failed. Full offline
 regression after this change: 256 passed, zero failed, six credential-gated Mongo
 suites deliberately skipped (262 total, 68189.5904ms). Production
 settings, timeout/pool policy, TLS validation and collection guards are unchanged.
-Rerun Planning using the command below and share its safe final output. Do not
-repeat the raw-driver check as evidence that the Mongoose integration passed.
+The command below is retained for future relevant regression tests. There is no
+need to rerun this passed checkpoint. The raw-driver connection check alone is
+never evidence that the Mongoose integration suite passed.
 
 The original five gates below passed. The coordinated four-feature phase adds
 test/integration/planningMongo.test.js: nine subtests plus parent for concrete
@@ -52,13 +74,13 @@ GroupOrder, RecurringPlan, RecurringOccurrence and BackgroundJob. The whitelist
 now contains 16 model names, but each suite can create/clean only its own declared
 collections with a unique run prefix. Production settings remain untouched.
 
-## Latest verified gate: Refinement
+## Previously verified gate: Refinement
 
 User-supplied Atlas output (2026-09-20), after checkpoint e2afcfe, verifies run
 14f152de66ce4493b7257c05ee47223b: 8 passed, 0 failed, 0 skipped, about 71.8 seconds
 overall. All seven subtests and their parent passed; no cleanup error was reported.
 
-All five prepared gates have now passed: Explore (5), Search (13), Workers (5),
+At that checkpoint, all five prepared gates had passed: Explore (5), Search (13), Workers (5),
 Requests (7) and Refinement (8). These counts include the parent tests; they do
 not mean the entire release is tested or ready to deploy.
 
@@ -78,7 +100,8 @@ hosting acceptance remain separate release gates. See IMAGE_REFINEMENT.md.
 
 The opt-in suites are test/integration/exploreMongo.test.js,
 test/integration/searchMongo.test.js, test/integration/workerMongo.test.js,
-test/integration/requestMongo.test.js and test/integration/refinementMongo.test.js.
+test/integration/requestMongo.test.js, test/integration/refinementMongo.test.js
+and test/integration/planningMongo.test.js.
 They never read MONGO_URI to connect. Do not modify
 the production connection or Render configuration. They accept either a loopback
 replica set or the one user-approved, separate Atlas
