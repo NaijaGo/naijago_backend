@@ -47,8 +47,8 @@ Workspace root has no usable Git repository. Cross-repository tracker lives here
 | SEARCH-02 | Structured intent/synonyms, broad/specific searches and combined filters; true availability; relevance tests | Backend | Unit and real Atlas search/filter/offer/pagination tests passed; representative data audit/performance/device acceptance pending |
 | SEARCH-03 | Collection heading/View All/subcategory chips/products across vendors, filters and pagination | Customer | Implemented; contract/device checks in progress |
 | SEARCH-04 | Gemini strict-schema ambiguous-query classification; fast deterministic path, cache/timeouts/fallback/rate-cost limits | Backend | Unit and real Atlas cache/quota/lease tests passed with simulated AI; real model and latency acceptance pending |
-| REQUEST-01 | Explicit zero-result AI preview; AI concept/not for sale label; no fake price/cart; async generation | Customer/backend | Implemented behind flags; offline backend and customer consent tests passed; Atlas budgets and real provider/device acceptance pending |
-| REQUEST-02 | Request This Product; admin sourcing queue/status/vendor match, customer history/notifications | Customer/admin/backend | Implemented with owner privacy, revision/outbox and customer history/intent tests; new Requests Atlas gate and browser/device/provider acceptance pending |
+| REQUEST-01 | Explicit zero-result AI preview; AI concept/not for sale label; no fake price/cart; async generation | Customer/backend | Implemented behind flags; offline customer/backend tests and isolated Atlas preview reservation/global budget tests passed; real provider/device acceptance pending |
+| REQUEST-02 | Request This Product; admin sourcing queue/status/vendor match, customer history/notifications | Customer/admin/backend | Offline tests and isolated Atlas request privacy, concurrent submission, outbox rollback and inbox dedupe passed; browser/device/provider acceptance pending |
 | REQUEST-03 | Request/media retention, account erasure and authenticated orphan cleanup; storage/rate limits and privacy copy | Backend/apps/admin | Release gate pending; no automatic deletion or erasure coverage claimed |
 | REFINE-01 | Preserve original; automatic derivative refinement, background/light/centering/shadow; product identity preserved | Backend | Pending |
 | REFINE-02 | Original/refined compare, approve/reject/regenerate, versioned publication; bulk/retries/rate-cost controls | Admin/backend | Pending |
@@ -120,6 +120,8 @@ Workspace root has no usable Git repository. Cross-repository tracker lives here
 
 ## Current release boundary
 
+- 2026-09-20: User ran Requests against the isolated Atlas cluster after backend checkpoint c67194b. Run 82f2a8d915cd4ac0b4ee2d9d7ff8c109 passed 7 tests (six subtests plus parent), 0 failed, 0 skipped, about 78.0 seconds overall; no cleanup error reported. Real Mongo verified owner-isolated draft retry identity, concurrent submission with one notification job, rollback after injected outbox failure, simultaneous preview reservations, bounded concurrent global quota with rollback and unique inbox delivery despite preview revision changes. External providers were simulated; no paid AI/storage/push acceptance was established. This supersedes earlier Requests-Atlas-pending notes below. All four prepared database gates have now passed; the integrated release is not complete.
+
 - 2026-09-20: Final request-checkpoint backend rerun: 194 passed, 0 failed, 4 deliberately skipped database suites (198 total), approximately 156.0 seconds, including audited request notification retries that exclude paid preview jobs. Customer request/search rerun: 9 passed, 0 failed; the consent finder and API-field assertions are corrected. These successful runs supersede the intermediate Flutter failures below. Changed JavaScript, PowerShell runner syntax and Git whitespace checks passed. No provider/database call, deployment or build was performed.
 - 2026-09-20: Admin sourcing queue saved locally as fdbedd4; customer request workflow saved as 2d1ade4. Final targeted customer analyzer exited 0 with no errors/warnings and three pre-existing home-screen informational notices (680.2 seconds). Backend implementation and this evidence are saved in the corresponding local feature checkpoint. No push/deployment/build. The existing untracked customer screenshots folder is preserved and excluded, as are secrets/signing files.
 
@@ -158,10 +160,11 @@ the isolated database. No cleanup error was reported. This is not a production
 deployment or a whole-platform acceptance result.
 
 Verified Search database gate: run 44e0cbffc664427e94839d4f384e002b,
-13 passed, 0 failed, 0 skipped. Latest verified database gate: Workers run
+13 passed, 0 failed, 0 skipped. Verified Workers database gate: run
 112424a7e8be4f40a4dc8e8fc1d6bac6, 5 passed, 0 failed, 0 skipped.
-The original three database gates (Explore, Search and Workers) have passed.
-The newly prepared fourth gate, Requests, has not yet been verified against Atlas.
+Latest verified database gate: Requests run 82f2a8d915cd4ac0b4ee2d9d7ff8c109,
+7 passed, 0 failed, 0 skipped. All four prepared database gates (Explore, Search,
+Workers and Requests) have passed against the isolated Atlas database.
 These results supersede the earlier pending notes above. Provider, hosting,
 deployment and device evidence remain separate; this is not whole-platform sign-off.
 
@@ -169,8 +172,9 @@ No commits from this phase have been pushed/deployed automatically, no paid prov
 calls have been made, no production migration/database write has run, and no AAB/IPA
 has been produced here. All new runtime features remain gated off by default.
 
-AI concept preview + sourcing requests now have a local implementation; Atlas,
-provider, privacy/retention, browser and device acceptance remain outstanding.
+AI concept preview + sourcing requests now have a local implementation and a
+verified isolated database gate; real provider, privacy/retention, browser and
+device acceptance remain outstanding.
 Still required in full: image refinement,
 PDF scheduled delivery/photo reviews/group carts/recurring reminder-to-pay, previous
 radar and security audit, website/privacy/deep links, full regression and device
@@ -180,8 +184,8 @@ Do not treat successful unit tests as permission to publish this unfinished rele
 ## Next actions
 
 1. Save verified local checkpoints; keep flags off and do not deploy the incomplete release automatically.
-2. Atlas connection, Explore transaction/lease, Search aggregate/filter/cache/quota and Workers independent-process gates PASSED. Production worker lifecycle tests also pass locally. No repeated private-credential run is needed solely for these lifecycle changes; keep actual host SIGTERM/restart, health/alerts and provider/browser acceptance as release gates. See ISOLATED_DATABASE_TESTS.md. Never change production MONGO_URI for tests.
-3. Complete the new isolated Requests gate and record its evidence; keep preview/provider/browser/device acceptance explicit. Then implement original-preserving image refinement with approval/bulk/retry controls. Do not rerun already-passed gates solely to claim progress.
+2. Atlas connection, Explore transaction/lease, Search aggregate/filter/cache/quota, Workers independent-process and Requests privacy/outbox/quota gates PASSED. Production worker lifecycle tests also pass locally. Keep actual host SIGTERM/restart, health/alerts and provider/browser/device acceptance as release gates. See ISOLATED_DATABASE_TESTS.md. Never change production MONGO_URI for tests.
+3. Next implementation block: original-preserving image refinement with comparison, approval/rejection/regeneration, bulk processing and bounded retries/cost controls. Inspect/reuse existing upload, storage, moderation and queue paths before selecting the provider adapter. Keep request privacy/retention and real preview/provider/device acceptance explicit. Do not rerun already-passed gates solely to claim progress.
 4. Implement PDF scheduled delivery, photo reviews, group ordering and recurring reminder-to-pay workflows with integration tests.
 5. Close prior radar/security/regression items, rehearse migrations with a fresh backup, then deploy/build/device-test the complete release.
 6. Do not mark the programme complete with required items unresolved. Record local tests, deployment and device evidence separately.

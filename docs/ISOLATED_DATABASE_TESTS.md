@@ -53,8 +53,11 @@ fixtures and simulated Gemini responses. It does not contact a paid AI provider,
 create real listings, or change deployment flags. The user-run Search Atlas gate
 passed 13 tests with no failures/skips; evidence is recorded below.
 
-The new Requests gate has six subtests plus its parent (seven expected tests),
-not yet a verified Atlas result:
+The Requests gate has six subtests plus its parent. User-supplied Atlas output
+after backend checkpoint c67194b verified run 82f2a8d915cd4ac0b4ee2d9d7ff8c109:
+7 passed, 0 failed, 0 skipped, approximately 78.0 seconds overall. No cleanup error
+was reported. The command below is retained for future regressions; no repeat is
+needed solely to record this successful run:
 
     powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\runAtlasIntegrationTests.ps1 -RunTests -Suite Requests
 
@@ -73,7 +76,8 @@ are enforced. Unknown/unsafe connection options are rejected.
 
 Explore creates four uniquely named ngtest_<random-run-id>_* collections; Search
 creates five (users, products, offers, AI cache and quota). Workers creates one
-BackgroundJob collection, shared only by that run's child processes. All uses a separate
+BackgroundJob collection, shared only by that run's child processes. Requests uses
+four (requests, jobs, quota buckets and users). All uses a separate
 run ID and cleanup boundary for each suite. Each suite creates its own indexes
 and refuses existing collection names. Cleanup checks
 the connected database and the complete list of names against that run's allowed

@@ -107,14 +107,19 @@ rollback, catalog truth, budgets, private storage, crash recovery, notification
 dedupe and consent UI. Counts/results are recorded in the master tracker.
 
 The Requests Atlas suite uses only synthetic, uniquely owned test collections
-and simulated provider calls. It is not yet verified until the user runs:
+and simulated provider calls. User-supplied output after backend checkpoint
+c67194b verified run 82f2a8d915cd4ac0b4ee2d9d7ff8c109: 7 passed, 0 failed,
+0 skipped, about 78.0 seconds overall; no cleanup error reported. This covers
+draft ownership/retries, concurrent submission, outbox rollback, simultaneous
+preview reservation, global quota bounds and inbox deduplication. It does not
+verify real AI generation, storage or push delivery. Future regression command:
 
     powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\runAtlasIntegrationTests.ps1 -RunTests -Suite Requests
 
 Run in naijago_backend, enter only the dedicated test credentials in the hidden
 prompt, and share the summary, not credentials. No production MONGO_URI change.
 
-Remaining acceptance: Atlas Requests, browser admin flows and permissions,
+Remaining acceptance: browser admin flows and permissions,
 Android/iOS history/consent/keyboard/offline/resume/push routing, approved real
 Gemini/Cloudinary/OneSignal smoke tests, worker deployment/restart/health/alerts,
 load and storage limits, retention/erasure/orphan cleanup and privacy copy.
