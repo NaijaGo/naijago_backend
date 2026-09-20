@@ -5,34 +5,43 @@ const mongoose = require('mongoose');
 const { createBackgroundJobService, JobLeaseLostError } = require('../../services/backgroundJobService');
 const { createExploreInteractionService } = require('../../services/exploreInteractionService');
 const { UGC_POLICY_VERSION } = require('../../utils/explorePolicy');
+const { resolveTestDatabase, cleanupTestCollections, supportsTransactions } = require('../../scripts/lib/integrationTestDatabase');
 
-// Never reuse MONGO_URI. These destructive cleanup operations are allowed only
-// in a randomly named test database on an explicitly supplied loopback server.
+// Never reuse MONGO_URI. Atlas requires explicit opt-in and a pinned TEST host.
 const uri = process.env.NAIJAGO_TEST_MONGO_URI;
-test('isolated Mongo: queue claims, leases, transactional Explore retries and rollback', { skip: !uri, timeout: 90000 }, async (t) => {
-    const parsed = new URL(uri);
-    assert.equal(parsed.protocol, 'mongodb:');
-    assert.ok(['127.0.0.1', 'localhost', '[::1]'].includes(parsed.hostname), 'Only loopback Mongo is allowed');
-    assert.equal(parsed.username, '');
-    assert.equal(parsed.password, '');
-    assert.ok(['', '/'].includes(parsed.pathname), 'Do not specify an existing database');
-    const dbName = `naijago_test_${crypto.randomUUID().replaceAll('-', '')}`;
-    const connection = await mongoose.createConnection(uri, { dbName, serverSelectionTimeoutMS: 5000, maxPoolSize: 20 }).asPromise();
+test('isolated Mongo: queue claims, leases, transactional Explore retries and rollback', { skip: !uri, timeout: 240000 }, async (t) => {
+    const target = resolveTestDatabase({ uri, allowAtlas: process.env.NAIJAGO_ALLOW_ATLAS_TESTS === 'true' });
+    let connection;
+    try {
+        connection = mongoose.createConnection(target.uri, { dbName: target.dbName,
+            serverSelectionTimeoutMS: 10000, maxPoolSize: 20, autoCreate: false, autoIndex: false,
+            ...(target.kind === 'atlas-test' ? { tls: true } : {}) });
+        await connection.asPromise();
+    } catch (_) {
+        if (connection) await connection.close().catch(() => {});
+        throw new Error('Test database connection failed. Check test credentials, current IP access and cluster availability. Do not paste credentials into logs.');
+    }
+    const owned = [];
     t.after(async () => {
         try {
-            assert.match(connection.name, /^naijago_test_[a-f0-9]{32}$/);
-            assert.equal(connection.name, dbName);
-            await connection.dropDatabase();
+            await cleanupTestCollections(connection, target, owned);
         } finally { await connection.close(); }
     });
     const hello = await connection.db.admin().command({ hello: 1 });
-    assert.ok(hello.setName, 'A local replica set is required for transaction tests');
+    assert.ok(supportsTransactions(hello), 'A replica set or sharded test cluster supporting sessions is required');
+    console.log(`Isolated test run: ${target.host} / ${target.dbName} / ${target.runId}`);
     const models = {};
     for (const name of ['BackgroundJob', 'FeedReaction', 'FeedComment', 'FeedView']) {
         const source = require(`../../models/${name}`);
-        models[name] = connection.model(name, source.schema.clone());
+        const collection = target.collections[name];
+        assert.equal(await connection.db.listCollections({ name: collection }, { nameOnly: true }).hasNext(), false,
+            'Refusing to reuse an existing test collection');
+        const schema = source.schema.clone(); schema.set('autoCreate', false); schema.set('autoIndex', false);
+        models[name] = connection.model(name, schema, collection);
+        await models[name].createCollection();
+        owned.push(collection);
+        await models[name].createIndexes();
     }
-    await Promise.all(Object.values(models).map((model) => model.init()));
     const { BackgroundJob: Job, FeedReaction, FeedComment, FeedView } = models;
     let now = new Date();
     const queue = createBackgroundJobService({ Job, allowedTypes: ['explore.notify'], now: () => now });

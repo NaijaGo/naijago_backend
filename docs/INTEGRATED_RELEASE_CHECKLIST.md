@@ -118,6 +118,9 @@ Workspace root has no usable Git repository. Cross-repository tracker lives here
 
 ## Current release boundary
 
+- 2026-09-20: User created a separate Atlas testing project/cluster and rotated the test password after a screenshot exposure. Added explicit opt-in for only naijago-testing.kwcvhix.mongodb.net and the fixed naijago_integration_tests database. Hidden-password PowerShell runner defaults to a read-only connection check. Real tests create and remove only uniquely named collections belonging to the current run; no dropDatabase or production MONGO_URI use.
+- 2026-09-20: Atlas harness safety tests: 10 passed. Full backend regression: 132 passed, 0 failed, 1 skipped (actual Mongo integration still awaiting private user-run connection). Node and PowerShell syntax checks and Git whitespace validation passed. No Atlas connection or database mutation performed by the agent.
+
 This is a local development checkpoint, NOT completion of the integrated phase.
 No commits from this phase have been pushed/deployed automatically, no paid provider
 calls have been made, no production migration/database write has run, and no AAB/IPA
@@ -132,7 +135,7 @@ Do not treat successful unit tests as permission to publish this unfinished rele
 ## Next actions
 
 1. Save verified local checkpoints; keep flags off and do not deploy the incomplete release automatically.
-2. Run isolated Mongo transaction/lease/search acceptance when a local replica set is available; finish worker health/alerts and browser/provider acceptance.
+2. Verify the dedicated Atlas test connection, then run the isolated Mongo transaction/lease suite; extend search acceptance and finish worker health/alerts and browser/provider acceptance. See ISOLATED_DATABASE_TESTS.md. Never change production MONGO_URI for tests.
 3. Implement clearly non-purchasable AI preview + Request This Product/admin sourcing, then original-preserving image refinement with approval/bulk/retry controls.
 4. Implement PDF scheduled delivery, photo reviews, group ordering and recurring reminder-to-pay workflows with integration tests.
 5. Close prior radar/security/regression items, rehearse migrations with a fresh backup, then deploy/build/device-test the complete release.
