@@ -8,6 +8,37 @@ States: Pending -> Working -> Implemented -> Tested -> Deployed -> Device verifi
 
 ## Baseline
 
+### Latest local checkpoint — dispatch and payment-review controls (2026-09-21)
+
+- Automatic individual-rider offers and expired-offer release now write the
+  order and shipments in one transaction. A stale shipment or failed write rolls
+  back the offer; renewed/claimed/company-owned assignments cannot be expired by
+  a stale scan. Zero GPS coordinates are valid; malformed/out-of-range ones are not.
+- Existing accept/reject/status-update routes share transactional ownership,
+  paid/review, schedule and pickup guards. Parent writes protect against concurrent
+  cancellation/review; duplicate acceptance does not resend the offer. Rejected
+  status is now supported by the existing shipment schema.
+- Legacy client polling no longer bulk-mutates orders across customers. Paid
+  gateway/wallet retry endpoints check ownership before revealing payment/order data.
+  Generic admin status changes cannot erase a payment review or reset a paid order.
+- Customer checkout recognizes a verified/review response before opening a payment
+  gateway. My Orders explains the hold and says not to pay again. Admin orders have
+  a review filter, clear hold message and disabled unsafe status/dispatch controls.
+- Validation: final backend regression passed 375 tests, zero failed, eight
+  credential-gated Mongo suites skipped (383 total, 367302.6555ms). Nineteen new
+  tests cover these changes; reruns are not extra tests. Admin rendering tests
+  passed 4/4. The initial full run's isolated-loader allowlist failure is fixed
+  and superseded by this run. Customer Flutter checks remain pending after a
+  loading timeout before assertions; an isolated-temp retry is running.
+  This is not current-HEAD Mongo, provider, browser or device acceptance.
+- Still open: durable dispatch/vendor-alert outbox and scan fairness, paid stock
+  conflict reconciliation and safe review resolution, reservation expiry/cancel/
+  reschedule/refund lifecycle, operational schedule administration, authenticated
+  planning/review APIs and worker composition, remaining feature screens and the
+  integrated provider/database/browser/device/release gates below.
+- No flags enabled, production DB/provider calls, key changes, dependency upgrades,
+  pushes, deployments or app builds. Existing screenshots remain excluded.
+
 Local remote-tracking refs have not been freshly fetched.
 
 | Repository | Branch | Starting commit | Existing changes |

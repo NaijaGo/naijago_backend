@@ -31,8 +31,11 @@ const formatLastSeen = (date) => {
 };
 
 const distanceFromPickup = (rider, pickupLocation) => {
-  if (!pickupLocation?.latitude || !pickupLocation?.longitude) return null;
-  if (!rider.currentLocation?.lat || !rider.currentLocation?.lng) return null;
+  const coordinates = [pickupLocation?.latitude, pickupLocation?.longitude,
+    rider.currentLocation?.lat, rider.currentLocation?.lng];
+  if (!coordinates.every(Number.isFinite)) return null;
+  if (Math.abs(coordinates[0]) > 90 || Math.abs(coordinates[2]) > 90 ||
+      Math.abs(coordinates[1]) > 180 || Math.abs(coordinates[3]) > 180) return null;
 
   return calculateDistance(
     rider.currentLocation.lat,
@@ -132,7 +135,10 @@ const notifyEligibleRidersForShipment = async ({
     mainOrderSet.shipmentStatus = 'ready_for_pickup';
   }
 
-  const assignedOrder = await MainOrder.findOneAndUpdate(
+  // The order and its shipment must acquire the offer together. A failed or
+  // stale shipment update must never leave an order assigned on its own.
+  const assignedOrder = await MainOrder.db.transaction(async (session) => {
+    const assigned = await MainOrder.findOneAndUpdate(
     dispatchEligibilityFilter({
       _id: mainOrder._id,
       rider: null,
@@ -145,14 +151,19 @@ const notifyEligibleRidersForShipment = async ({
     {
       $set: mainOrderSet,
     },
-    { new: true },
+    { new: true, session },
   );
 
-  if (!assignedOrder) return [];
+    if (!assigned) return null;
 
-  await Shipment.findOneAndUpdate(
+    const assignedShipment = await Shipment.findOneAndUpdate(
     {
       _id: shipment._id,
+      mainOrder: mainOrder._id,
+      fulfillmentMethod: { $ne: 'pickup' },
+      shipmentStatus: { $in: ['accepted', 'ready_for_pickup'] },
+      company: null,
+      rider: null,
       isClaimed: false,
       $or: [{ assignedRider: null }, { assignedRider: { $exists: false } }],
       assignmentRejectedBy: { $ne: nearestRider._id },
@@ -160,10 +171,20 @@ const notifyEligibleRidersForShipment = async ({
     {
       $set: {
         assignedRider: nearestRider._id,
-        assignedAt: new Date(),
+        assignedAt: mainOrderSet.assignedAt,
       },
     },
+    { new: true, session },
   );
+    if (!assignedShipment) {
+      const error = new Error('The shipment changed before the rider offer could be assigned.');
+      error.code = 'SHIPMENT_CHANGED';
+      throw error;
+    }
+    return assigned;
+  });
+
+  if (!assignedOrder) return [];
 
   await notifyRiderAssignmentOffer({
     app,
@@ -195,6 +216,8 @@ const releaseExpiredRiderAssignments = async ({
   const cutoff = new Date(Date.now() - timeoutMs);
   const expiredOrders = await MainOrder.find({
     isClaimed: false,
+    rider: null,
+    company: null,
     assignedRider: { $ne: null },
     assignedAt: { $lte: cutoff },
     mainOrderStatus: { $nin: ['delivered', 'completed', 'cancelled'] },
@@ -207,11 +230,16 @@ const releaseExpiredRiderAssignments = async ({
     const expiredRiderId = order.assignedRider;
     if (!expiredRiderId) continue;
 
-    const releasedOrder = await MainOrder.findOneAndUpdate(
+    const releasedOrder = await MainOrder.db.transaction(async (session) => {
+      const released = await MainOrder.findOneAndUpdate(
       {
         _id: order._id,
         assignedRider: expiredRiderId,
+        assignedAt: { $eq: order.assignedAt, $lte: cutoff },
+        rider: null,
+        company: null,
         isClaimed: false,
+        mainOrderStatus: { $nin: ['delivered', 'completed', 'cancelled'] },
       },
       {
         $unset: {
@@ -222,12 +250,12 @@ const releaseExpiredRiderAssignments = async ({
           assignmentRejectedBy: expiredRiderId,
         },
       },
-      { new: true },
+      { new: true, session },
     );
 
-    if (!releasedOrder) continue;
+      if (!released) return null;
 
-    await Shipment.updateMany(
+      await Shipment.updateMany(
       {
         mainOrder: order._id,
         assignedRider: expiredRiderId,
@@ -242,7 +270,12 @@ const releaseExpiredRiderAssignments = async ({
           assignmentRejectedBy: expiredRiderId,
         },
       },
+      { session },
     );
+      return released;
+    });
+
+    if (!releasedOrder) continue;
 
     app?.get('notifyRider')?.(expiredRiderId.toString(), {
       type: 'rider_assignment_expired',

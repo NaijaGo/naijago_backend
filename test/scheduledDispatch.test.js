@@ -23,6 +23,7 @@ function apply(row, update) {
     Object.assign(row, update.$set || {});
     for (const key of Object.keys(update.$unset || {})) delete row[key];
     for (const [key, value] of Object.entries(update.$pull || {})) row[key] = (row[key] || []).filter((entry) => entry !== value);
+    for (const [key, value] of Object.entries(update.$addToSet || {})) row[key] = [...new Set([...(row[key] || []), value])];
 }
 function fixture(options = {}) {
     let rows = { orders: [order()], shipments: [shipment()], deliveries: [] };
@@ -35,12 +36,16 @@ function fixture(options = {}) {
     function model(key) { return {
         find: (filter) => query(rows[key].filter(sift(filter))),
         findOne: (filter) => query(rows[key].find(sift(filter)) || null),
-        findOneAndUpdate: (filter, update) => {
+        findOneAndUpdate: (filter, update, args) => {
+            assert.equal(args.session, session);
             if (options.beforeClaim && key === 'orders') options.beforeClaim(rows.orders[0]);
+            if (key === 'shipments' && options.failShipments) throw new Error('synthetic-shipment-failure');
+            if (key === 'shipments' && options.beforeShipmentClaim) options.beforeShipmentClaim(rows.shipments[0]);
             const row = rows[key].find(sift(filter)); if (row) apply(row, update);
             return query(row ? structuredClone(row) : null);
         },
-        updateMany: async (filter, update) => {
+        updateMany: async (filter, update, args) => {
+            assert.equal(args.session, session);
             if (options.failShipments) throw new Error('synthetic-shipment-failure');
             const matched = rows[key].filter(sift(filter)); for (const row of matched) apply(row, update);
             return { matchedCount: matched.length };
@@ -65,6 +70,7 @@ function fixture(options = {}) {
             catch (error) { rows = before; calls.rollbacks++; throw error; }
         }); tail = result.catch(() => {}); return result;
     } };
+    models.MainOrder.db = connection;
     const file = path.join(__dirname, '../services/riderAssignmentService.js'), actual = createRequire(file), module = { exports: {} };
     const safeRequire = (name) => {
         if (name.startsWith('../models/')) return models[name.split('/').pop()];
@@ -116,6 +122,58 @@ test('concurrent automatic offers have one guarded winner and one notification',
     const f = fixture(), mainOrder = structuredClone(f.rows().orders[0]);
     await Promise.all([1, 2].map(() => f.auto.notifyEligibleRidersForShipment({ mainOrder, shipment: f.rows().shipments[0] })));
     assert.equal(f.rows().orders[0].assignedRider, R); assert.equal(f.calls.offers, 1); assert.equal(f.calls.pushes, 1);
+});
+
+test('automatic offer rolls back both records when shipment persistence fails', async () => {
+    const f = fixture({ failShipments: true });
+    await assert.rejects(f.auto.notifyEligibleRidersForShipment({ mainOrder: f.rows().orders[0], shipment: f.rows().shipments[0] }), /synthetic-shipment-failure/);
+    assert.equal(f.rows().orders[0].assignedRider, undefined);
+    assert.equal(f.rows().shipments[0].assignedRider, undefined);
+    assert.equal(f.calls.rollbacks, 1); assert.equal(f.calls.offers, 0); assert.equal(f.calls.pushes, 0);
+});
+
+test('automatic offer rechecks shipment ownership, state and fulfillment inside the transaction', async () => {
+    for (const patch of [{ mainOrder: C }, { company: C }, { shipmentStatus: 'cancelled' },
+        { fulfillmentMethod: 'pickup' }, { isClaimed: true }, { assignedRider: CR }]) {
+        const f = fixture({ beforeShipmentClaim: row => Object.assign(row, patch) });
+        await assert.rejects(f.auto.notifyEligibleRidersForShipment({ mainOrder: f.rows().orders[0], shipment: structuredClone(f.rows().shipments[0]) }), { code: 'SHIPMENT_CHANGED' });
+        assert.equal(f.rows().orders[0].assignedRider, undefined); assert.equal(f.calls.offers, 0);
+    }
+});
+
+test('assignment timeout rolls back the order release when a shipment write fails', async () => {
+    const f = fixture({ failShipments: true });
+    for (const row of [f.rows().orders[0], f.rows().shipments[0]]) Object.assign(row, { assignedRider: R, assignedAt: new Date(time.getTime() - 900000) });
+    await assert.rejects(f.auto.releaseExpiredRiderAssignments(), /synthetic-shipment-failure/);
+    assert.equal(f.rows().orders[0].assignedRider, R); assert.equal(f.rows().shipments[0].assignedRider, R);
+    assert.equal(f.calls.rollbacks, 1); assert.equal(f.calls.offers, 0);
+});
+
+test('assignment timeout clears order and shipment together and does not reoffer to the expired rider', async () => {
+    const f = fixture();
+    for (const row of [f.rows().orders[0], f.rows().shipments[0]]) Object.assign(row, { assignedRider: R, assignedAt: new Date(time.getTime() - 900000) });
+    await f.auto.releaseExpiredRiderAssignments();
+    for (const row of [f.rows().orders[0], f.rows().shipments[0]]) {
+        assert.equal(row.assignedRider, undefined); assert.deepEqual(row.assignmentRejectedBy, [R]);
+    }
+    assert.equal(f.calls.commits, 1); assert.equal(f.calls.offers, 0);
+});
+
+test('assignment timeout cannot revoke a renewed, claimed or company-owned assignment', async () => {
+    for (const patch of [{ assignedAt: future }, { isClaimed: true }, { company: C }, { rider: R }]) {
+        const f = fixture({ beforeClaim: row => Object.assign(row, patch) });
+        for (const row of [f.rows().orders[0], f.rows().shipments[0]]) Object.assign(row, { assignedRider: R, assignedAt: new Date(time.getTime() - 900000) });
+        await f.auto.releaseExpiredRiderAssignments();
+        assert.equal(f.rows().orders[0].assignedRider, R); assert.equal(f.rows().shipments[0].assignedRider, R);
+    }
+});
+
+test('rider distance accepts zero coordinates and rejects invalid coordinates', async () => {
+    const f = fixture({ rider: { currentLocation: { lat: 0, lng: 0, lastUpdated: time } } });
+    assert.equal((await f.auto.findEligibleRiders({ pickupLocation: { latitude: 0, longitude: 0 } })).length, 1);
+    for (const latitude of [null, undefined, NaN, Infinity, 91, '0']) {
+        assert.equal((await f.auto.findEligibleRiders({ pickupLocation: { latitude, longitude: 0 } })).length, 0);
+    }
 });
 test('existing assignment scanner offers due scheduled work and ignores future, expired and review work', async () => {
     const f = fixture();

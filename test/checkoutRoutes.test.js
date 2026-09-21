@@ -54,9 +54,12 @@ async function setup(t, options = {}) {
         }
     }
     const file = path.join(__dirname, '../routes/orderRoutes.js'), actualRequire = createRequire(file), module = { exports: {} };
-    const middleware = (req, res, next) => { req.user = { _id: '777777777777777777777777', id: '777777777777777777777777' }; next(); };
+    const middleware = (req, res, next) => { req.user = { _id: '777777777777777777777777', id: '777777777777777777777777', ...options.actor }; next(); };
     function requireForRoute(name) {
-        if (name === 'mongoose') return { startSession: async () => session };
+        if (name === 'mongoose') return { startSession: async () => session, connection: { transaction: async work => {
+            try { const result = await work(session); await session.commitTransaction(); return result; }
+            catch (error) { await session.abortTransaction(); throw error; }
+        } } };
         if (name.startsWith('../models/')) return models[name.split('/').pop()] || {};
         if (name === '../middleware/authMiddleware') return { protect: middleware, authorizeRoles: () => middleware };
         if (name === '../services/deliveryFeeService') return { getDeliveryFeeSettings: async () => ({}), buildDeliveryFeeQuote: (args) => { saved.feeCalls.push(args); return { amount: options.deliveryFee ?? 500, source: 'test', zone: null }; } };
@@ -66,7 +69,7 @@ async function setup(t, options = {}) {
         if (name === '../services/checkoutInventoryService' && options.fakeInventory) return { createCheckoutInventoryService: () => ({ decrement: async () => {
             saved.inventoryWrites++; if (options.failInventory) throw new Error('synthetic-stock-conflict');
         } }) };
-        if (name.startsWith('../services/') && !['../services/checkoutCatalogService', '../services/checkoutInventoryService', '../services/deliveryReservationService', '../services/scheduledOrderPaymentService'].includes(name)) return {};
+        if (name.startsWith('../services/') && !['../services/checkoutCatalogService', '../services/checkoutInventoryService', '../services/deliveryReservationService', '../services/scheduledOrderPaymentService', '../services/shipmentStatusService'].includes(name)) return {};
         return actualRequire(name);
     }
     vm.runInThisContext('(function(require, module, exports, console) {\n' + fs.readFileSync(file, 'utf8') + '\n})', { filename: file })(requireForRoute, module, module.exports, { log() {}, error() {} });
@@ -77,6 +80,56 @@ async function setup(t, options = {}) {
         settleVerifiedPayment: module.exports.settleVerifiedPayment,
         calculateCheckoutSummary: module.exports.calculateCheckoutSummary, async post(route, input, method = 'POST') { const response = await fetch(`http://127.0.0.1:${listener.address().port}/orders${route}`, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input), signal: AbortSignal.timeout(15000) }); return { status: response.status, data: await response.json() }; } };
 }
+
+test('legacy payment polling cannot write orders or shipments', async (t) => {
+    const f = await setup(t);
+    for (const model of [f.models.MainOrder, f.models.Shipment]) model.updateMany = () => { throw new Error('Unexpected write'); };
+    const result = await f.post('/update-pending-to-processing', {});
+    assert.equal(result.status, 200); assert.equal(result.data.count, 0);
+});
+
+test('paid responses remain private even when payment is already settled', async (t) => {
+    const f = await setup(t);
+    f.models.MainOrder.findById = () => query({ _id: O, user: 'another-owner', isPaid: true, mainOrderStatus: 'payment_review', shippingAddress: address });
+    for (const path of ['/pay', '/pay/wallet']) {
+        const result = await f.post('/' + O + path, {}, 'PUT');
+        assert.equal(result.status, 401);
+        assert.equal(result.data.shippingAddress, undefined);
+        assert.equal(result.data.isPaid, undefined);
+    }
+    assert.equal(f.saved.commits, 0);
+});
+
+test('owned paid-review payment retry returns the existing receipt without charging', async (t) => {
+    const f = await setup(t);
+    f.models.MainOrder.findById = () => query({ _id: O, user: '777777777777777777777777', isPaid: true, mainOrderStatus: 'payment_review' });
+    const result = await f.post('/' + O + '/pay', {}, 'PUT');
+    assert.equal(result.status, 200); assert.equal(result.data.mainOrderStatus, 'payment_review');
+    assert.equal(f.saved.buyerReads.length, 0); assert.equal(f.saved.inventoryWrites, 0);
+});
+
+test('all vendor shipment routes reject payment review before any writes', async (t) => {
+    const f = await setup(t);
+    f.models.Shipment.findById = () => query({ _id: P, mainOrder: O, vendor: '777777777777777777777777', shipmentStatus: 'processing' });
+    f.models.MainOrder.findById = () => query({ _id: O, isPaid: true, mainOrderStatus: 'payment_review' });
+    for (const [path, input] of [['accept', {}], ['reject', { reason: 'Cannot supply this item' }], ['status-update', { status: 'ready_for_pickup' }]]) {
+        const result = await f.post(`/shipments/${P}/${path}`, input, 'PUT');
+        assert.equal(result.status, 409); assert.equal(result.data.code, 'ORDER_PAYMENT_REVIEW');
+    }
+    assert.equal(f.saved.commits, 0); assert.equal(f.saved.aborts, 3);
+});
+
+test('admin status route cannot overwrite a paid review or reset payment', async (t) => {
+    const f = await setup(t, { actor: { isAdmin: true } });
+    for (const [order, status, code] of [[{ isPaid: true, mainOrderStatus: 'payment_review' }, 'processing', 'ORDER_PAYMENT_REVIEW'],
+        [{ isPaid: true, mainOrderStatus: 'processing' }, 'pending_payment', 'ORDER_ALREADY_PAID'],
+        [{ isPaid: false }, 'completed', 'ORDER_UNPAID']]) {
+        f.models.MainOrder.findById = () => query(order);
+        const result = await f.post(`/${O}/status`, { status }, 'PUT');
+        assert.equal(result.status, 409); assert.equal(result.data.code, code);
+    }
+    assert.equal(f.saved.commits, 0);
+});
 
 test('private scheduled creator preserves the approved window and transaction-owned reservation on the real receipt', async (t) => {
     const f = await setup(t, { realOrderModels: true }), userId = '777777777777777777777777';

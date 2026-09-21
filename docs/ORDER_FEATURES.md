@@ -14,7 +14,9 @@ remain closed. No planning/reminder worker is running these new jobs.
 Existing order summary/creation now share authoritative
 catalog validation; the existing wallet/provider stock hook handles offer variants
 transactionally. Provider verification and delivery pricing policies are unchanged.
-No app screen, release build, migration or production deployment is claimed.
+Payment-review presentation is now connected to existing checkout, My Orders and
+admin orders locally. The new scheduled/group/recurring/photo-review screens,
+release build, migration and production deployment are not complete.
 Do not enable/publish the four features based on these foundations alone.
 
 ### Receipt, payment and dispatch checkpoint (2026-09-21, local only)
@@ -47,16 +49,18 @@ Do not enable/publish the four features based on these foundations alone.
 **Required before activation:** compose the real reservation adapter into planned
 checkout; authenticated policy/window administration; current-price/eligibility
 checks before initiating payment; stock-conflicted verified-payment reconciliation;
-support/customer payment-review screens and safe resolution; reservation-expiry
+browser/device acceptance of payment-review messaging and safe resolution; reservation-expiry
 worker; cancellation/rescheduling/refund rules; reminder outboxes; all-app views.
-Finish dispatch lifecycle review too: automatic offer/shipment/outbox atomicity,
+Automatic offer/shipment assignment and expired-offer release now use transactions;
+vendor shipment transitions guard paid/review state in a parent-writing transaction.
+Finish dispatch lifecycle review too: durable notification outbox integration,
 due-scan fairness and bounded no-rider notices, company accept/reject/status/OTP
 checks and order/shipment completion synchronization. These existing downstream
 paths are not proven end-to-end by the assignment tests.
 
 Offline tests use the actual route/service code with injected databases/providers;
 fake transaction rollback and query predicates do not prove Mongo concurrency.
-Final full backend regression: **356 passed, zero failed, eight credential-gated
+Previous checkpoint's full backend regression: **356 passed, zero failed, eight credential-gated
 Mongo suites skipped (364 total, 67879.3626ms)**. All changed JavaScript syntax
 and Git diff checks passed. There are 25 new tests beyond the previous checkpoint;
 focused reruns are not added to the total. Earlier test-fixture failures are superseded.

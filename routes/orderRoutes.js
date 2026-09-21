@@ -13,6 +13,8 @@ const { createCheckoutCatalogService, CheckoutCatalogError, hasLocation } = requ
 const { createCheckoutInventoryService } = require('../services/checkoutInventoryService');
 const { assertCheckoutQuoteUnchanged } = require('../utils/checkoutQuoteSnapshot');
 const { instant } = require('../utils/orderPlanningPolicy');
+const { assertAdminStatusChange } = require('../utils/orderFulfillmentPolicy');
+const { createShipmentStatusService } = require('../services/shipmentStatusService');
 const { watParts } = require('../utils/deliveryScheduleAvailability');
 const { assertScheduleQuoteUnchanged, reservationSnapshot } = require('../utils/scheduledOrderSnapshot');
 const DeliveryWindow = require('../models/DeliveryWindow');
@@ -1673,34 +1675,8 @@ router.post('/', protect, async (req, res) => {
 // @route   POST /api/orders/update-pending-to-processing
 // @access  Private (called by client's polling timer)
 router.post('/update-pending-to-processing', protect, async (req, res) => {
-    try {
-        // Logic now uses MainOrder and updates associated Shipments
-        const mainOrdersResult = await MainOrder.updateMany(
-            { 
-                mainOrderStatus: 'pending_payment', 
-                isPaid: true 
-            },
-            { $set: { mainOrderStatus: 'processing' } }
-        );
-
-        // This route is deprecated by the immediate update in the payment routes, but kept for legacy/polling cleanup.
-        // It should update all associated Shipments to 'processing' as well.
-        const ordersToUpdate = await MainOrder.find({ mainOrderStatus: 'processing', isPaid: true, shipments: { $ne: [] } }).select('shipments');
-        const shipmentIds = ordersToUpdate.flatMap(order => order.shipments);
-
-        const shipmentsResult = await Shipment.updateMany(
-            { _id: { $in: shipmentIds }, shipmentStatus: 'awaiting_payment' },
-            { $set: { shipmentStatus: 'processing' } }
-        );
-
-        res.json({ 
-            message: `Successfully updated ${mainOrdersResult.modifiedCount} paid main orders to 'processing' and ${shipmentsResult.modifiedCount} shipments.`,
-            count: mainOrdersResult.modifiedCount 
-        });
-    } catch (error) {
-        console.error('Error updating pending orders:', error);
-        res.status(500).json({ message: 'Server Error during pending order update' });
-    }
+    // Kept for old clients: only verified settlement may mutate payment state.
+    res.json({ message: 'Payment status is updated by verified settlement.', count: 0 });
 });
 
 
@@ -1783,102 +1759,49 @@ router.get('/vendor', protect, authorizeRoles('vendor', 'admin'), async (req, re
     }
 });
 
-async function findOwnedShipmentForVendor(req, res) {
-    const shipment = await Shipment.findById(req.params.id);
-    if (!shipment) {
-        res.status(404).json({ message: 'Shipment not found.' });
-        return null;
-    }
-    if (!req.user.isAdmin && shipment.vendor.toString() !== req.user.id.toString()) {
-        res.status(403).json({ message: 'You can only update your own shipment.' });
-        return null;
-    }
-    if (['delivered', 'cancelled', 'rejected', 'returned'].includes(shipment.shipmentStatus)) {
-        res.status(400).json({ message: `Shipment is already ${shipment.shipmentStatus}.` });
-        return null;
-    }
-    return shipment;
+async function transitionOwnedShipment(req, status, reason) {
+    return createShipmentStatusService({ MainOrder, Shipment, connection: mongoose.connection }).transition({
+        shipmentId: req.params.id, actorId: req.user.id, isAdmin: req.user.isAdmin === true, status, reason,
+    });
 }
 
-// @desc    Vendor accepts a paid shipment
-// @route   PUT /api/orders/shipments/:id/accept
-// @access  Private/Vendor/Admin
+function shipmentTransitionError(res, error) {
+    if (error.statusCode && error.code) return res.status(error.statusCode).json({ code: error.code, message: error.message });
+    console.error('Shipment transition failed:', { code: error.code || error.name });
+    return res.status(500).json({ message: 'Unable to update the shipment right now. Please refresh and try again.' });
+}
+
+async function offerAcceptedShipment(req, result, markReady) {
+    if (!result.changed) return;
+    try {
+        await notifyEligibleRidersForShipment({ app: req.app, shipment: result.shipment, mainOrder: result.mainOrder, markReady });
+    } catch (error) {
+        // Acceptance is committed; notification failure must not claim otherwise.
+        console.error('Post-commit rider offer failed:', { code: error.code || error.name, orderId: String(result.mainOrder._id) });
+    }
+}
+
 router.put('/shipments/:id/accept', protect, authorizeRoles('vendor', 'admin'), async (req, res) => {
     try {
-        const shipment = await findOwnedShipmentForVendor(req, res);
-        if (!shipment) return;
-        if (shipment.fulfillmentMethod === 'pickup') {
-            return res.status(409).json({
-                message: 'Use the Pickup Orders workflow to accept customer pickup orders.',
-            });
-        }
-
-        shipment.shipmentStatus = 'accepted';
-        shipment.acceptedAt = new Date();
-        shipment.rejectionReason = undefined;
-        await shipment.save();
-
-        const mainOrder = await MainOrder.findById(shipment.mainOrder);
-        if (mainOrder?.isPaid) {
-            await notifyEligibleRidersForShipment({
-                app: req.app,
-                shipment,
-                mainOrder,
-                markReady: false,
-            });
-        }
-
-        const io = req.app.get('io');
-        if (io) {
-            io.emit(`order_${shipment.mainOrder}`, {
-                type: 'shipment_accepted',
-                shipmentId: shipment._id,
-                status: shipment.shipmentStatus,
-                timestamp: Date.now(),
-            });
-        }
-
-        res.status(200).json({ message: 'Shipment accepted.', shipment });
-    } catch (error) {
-        console.error('Error accepting shipment:', error);
-        res.status(500).json({ message: 'Server error accepting shipment.' });
-    }
+        const result = await transitionOwnedShipment(req, 'accepted');
+        await offerAcceptedShipment(req, result, false);
+        const { shipment, changed } = result;
+        if (changed) req.app.get('io')?.emit(`order_${shipment.mainOrder}`, {
+            type: 'shipment_accepted', shipmentId: shipment._id, status: shipment.shipmentStatus, timestamp: Date.now(),
+        });
+        res.json({ message: 'Shipment accepted.', shipment });
+    } catch (error) { shipmentTransitionError(res, error); }
 });
 
-// @desc    Vendor rejects a shipment with a reason
-// @route   PUT /api/orders/shipments/:id/reject
-// @access  Private/Vendor/Admin
 router.put('/shipments/:id/reject', protect, authorizeRoles('vendor', 'admin'), async (req, res) => {
     try {
-        const reason = String(req.body.reason || '').trim();
-        if (reason.length < 5) {
-            return res.status(400).json({ message: 'Please provide a clear rejection reason.' });
-        }
-
-        const shipment = await findOwnedShipmentForVendor(req, res);
-        if (!shipment) return;
-
-        shipment.shipmentStatus = 'rejected';
-        shipment.rejectedAt = new Date();
-        shipment.rejectionReason = reason.slice(0, 300);
-        await shipment.save();
-
-        const io = req.app.get('io');
-        if (io) {
-            io.emit(`order_${shipment.mainOrder}`, {
-                type: 'shipment_rejected',
-                shipmentId: shipment._id,
-                reason: shipment.rejectionReason,
-                status: shipment.shipmentStatus,
-                timestamp: Date.now(),
-            });
-        }
-
-        res.status(200).json({ message: 'Shipment rejected.', shipment });
-    } catch (error) {
-        console.error('Error rejecting shipment:', error);
-        res.status(500).json({ message: 'Server error rejecting shipment.' });
-    }
+        const { shipment, changed } = await transitionOwnedShipment(req, 'rejected', req.body.reason);
+        if (changed) req.app.get('io')?.emit(`order_${shipment.mainOrder}`, {
+            type: 'shipment_rejected', shipmentId: shipment._id, reason: shipment.rejectionReason,
+            status: shipment.shipmentStatus, timestamp: Date.now(),
+        });
+        res.json({ message: 'Shipment rejected.', shipment });
+    } catch (error) { shipmentTransitionError(res, error); }
 });
 
     // @desc    Get commission rates for different categories
@@ -1971,16 +1894,16 @@ router.put('/:id/pay/wallet', protect, async (req, res) => {
             session.endSession();
             return res.status(404).json({ message: 'Main Order not found' });
         }
-        if (mainOrder.isPaid) {
-            await session.abortTransaction();
-            session.endSession();
-            return res.status(400).json({ message: 'Order is already paid' });
-        }
         // 1. Authorization check
         if (mainOrder.user.toString() !== req.user.id.toString()) {
             await session.abortTransaction();
             session.endSession();
             return res.status(401).json({ message: 'Not authorized to modify this order' });
+        }
+        if (mainOrder.isPaid) {
+            await session.abortTransaction();
+            session.endSession();
+            return res.status(400).json({ message: 'Order is already paid' });
         }
        
         // 2. Fetch the user (buyer) document within the transaction
@@ -2173,18 +2096,16 @@ router.put('/:id/pay', protect, async (req, res) => {
             session.endSession();
             return res.status(404).json({ message: 'Main Order not found' });
         }
-        console.log(`[PAY ENDPOINT] Found order: ${mainOrder._id} | Current isPaid: ${mainOrder.isPaid} | Status: ${mainOrder.mainOrderStatus}`);
-        if (mainOrder.isPaid) {
-            console.warn(`[PAY ENDPOINT] WARNING: Order already paid - ID: ${mainOrder._id} | Paid at: ${mainOrder.paidAt}`);
-            await session.commitTransaction();
-            session.endSession();
-            return res.status(200).json(mainOrder);
-        }
         if (mainOrder.user.toString() !== req.user.id.toString()) {
             console.error(`[PAY ENDPOINT] Unauthorized attempt - Order user: ${mainOrder.user} | Request user: ${req.user.id}`);
             await session.abortTransaction();
             session.endSession();
             return res.status(401).json({ message: 'Not authorized to modify this order' });
+        }
+        if (mainOrder.isPaid) {
+            await session.commitTransaction();
+            session.endSession();
+            return res.status(200).json(mainOrder);
         }
         const buyer = await User.findById(req.user.id).session(session);
         if (!buyer) {
@@ -2478,93 +2399,20 @@ router.put('/shipments/:id/deliver', protect, authorizeRoles('vendor', 'admin'),
 
 
 router.put('/shipments/:id/status-update', protect, authorizeRoles('vendor', 'admin'), async (req, res) => {
-    const { status } = req.body;
-    const SHIPMENT_ID = req.params.id;
-
-    const vendorStatuses = ['accepted', 'ready_for_pickup'];
-    const adminStatuses = ['accepted', 'ready_for_pickup', 'out_for_delivery', 'returned', 'cancelled'];
-    const validStatuses = req.user?.isAdmin ? adminStatuses : vendorStatuses;
-    
-    if (!validStatuses.includes(status)) {
-        return res.status(400).json({ 
-            message: `Invalid or non-updatable shipment status provided. Must be one of: ${validStatuses.join(', ')}` 
-        });
-    }
-
     try {
-        const shipment = await Shipment.findById(SHIPMENT_ID).populate('mainOrder');
-
-        if (!shipment) {
-            return res.status(404).json({ message: 'Shipment not found' });
-        }
-
-        if (!req.user.isAdmin && shipment.vendor.toString() !== req.user.id.toString()) {
-            return res.status(403).json({ message: 'You can only update your own shipment.' });
-        }
-        
-        // Prevent accidental updates if already delivered
-        if (['delivered', 'rejected', 'returned'].includes(shipment.shipmentStatus)) {
-            return res.status(400).json({ message: `Cannot update a shipment that is already ${shipment.shipmentStatus}.` });
-        }
-
-        if (req.user.isVendor && status === 'cancelled') {
-            return res.status(400).json({ message: 'Use reject with reason if you cannot fulfil this shipment.' });
-        }
-
-        if (req.user.isVendor && ['out_for_delivery', 'delivered'].includes(status)) {
-            return res.status(400).json({
-                message: 'Rider pickup and delivery statuses are updated through rider OTP verification.'
+        const result = await transitionOwnedShipment(req, req.body.status, req.body.reason);
+        const { shipment, changed } = result;
+        if (changed && req.body.status === 'ready_for_pickup') {
+            req.app.get('io')?.emit('admin_notification', {
+                type: 'shipment_ready_for_pickup', message: `Shipment ${shipment._id} is ready for rider pickup`,
+                shipmentId: shipment._id, orderId: shipment.mainOrder, vendorId: shipment.vendor, timestamp: Date.now(),
             });
         }
-
-        // Update the status
-        if (shipment.fulfillmentMethod === 'pickup') {
-            return res.status(409).json({
-                message: 'Use the Pickup Orders workflow for customer pickup orders.',
-            });
+        if (['accepted', 'ready_for_pickup'].includes(req.body.status)) {
+            await offerAcceptedShipment(req, result, req.body.status === 'ready_for_pickup');
         }
-        shipment.shipmentStatus = status;
-        await shipment.save();
-
-        if (status === 'ready_for_pickup') {
-            const mainOrderId = shipment.mainOrder?._id || shipment.mainOrder;
-            const siblingShipments = await Shipment.find({
-                mainOrder: mainOrderId,
-                shipmentStatus: { $nin: ['rejected', 'cancelled', 'returned'] }
-            }).select('shipmentStatus');
-            const allFulfillableShipmentsReady = siblingShipments.length > 0 &&
-                siblingShipments.every((item) => item.shipmentStatus === 'ready_for_pickup');
-
-            const mainOrder = await MainOrder.findByIdAndUpdate(mainOrderId, {
-                shipmentStatus: allFulfillableShipmentsReady ? 'ready_for_pickup' : 'processing',
-                mainOrderStatus: 'processing'
-            }, { new: true });
-
-            const io = req.app.get('io');
-            if (io) {
-                io.emit('admin_notification', {
-                    type: 'shipment_ready_for_pickup',
-                    message: `Shipment ${shipment._id} is ready for rider pickup`,
-                    shipmentId: shipment._id,
-                    orderId: mainOrderId,
-                    vendorId: shipment.vendor,
-                    timestamp: Date.now()
-                });
-            }
-
-            await notifyEligibleRidersForShipment({
-                app: req.app,
-                shipment,
-                mainOrder: mainOrder || shipment.mainOrder,
-            });
-        }
-
-        res.json({ message: `Shipment ${SHIPMENT_ID} status updated to ${status}.`, shipment });
-
-    } catch (error) {
-        console.error('Error during generic status update:', error);
-        res.status(500).json({ message: 'Server Error during status update.', error: error.message });
-    }
+        res.json({ message: `Shipment status updated to ${req.body.status}.`, shipment });
+    } catch (error) { shipmentTransitionError(res, error); }
 });
 
 
@@ -2642,6 +2490,8 @@ router.put('/:id/status', protect, authorizeRoles('admin'), async (req, res) => 
             session.endSession();
             return res.status(404).json({ message: 'Main Order not found.' });
         }
+
+        assertAdminStatusChange(mainOrder, status);
 
         // Allow a completed order to repair a missing rider payout once, but
         // block true duplicate completion.
@@ -2884,7 +2734,10 @@ router.put('/:id/status', protect, authorizeRoles('admin'), async (req, res) => 
         await session.abortTransaction();
         session.endSession();
         console.error('Error updating main order status:', error);
-        res.status(500).json({ message: 'Server Error during main order status update.', error: error.message });
+        if (error.statusCode && error.code) {
+            return res.status(error.statusCode).json({ code: error.code, message: error.message });
+        }
+        res.status(500).json({ message: 'Unable to update the order right now. Please refresh and try again.' });
         return;
     }
 

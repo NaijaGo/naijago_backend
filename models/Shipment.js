@@ -140,6 +140,7 @@ const ShipmentSchema = new mongoose.Schema({
             'delivered',
             'returned',
             'cancelled',
+            'rejected',
         ],
         default: 'processing',
     },

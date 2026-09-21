@@ -16,7 +16,7 @@ function loadCheckoutForTests({ models, connection }) {
     const blocked = new Proxy({}, { get: () => forbidden });
     const pure = new Set(['express', 'crypto', '../services/checkoutCatalogService', '../services/checkoutInventoryService',
         '../utils/checkoutQuoteSnapshot', '../utils/flutterwavePayment', '../utils/squadPayment',
-        '../utils/orderPlanningPolicy', '../utils/deliveryScheduleAvailability', '../utils/scheduledOrderSnapshot',
+        '../utils/orderPlanningPolicy', '../utils/orderFulfillmentPolicy', '../utils/deliveryScheduleAvailability', '../utils/scheduledOrderSnapshot',
         '../services/deliveryReservationService', '../services/scheduledOrderPaymentService']);
     function safeRequire(name) {
         if (pure.has(name)) return actualRequire(name);
