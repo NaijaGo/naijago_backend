@@ -6,9 +6,7 @@ Started 2026-09-20. User authorized implementation of the integrated release acr
 
 States: Pending -> Working -> Implemented -> Tested -> Deployed -> Device verified. Record evidence, blockers and remaining tasks. No unsupported completion percentages. Local tests do not imply a production deployment or device verification. Work in verified vertical slices within one release programme. Do not run paid provider calls, transactions or production migrations as automated tests.
 
-## Baseline
-
-### Latest local checkpoint — dispatch and payment-review controls (2026-09-21)
+## Latest local checkpoint — dispatch and payment-review controls (2026-09-21)
 
 - Automatic individual-rider offers and expired-offer release now write the
   order and shipments in one transaction. A stale shipment or failed write rolls
@@ -28,8 +26,13 @@ States: Pending -> Working -> Implemented -> Tested -> Deployed -> Device verifi
   credential-gated Mongo suites skipped (383 total, 367302.6555ms). Nineteen new
   tests cover these changes; reruns are not extra tests. Admin rendering tests
   passed 4/4. The initial full run's isolated-loader allowlist failure is fixed
-  and superseded by this run. Customer Flutter checks remain pending after a
-  loading timeout before assertions; an isolated-temp retry is running.
+  and superseded by this run. Customer focused tests passed 6/6 on the
+  single-worker, dedicated-temp retry (four state tests and two widget tests).
+  The first run timed out during loading before assertions; its cause is not
+  confirmed. Focused Flutter static analysis of the five changed customer files
+  completed with no issues (416.4s). Changed JS syntax and Git whitespace checks
+  also passed. The first concurrent analyzer attempt was stopped, not counted
+  as a pass; the sequential retry is the recorded result.
   This is not current-HEAD Mongo, provider, browser or device acceptance.
 - Still open: durable dispatch/vendor-alert outbox and scan fairness, paid stock
   conflict reconciliation and safe review resolution, reservation expiry/cancel/
@@ -38,6 +41,9 @@ States: Pending -> Working -> Implemented -> Tested -> Deployed -> Device verifi
   integrated provider/database/browser/device/release gates below.
 - No flags enabled, production DB/provider calls, key changes, dependency upgrades,
   pushes, deployments or app builds. Existing screenshots remain excluded.
+- Local code commits: backend `872d9ee`, admin `e45a588`, customer `d1224fa`.
+
+## Baseline
 
 Local remote-tracking refs have not been freshly fetched.
 
@@ -84,7 +90,7 @@ Workspace root has no usable Git repository. Cross-repository tracker lives here
 | REFINE-01 | Preserve original; automatic derivative refinement, background/light/centering/shadow; product identity preserved | Backend | Implemented locally with Photoroom adapter and durable upload marker; real provider/identity acceptance pending. See IMAGE_REFINEMENT.md |
 | REFINE-02 | Original/refined compare, approve/reject/regenerate, versioned publication; bulk/retries/rate-cost controls | Admin/backend | Offline tests and isolated Atlas dedupe/quota/rollback/publication/stale-save/reassignment checks passed; real provider/browser/device acceptance and shared retention/takedown gate still open |
 | SCHED-01 | Now/scheduled, WAT windows/lead time/cutoffs/advance bounds/capacity; expiring payment holds and booking races | Backend/customer | Working: private real receipt/reservation snapshot and wallet/provider confirmation connected locally; expired verified payments enter paid review. Real schedule adapter composition/public activation, expiry worker, policy administration and combined Atlas acceptance remain open. See ORDER_FEATURES.md |
-| SCHED-02 | Multi-vendor split rules, reminders/reschedule/cancel, due-only dispatch and ops visibility | All relevant | Working: actual offer/list/claim/admin HTTP/socket assignment guards, transactional admin assignment and due scan added; scheduled vendor messages use WAT. Remaining dispatch lifecycle/outbox/fairness, rescheduling/cancellation/refunds, reminders, support resolution and all-app views are listed in ORDER_FEATURES.md |
+| SCHED-02 | Multi-vendor split rules, reminders/reschedule/cancel, due-only dispatch and ops visibility | All relevant | Working: due guards, transactional admin/automatic assignment and expiry release, paid/review-safe vendor transitions, and customer/admin review visibility are local and offline-tested; scheduled vendor messages use WAT. Remaining dispatch lifecycle/outbox/fairness, rescheduling/cancellation/refunds, reminders, safe support resolution and feature views are listed in ORDER_FEATURES.md |
 | REVIEW-01 | Delivered verified purchase; stars/text/max 5 JPEG-PNG-HEIC images, max 10MB originals, conversion/thumbnails/EXIF stripping | Backend/customer | Working: eligibility/byte rules and private Cloudinary conversion adapter tested with mocks; existing review route, UI and real decoder/metadata acceptance pending |
 | REVIEW-02 | Reports/admin moderation/audit/customer notice; vendor replies without deleting criticism; photo filter/lazy load | Apps/admin/backend | Pending |
 | GROUP-01 | Single vendor; owner pays; one destination/fee; invite/code, configurable limit (default 10), cutoff/realtime cart | Backend/customer | Working: actual MainOrder/Shipment creation composed with owner-approved immediate group checkout in one transaction; PlannedCheckout Atlas passed 6/6 after 66a0e1c. Public API/screens, notification delivery and payment completion linkage pending |
@@ -276,7 +282,7 @@ Do not treat successful unit tests as permission to publish this unfinished rele
 
 1. Save verified local checkpoints; keep flags off and do not deploy the incomplete release automatically.
 2. All eight prepared Atlas gates (Explore, Search, Workers, Requests, Refinement, Planning, Checkout and PlannedCheckout) passed at their recorded revisions. Latest PlannedCheckout run eadc272f392c4c0dbfc060368e9237e6 passed 6/6. Do not repeat passing suites solely to record progress; rerun relevant regressions when code changes and all required gates at final sign-off. Never change production MONGO_URI for tests.
-3. Actual shared unpaid-order creation is composed with immediate group checkout locally; all planning public APIs remain unmounted. Server-derived scheduled availability and selected-time quoting are now local. Next connect receipt/hold lifecycle, payment-initiation freshness, slot settlement, late-paid/stock-conflict reconciliation and due-only dispatch; finish audited slot administration as part of that integration. Scheduled/recurring order creation deliberately fails closed until those pieces are ready. Continue review submission/media/moderation, authenticated APIs/worker delivery and customer/vendor/admin/rider views. Historical-order compatibility remains a release gate. Preserve delivery/pickup and Squad/legacy flows. Follow ORDER_FEATURES.md; no separate feature release or automatic activation. Batch the next relevant Atlas acceptance runs rather than stopping the user after each small code change.
+3. Finish the connected order lifecycle: payment-initiation freshness, verified-payment stock-conflict reconciliation and audited support resolution; reservation expiry/cancellation/rescheduling/refund handling; durable dispatch/reminder notifications and fair retries. Receipt reservation, payment confirmation, due guards and basic review presentation are already local, not pending from scratch. Compose the real scheduled reservation adapter and audited policy/window administration, then authenticated planning/review APIs, workers and remaining customer/vendor/admin/rider feature views. All planning public APIs remain unmounted until those gates are ready. Preserve historical orders, delivery/pickup and Squad/legacy flows. Follow ORDER_FEATURES.md; one coordinated release, no separate activation. Batch relevant Atlas acceptance rather than stopping the user after each small change.
 4. Keep the real Photoroom sandbox/live trial, private-link checks, browser/device review and shared retention/erasure/takedown work tracked as unfinished release gates (see IMAGE_REFINEMENT.md). Keep flags off pending acceptance; no paid calls have run. Do not rerun already-passed gates solely to claim progress.
 5. Close prior radar/security/regression items, rehearse migrations with a fresh backup, then deploy/build/device-test the complete release.
 6. Do not mark the programme complete with required items unresolved. Record local tests, deployment and device evidence separately.
