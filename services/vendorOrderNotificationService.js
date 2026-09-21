@@ -14,6 +14,10 @@ const buildVendorOrderMessage = ({ order, shipment, paymentMethod = 'Payment' })
   const shortOrderId = order._id.toString().slice(-8);
   const shortShipmentId = shipment._id.toString().slice(-6);
   const isCustomerPickup = shipment.fulfillmentMethod === 'pickup';
+  const scheduled = order.schedule?.mode === 'scheduled';
+  const windowLabel = scheduled ? [order.schedule.startAt, order.schedule.endAt].map((value) =>
+    new Intl.DateTimeFormat('en-NG', { timeZone: 'Africa/Lagos', day: '2-digit', month: 'short',
+      hour: '2-digit', minute: '2-digit', hour12: true }).format(new Date(value))).join(' - ') : null;
   return [
     isCustomerPickup ? 'New paid pickup order on NaijaGo' : 'New paid order on NaijaGo',
     `Order: #${shortOrderId}`,
@@ -24,7 +28,8 @@ const buildVendorOrderMessage = ({ order, shipment, paymentMethod = 'Payment' })
       ? 'Fulfilment: Customer pickup'
       : `Shipping: ${formatMoney(shipment.shippingPrice)}`,
     `Payment: ${paymentMethod}`,
-    'Please open your vendor dashboard and start preparing this order.',
+    ...(scheduled ? [`Scheduled delivery window (WAT): ${windowLabel}`, 'Open your vendor dashboard and plan preparation for this delivery window.']
+      : ['Please open your vendor dashboard and start preparing this order.']),
   ].join('\n');
 };
 
@@ -35,6 +40,7 @@ const notifyVendorOfPaidShipment = async ({
   paymentMethod = 'Payment',
   session,
 }) => {
+  if (!order?.isPaid || order.mainOrderStatus === 'payment_review' || order.paymentResult?.fulfillmentStatus === 'needs_attention') return;
   const vendorId = shipment.vendor?.toString();
   if (!vendorId) return;
 
@@ -56,6 +62,8 @@ const notifyVendorOfPaidShipment = async ({
     itemCount,
     paymentMethod,
     fulfillmentMethod: shipment.fulfillmentMethod || 'delivery',
+    ...(order.schedule?.mode === 'scheduled' ? { scheduledStartAt: order.schedule.startAt,
+      scheduledEndAt: order.schedule.endAt, timeZone: 'Africa/Lagos' } : {}),
     timestamp: Date.now(),
   };
 
@@ -192,5 +200,6 @@ const notifyVendorOfPaidShipment = async ({
 };
 
 module.exports = {
+  buildVendorOrderMessage,
   notifyVendorOfPaidShipment,
 };

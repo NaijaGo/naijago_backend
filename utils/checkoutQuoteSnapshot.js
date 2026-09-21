@@ -1,5 +1,6 @@
 'use strict';
 const { CheckoutCatalogError } = require('../services/checkoutCatalogService');
+const { scheduleQuoteSnapshot } = require('./scheduledOrderSnapshot');
 const ref = (value) => value == null ? null : String(value._id || value);
 const stable = (value) => Array.isArray(value) ? value.map(stable) : value && typeof value === 'object'
     ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, stable(value[key])])) : value;
@@ -26,6 +27,7 @@ function checkoutQuoteSnapshot(quote) {
         subscriptionDeliveryDiscount: money(quote.subscriptionDeliveryDiscount),
         subscriptionFreeDeliveryApplied: quote.subscriptionFreeDeliveryApplied === true, subscriptionPlanId: quote.subscriptionPlanId || '',
         shippingAddress: quote.shippingAddress, userLocation: location(quote.userLocation),
+        schedule: scheduleQuoteSnapshot(quote.schedule),
         shipments: quote.shipmentSummaries.map((summary) => ({
             sellerType: summary.sellerType, sellerId: ref(summary.sellerId), sellerName: summary.sellerName,
             location: location(summary.vendorLocation), fulfillmentMethod: summary.fulfillmentMethod,

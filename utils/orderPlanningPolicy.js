@@ -111,17 +111,33 @@ function schedulingTimes({ startAt, endAt, now = new Date(), policy }) {
     return { timeZone: TIME_ZONE, startAt: start, endAt: end, dispatchAt, changeCutoffAt, expiresAt };
 }
 function canDispatch(order, now = new Date()) {
-    if (!order?.isPaid || ['pending_payment', 'cancelled', 'completed', 'delivered'].includes(order.mainOrderStatus)) return false;
-    if (!order.schedule || order.schedule.mode === 'now') return true;
+    if (order?.isPaid !== true || order.isDelivered === true || order.paymentResult?.fulfillmentStatus === 'needs_attention' ||
+        ['pending_payment', 'payment_review', 'cancelled', 'completed', 'delivered'].includes(order.mainOrderStatus)) return false;
+    if (order.schedule == null || order.schedule.mode === 'now') return true;
     if (order.schedule.mode !== 'scheduled' || order.schedule.state !== 'confirmed') return false;
     try { return instant(order.schedule.dispatchAt) <= instant(now) && instant(order.schedule.endAt) > instant(now); }
     catch (_) { return false; }
 }
+// Compose with, rather than overwrite, the caller's ownership/assignment $or
+// and $and filters. The same predicate must guard the ATOMIC claim, not just a
+// stale read performed before it. Legacy orders have no schedule field.
+function dispatchEligibilityFilter(filter = {}, now = new Date()) {
+    const at = instant(now);
+    return { $and: [filter, {
+        isPaid: true, isDelivered: { $ne: true },
+        mainOrderStatus: { $nin: ['pending_payment', 'payment_review', 'cancelled', 'completed', 'delivered'] },
+        'paymentResult.fulfillmentStatus': { $ne: 'needs_attention' },
+        $or: [{ schedule: null }, { 'schedule.mode': 'now' }, {
+            'schedule.mode': 'scheduled', 'schedule.state': 'confirmed',
+            'schedule.dispatchAt': { $lte: at }, 'schedule.endAt': { $gt: at },
+        }],
+    }] };
+}
 function assertScheduleChange(order, now = new Date()) {
     if (order?.schedule?.mode !== 'scheduled' || order.schedule.state !== 'confirmed' || !order.isPaid ||
-        order.isClaimed || order.rider || order.assignedRider || order.mainOrderStatus !== 'processing' ||
+        order.isClaimed || order.rider || order.assignedRider || order.company || order.mainOrderStatus !== 'processing' ||
         instant(now) >= instant(order.schedule.changeCutoffAt)) fail('SCHEDULE_LOCKED', 'This order can no longer be changed automatically. Please contact support.', 409);
 }
 
 module.exports = { PlanningError, fail, integer, id, instant, calendarDate, clockMinutes, watInstant,
-    normalizeRecurrence, occurrenceAt, upcomingOccurrences, schedulingTimes, canDispatch, assertScheduleChange, TIME_ZONE };
+    normalizeRecurrence, occurrenceAt, upcomingOccurrences, schedulingTimes, canDispatch, dispatchEligibilityFilter, assertScheduleChange, TIME_ZONE };

@@ -1,5 +1,6 @@
 // models/MainOrder.js 
 const mongoose = require('mongoose');
+const OrderScheduleSchema = require('./schemas/OrderSchedule');
 
 // Optional server-owned origin. Existing orders have no planning field; this is
 // not an alternative receipt, payment, stock or fulfilment model.
@@ -45,6 +46,7 @@ const MainOrderSchema = new mongoose.Schema({
         ref: 'Shipment',
     }], 
     planning: { type: PlanningOriginSchema, default: undefined },
+    schedule: { type: OrderScheduleSchema, default: undefined },
     
     // User's delivery details
     shippingAddress: {
@@ -132,6 +134,7 @@ const MainOrderSchema = new mongoose.Schema({
     type: String,
     enum: [
         'pending_payment', 
+        'payment_review',
         'processing', 
         'partially_shipped', 
         'shipped', // <-- ADD THIS
@@ -161,6 +164,7 @@ MainOrderSchema.index({ user: 1, createdAt: -1 });
 MainOrderSchema.index({ rider: 1, createdAt: -1 });
 MainOrderSchema.index({ assignedRider: 1, isClaimed: 1, createdAt: -1 });
 MainOrderSchema.index({ isPaid: 1, mainOrderStatus: 1, createdAt: -1 });
+MainOrderSchema.index({ 'schedule.state': 1, 'schedule.dispatchAt': 1, isPaid: 1, isClaimed: 1 });
 MainOrderSchema.index(
     { 'paymentResult.tx_ref': 1 },
     { unique: true, sparse: true, name: 'unique_flutterwave_tx_ref' }

@@ -2,6 +2,7 @@
 const Rider = require('../models/Rider');
 const Shipment = require('../models/Shipment');
 const MainOrder = require('../models/MainOrder');
+const { canDispatch, dispatchEligibilityFilter } = require('../utils/orderPlanningPolicy');
 const User = require('../models/User');
 const mongoose = require('mongoose');
 const jwt = require('jsonwebtoken');
@@ -875,17 +876,20 @@ exports.getAvailableOrders = async (req, res) => {
         }
       : { assignedRider: req.rider._id };
 
-    const availableOrders = await MainOrder.find({
+    const availableOrders = await MainOrder.find(dispatchEligibilityFilter({
+      company: null,
       isPaid: true,
       mainOrderStatus: { $nin: ['delivered', 'completed', 'cancelled'] },
       isClaimed: false,
       assignmentRejectedBy: { $ne: req.rider._id },
       ...assignmentVisibilityFilter,
-    })
+    }))
     .populate('user', 'firstName lastName phoneNumber')
     .populate({
       path: 'shipments',
       match: { 
+        fulfillmentMethod: { $ne: 'pickup' },
+        company: null,
         shipmentStatus: { $in: ['accepted', 'ready_for_pickup'] },
         isClaimed: false,
         assignmentRejectedBy: { $ne: req.rider._id },
@@ -991,16 +995,16 @@ exports.claimOrder = async (req, res) => {
     }
 
     // Validation checks
-    if (!mainOrder.isPaid) {
+    if (!canDispatch(mainOrder)) {
       await session.abortTransaction();
       session.endSession();
       return res.status(400).json({ 
         success: false,
-        message: 'Order is not paid yet' 
+        message: 'This order is not ready for rider dispatch. Check its payment and delivery time.'
       });
     }
 
-    if (mainOrder.isClaimed) {
+    if (mainOrder.isClaimed || mainOrder.company) {
       await session.abortTransaction();
       session.endSession();
       return res.status(400).json({ 
@@ -1067,6 +1071,7 @@ exports.claimOrder = async (req, res) => {
     const readyShipmentIds = mainOrder.shipments
       .filter(
         (shipment) =>
+          shipment.fulfillmentMethod !== 'pickup' && !shipment.company &&
           ['accepted', 'ready_for_pickup'].includes(shipment.shipmentStatus) &&
           !shipment.isClaimed,
       )
@@ -1082,8 +1087,9 @@ exports.claimOrder = async (req, res) => {
     }
 
     const claimedMainOrder = await MainOrder.findOneAndUpdate(
-      {
+      dispatchEligibilityFilter({
         _id: orderId,
+        company: null,
         isPaid: true,
         isClaimed: false,
         mainOrderStatus: { $nin: ['delivered', 'completed', 'cancelled'] },
@@ -1099,7 +1105,7 @@ exports.claimOrder = async (req, res) => {
           { assignmentRejectedBy: { $ne: riderId } },
         ],
         shipments: { $in: readyShipmentIds }
-      },
+      }),
       {
         $set: {
           rider: riderId,

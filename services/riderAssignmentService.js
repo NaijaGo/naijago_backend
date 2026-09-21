@@ -3,6 +3,7 @@ const MainOrder = require('../models/MainOrder');
 const Shipment = require('../models/Shipment');
 const notificationService = require('./notificationService');
 const { calculateDistance } = require('../utils/distanceCalculator');
+const { canDispatch, dispatchEligibilityFilter } = require('../utils/orderPlanningPolicy');
 const { calculateOrderRiderEarningsBreakdown } = require('./riderEarningsService');
 
 const MAX_ACTIVE_DELIVERIES = 5;
@@ -93,6 +94,9 @@ const notifyEligibleRidersForShipment = async ({
 }) => {
   if (!shipment || !mainOrder) return [];
   if (shipment.fulfillmentMethod === 'pickup') return [];
+  if (shipment.company || mainOrder.company || mainOrder.rider || mainOrder.isClaimed || mainOrder.assignedRider) return [];
+  if (!['accepted', 'ready_for_pickup'].includes(shipment.shipmentStatus)) return [];
+  if (!canDispatch(mainOrder)) return [];
 
   const riders = await findEligibleRiders({
     pickupLocation: shipment.vendorLocation,
@@ -129,13 +133,15 @@ const notifyEligibleRidersForShipment = async ({
   }
 
   const assignedOrder = await MainOrder.findOneAndUpdate(
-    {
+    dispatchEligibilityFilter({
       _id: mainOrder._id,
+      rider: null,
+      company: null,
       isClaimed: false,
       mainOrderStatus: { $nin: ['delivered', 'completed', 'cancelled'] },
       $or: [{ assignedRider: null }, { assignedRider: { $exists: false } }],
       assignmentRejectedBy: { $ne: nearestRider._id },
-    },
+    }),
     {
       $set: mainOrderSet,
     },
@@ -267,7 +273,25 @@ const releaseExpiredRiderAssignments = async ({
     }
   }
 
+  await offerDueScheduledOrders({ app, limit });
   return expiredOrders.length;
+};
+
+// Reuse the existing assignment runner. A vendor may accept/prepare ahead of
+// time; the confirmed order becomes offerable only when dispatch is due. The
+// guarded findOneAndUpdate above prevents duplicate offers across scanners.
+const offerDueScheduledOrders = async ({ app, limit = 20 } = {}) => {
+  const batchSize = Math.min(100, Math.max(1, Number.isSafeInteger(limit) ? limit : 20));
+  const orders = await MainOrder.find(dispatchEligibilityFilter({
+    'schedule.mode': 'scheduled', isClaimed: false, rider: null, company: null, assignedRider: null,
+  })).sort({ 'schedule.dispatchAt': 1, _id: 1 }).limit(batchSize);
+  for (const mainOrder of orders) {
+    const shipment = await Shipment.findOne({ mainOrder: mainOrder._id, fulfillmentMethod: { $ne: 'pickup' },
+      shipmentStatus: { $in: ['accepted', 'ready_for_pickup'] }, isClaimed: false }).sort({ _id: 1 });
+    if (!shipment) continue;
+    await notifyEligibleRidersForShipment({ app, shipment, mainOrder, markReady: shipment.shipmentStatus === 'ready_for_pickup' });
+  }
+  return orders.length;
 };
 
 const notifyAssignedRider = async ({ app, riderId, mainOrder, pickupOTP, deliveryOTP }) => {
@@ -360,4 +384,5 @@ module.exports = {
   notifyAssignedRider,
   notifyRiderAssignmentOffer,
   releaseExpiredRiderAssignments,
+  offerDueScheduledOrders,
 };

@@ -14,6 +14,13 @@ const { createCheckoutInventoryService } = require('../services/checkoutInventor
 const { assertCheckoutQuoteUnchanged } = require('../utils/checkoutQuoteSnapshot');
 const { instant } = require('../utils/orderPlanningPolicy');
 const { watParts } = require('../utils/deliveryScheduleAvailability');
+const { assertScheduleQuoteUnchanged, reservationSnapshot } = require('../utils/scheduledOrderSnapshot');
+const DeliveryWindow = require('../models/DeliveryWindow');
+const DeliveryReservation = require('../models/DeliveryReservation');
+const { createDeliveryReservationService } = require('../services/deliveryReservationService');
+const { createScheduledOrderPaymentService } = require('../services/scheduledOrderPaymentService');
+const deliveryReservations = createDeliveryReservationService({ Window: DeliveryWindow, Reservation: DeliveryReservation, connection: mongoose.connection });
+const scheduledPayments = createScheduledOrderPaymentService({ Reservation: DeliveryReservation, reservations: deliveryReservations });
 const checkoutCatalog = createCheckoutCatalogService({ Product, ProductOffer, User });
 const checkoutInventory = createCheckoutInventoryService({ Product, ProductOffer });
 const Rider = require('../models/Rider');
@@ -241,7 +248,13 @@ async function consumeSubscriptionDeliveryIfNeeded({ buyer, mainOrder, session }
 const decrementPaidItemInventory = (args) => checkoutInventory.decrement(args);
 
 async function notifyPaidOrderVendors({ app, order, paymentMethod }) {
-    const shipments = await Shipment.find({ mainOrder: order._id });
+    if (!order.isPaid || order.mainOrderStatus === 'payment_review' || order.paymentResult?.fulfillmentStatus === 'needs_attention') return;
+    let shipments;
+    try { shipments = await Shipment.find({ mainOrder: order._id }); }
+    catch (error) {
+        console.error('Post-settlement vendor lookup failed:', error.message);
+        return;
+    }
     for (const shipment of shipments) {
         try {
             await notifyVendorOfPaidShipment({ app, order, shipment, paymentMethod });
@@ -251,7 +264,20 @@ async function notifyPaidOrderVendors({ app, order, paymentMethod }) {
     }
 }
 
-async function settleVerifiedPayment({ order, buyer, verifiedTx, app, session, method, provider = 'flutterwave', deferVendorNotifications = false }) {
+async function settleVerifiedPayment({ order, buyer, verifiedTx, app, session, method, provider = 'flutterwave' }) {
+    if (!session?.inTransaction()) throw new CheckoutCatalogError('TRANSACTION_REQUIRED', 'Payment settlement requires an active transaction.', 500);
+    if (order.isPaid) {
+        if (order.paymentResult?.tx_ref !== verifiedTx.tx_ref || order.paymentResult?.provider !== provider) {
+            throw new CheckoutCatalogError('PAYMENT_ALREADY_RECORDED', 'This order already has a recorded payment. Do not pay again.', 409);
+        }
+        return order;
+    }
+    let scheduleError;
+    try { await scheduledPayments.confirm(order, session); }
+    catch (error) {
+        if (!['RESERVATION_NOT_FOUND', 'RESERVATION_CHANGED', 'RESERVATION_EXPIRED', 'PAID_SLOT_NEEDS_ATTENTION', 'ORDER_NOT_PAYABLE'].includes(error.code)) throw error;
+        scheduleError = error;
+    }
     order.isPaid = true;
     order.paidAt = order.paidAt || new Date();
     order.mainOrderStatus = 'processing';
@@ -270,6 +296,11 @@ async function settleVerifiedPayment({ order, buyer, verifiedTx, app, session, m
         verificationMethod: method,
     };
 
+    if (scheduleError) {
+        await scheduledPayments.markVerifiedReview({ order, error: scheduleError, session });
+        return order.save({ session });
+    }
+
     await consumeSubscriptionDeliveryIfNeeded({ buyer, mainOrder: order, session });
     const shipments = await Shipment.find({ mainOrder: order._id }).session(session);
     for (const shipment of shipments) {
@@ -278,9 +309,7 @@ async function settleVerifiedPayment({ order, buyer, verifiedTx, app, session, m
         for (const item of shipment.items) {
             await decrementPaidItemInventory({ item, session, sellerType: shipment.sellerType, sellerId: shipment.sellerId || shipment.vendor });
         }
-        if (!deferVendorNotifications) {
-            await notifyVendorOfPaidShipment({ app, order, shipment, paymentMethod: provider === 'squad' ? 'Squad' : 'Flutterwave', session });
-        }
+        // External notifications are sent by the caller only AFTER commit.
     }
     return order.save({ session });
 }
@@ -1187,15 +1216,18 @@ router.post('/summary', protect, async (req, res) => {
 // @desc    Create new MainOrder and associated Shipment documents
 // @route   POST /api/orders
 // @access  Private
-async function createUnpaidOrder({ input, userId, session, expectedQuote = null, planning = null }) {
+async function createUnpaidOrder({ input, userId, session, expectedQuote = null, planning = null, scheduleService = null }) {
     // Server-only creator: the caller owns commit/rollback and approved context.
         if (!session?.inTransaction()) throw new CheckoutCatalogError('TRANSACTION_REQUIRED', 'Order creation requires an active transaction.', 500);
         if (planning && (!expectedQuote || !['group', 'recurring'].includes(planning.kind) || !/^[a-f\d]{24}$/i.test(String(planning.sourceId || '')) ||
             !Number.isSafeInteger(planning.revision) || planning.revision < 0)) throw new CheckoutCatalogError('INVALID_PLANNING_SOURCE', 'Planned checkout requires a validated source and current quote.', 500);
         const { shippingAddress, paymentMethod, userLocation } = input;
-        // Future-time pricing, reservation confirmation and dispatch guards must
-        // be integrated before a scheduled order can be persisted.
-        if (planning?.kind === 'recurring' || (input.schedule?.mode && input.schedule.mode !== 'now') || (expectedQuote?.schedule?.mode && expectedQuote.schedule.mode !== 'now')) {
+        // The public legacy creator cannot opt in by passing body fields. A
+        // private server-composed service and approved quote are both required.
+        const wantsSchedule = input.schedule?.mode === 'scheduled' || expectedQuote?.schedule?.mode === 'scheduled';
+        if ((planning?.kind === 'recurring' && !wantsSchedule) ||
+            (wantsSchedule && (!expectedQuote || !scheduleService?.check || !scheduleService?.reserve)) ||
+            (input.schedule?.mode && !['now', 'scheduled'].includes(input.schedule.mode))) {
             throw new CheckoutCatalogError('SCHEDULE_UNAVAILABLE', 'Scheduled checkout is not ready yet.', 503);
         }
         if (!['Card', 'Bank Transfer', 'Wallet'].includes(paymentMethod)) throw new CheckoutCatalogError('INVALID_PAYMENT_METHOD', 'Choose a valid payment method.', 400);
@@ -1213,6 +1245,18 @@ async function createUnpaidOrder({ input, userId, session, expectedQuote = null,
         const shipmentSummaries = input.shipmentSummaries.map((summary) => ({ ...summary, items: summary.items.map((item) => item && { ...item }) }));
         const submittedItems = shipmentSummaries.flatMap((summary) => summary.items);
         const catalogLines = await checkoutCatalog.resolve(submittedItems, { session });
+        let approvedSchedule = null;
+        if (wantsSchedule) {
+            if (shipmentSummaries.some((summary) => summary.fulfillmentMethod === 'pickup')) {
+                throw new CheckoutCatalogError('SPLIT_ORDER_REQUIRED', 'Scheduled delivery and shop pickup need separate checkouts.', 409);
+            }
+            assertScheduleQuoteUnchanged(expectedQuote.schedule, input.schedule);
+            const checked = await scheduleService.check({ lines: catalogLines, destination: userLocation, schedule: expectedQuote.schedule, session });
+            if (!checked?.eligible) throw new CheckoutCatalogError('SCHEDULE_UNAVAILABLE', 'Choose an available delivery window.', 409);
+            assertScheduleQuoteUnchanged(expectedQuote.schedule, checked.schedule);
+            approvedSchedule = checked.schedule;
+        }
+        const deliveryAt = approvedSchedule ? instant(approvedSchedule.startAt) : new Date();
         const catalogByItem = new Map(submittedItems.map((item, index) => [item, catalogLines[index]]));
         // --- Step 1: Stock Check (Must check stock for ALL items across ALL shipments) ---
         const deliveryFeeSettings = await getDeliveryFeeSettings();
@@ -1275,11 +1319,11 @@ async function createUnpaidOrder({ input, userId, session, expectedQuote = null,
                 if (isRestrictedMedicine(product)) {
                     throw new CheckoutCatalogError('CONSULTATION_REQUIRED', `${product.name} requires pharmacist consultation before purchase.`, 400);
                 }
-                if (isRestaurantProduct(product) && !isWithinRestaurantOrderWindow(product)) {
+                if (isRestaurantProduct(product) && !isWithinRestaurantOrderWindow(product, deliveryAt)) {
                     throw new CheckoutCatalogError('RESTAURANT_CLOSED', `${product.name} can only be ordered from ${product.orderStartTime || '09:00'} to ${product.orderEndTime || '19:00'}.`, 400);
                 }
                 if (isRestaurantProduct(product)) {
-                    const vendorHours = isWithinVendorOperatingHours(sellerVendor || {});
+                    const vendorHours = isWithinVendorOperatingHours(sellerVendor || {}, deliveryAt);
                     if (!vendorHours.open) {
                         throw new CheckoutCatalogError('RESTAURANT_CLOSED', `${sellerVendor?.businessName || product.restaurantName || 'This restaurant'} is not accepting orders now. ${vendorHours.reason}`, 400);
                     }
@@ -1409,6 +1453,7 @@ async function createUnpaidOrder({ input, userId, session, expectedQuote = null,
             totalShippingPrice: recalculatedShippingPrice,
             matchedDeliveryZone,
             shippingAddress,
+            deliveryAt,
         });
 
         if (authoritativeSubscriptionDiscount.eligible) {
@@ -1429,6 +1474,7 @@ async function createUnpaidOrder({ input, userId, session, expectedQuote = null,
 
         if (expectedQuote) assertCheckoutQuoteUnchanged(expectedQuote, {
             shippingAddress, userLocation, shipmentSummaries,
+            schedule: approvedSchedule || { mode: 'now' },
             totalSubtotal: parseFloat(recalculatedSubtotal.toFixed(2)), totalPlatformFees: parseFloat(recalculatedPlatformFees.toFixed(2)),
             totalShippingPrice: parseFloat(recalculatedShippingPrice.toFixed(2)), originalShippingPrice: parseFloat(recalculatedOriginalShippingPrice.toFixed(2)),
             totalPrice: authoritativeTotalPrice, taxPrice: authoritativeTaxPrice,
@@ -1459,6 +1505,11 @@ async function createUnpaidOrder({ input, userId, session, expectedQuote = null,
             shipments: [], // Start empty, populate in next step
         });
 
+        if (approvedSchedule) {
+            const reservation = await scheduleService.reserve({ orderId: String(mainOrder._id), owner: String(userId),
+                lines: catalogLines, destination: userLocation, schedule: approvedSchedule, expectedSchedule: approvedSchedule, session });
+            mainOrder.schedule = reservationSnapshot(reservation, approvedSchedule.areaKey);
+        }
         const createdMainOrder = await mainOrder.save({ session });
         
         const shipmentIds = [];
@@ -1949,6 +2000,8 @@ router.put('/:id/pay/wallet', protect, async (req, res) => {
             });
         }
        
+        // Confirm capacity in this SAME transaction before any wallet debit.
+        await scheduledPayments.confirm(mainOrder, session);
         // 4. Debit the buyer's wallet and consume subscription delivery if used
         buyer.userWalletBalance = Number(((buyer.userWalletBalance || 0) - orderTotal).toFixed(2));
         await consumeSubscriptionDeliveryIfNeeded({ buyer, mainOrder, session });
@@ -1967,20 +2020,6 @@ router.put('/:id/pay/wallet', protect, async (req, res) => {
             email_address: buyer.email,
         };
 
-        // Buyer notification (already existing)
-        try {
-            await notificationService.sendToUser(req.user.id.toString(), {
-                title: 'Payment Successful!',
-                message: `Your payment of ₦${orderTotal.toFixed(2)} was successful. Order #${mainOrder._id}`,
-                data: {
-                    type: 'payment_success',
-                    orderId: mainOrder._id,
-                    amount: orderTotal
-                }
-            });
-        } catch (notifError) {
-            console.error('Payment notification failed:', notifError);
-        }
 
         // 6. Process shipments
         const shipments = await Shipment.find({ mainOrder: mainOrder._id }).session(session);
@@ -1991,12 +2030,20 @@ router.put('/:id/pay/wallet', protect, async (req, res) => {
             for (const item of shipment.items) {
                 await decrementPaidItemInventory({ item, session, sellerType: shipment.sellerType, sellerId: shipment.sellerId || shipment.vendor });
             }
-            await notifyVendorOfPaidShipment({ app: req.app, order: mainOrder, shipment, paymentMethod: 'Wallet', session });
         }
        
         const updatedOrder = await mainOrder.save({ session });
         await session.commitTransaction();
         session.endSession();
+
+        await notifyPaidOrderVendors({ app: req.app, order: updatedOrder, paymentMethod: 'Wallet' });
+        try {
+            await notificationService.sendToUser(req.user.id.toString(), {
+                title: 'Payment Successful!',
+                message: `Your payment was successful. Order #${mainOrder._id}`,
+                data: { type: 'payment_success', orderId: mainOrder._id, amount: orderTotal },
+            });
+        } catch (error) { console.error('Post-settlement payment notification failed:', error.message); }
 
         try {
             await grantReferralRewardForVerifiedUser(req.user.id);
@@ -2024,11 +2071,14 @@ router.post('/:id/payment-intent', protect, async (req, res) => {
             return res.status(401).json({ message: 'Not authorized to pay for this order' });
         }
         if (order.isPaid) {
-            return res.status(200).json({ status: 'verified', orderId: order._id });
+            return res.status(200).json({ status: order.mainOrderStatus === 'payment_review' ? 'payment_review' : 'verified',
+                orderId: order._id, message: order.paymentResult?.reviewMessage });
         }
         if (order.paymentMethod === 'Wallet') {
             return res.status(400).json({ message: 'Wallet orders do not use online checkout.' });
         }
+
+        await scheduledPayments.inspect(order);
 
         const provider = configuredPaymentProvider();
         if (provider === 'squad') {
@@ -2105,8 +2155,9 @@ router.post('/:id/payment-intent', protect, async (req, res) => {
             status: order.paymentResult.status,
         });
     } catch (error) {
-        console.error('[PAYMENT INTENT] Error:', error);
-        return res.status(500).json({ message: 'Unable to prepare payment.' });
+        console.error('[PAYMENT INTENT] Error:', { code: error.code, message: error.message });
+        return res.status(error.statusCode || 500).json({ code: error.statusCode ? error.code : undefined,
+            message: error.statusCode ? error.message : 'Unable to prepare payment.' });
     }
 });
 
@@ -2285,6 +2336,7 @@ router.put('/:id/pay', protect, async (req, res) => {
         console.log(`[PAY ENDPOINT] Updated paymentResult for order ${mainOrder._id}:`, JSON.stringify(mainOrder.paymentResult, null, 2));
         await session.commitTransaction();
         session.endSession();
+        await notifyPaidOrderVendors({ app: req.app, order: updatedOrder, paymentMethod: 'Flutterwave' });
 
         try {
             await grantReferralRewardForVerifiedUser(req.user.id);
@@ -3216,6 +3268,7 @@ router.post('/webhooks/flutterwave', async (req, res) => {
 
     await session.commitTransaction();
     console.log(`Webhook success: Order ${order._id} marked paid via webhook (tx_ref: ${tx.tx_ref})`);
+    await notifyPaidOrderVendors({ app: req.app, order, paymentMethod: 'Flutterwave' });
 
     try {
       await grantReferralRewardForVerifiedUser(order.user);
@@ -3283,6 +3336,7 @@ async function processPendingFlutterwavePayments(app) {
           method: 'scheduled_reconciliation',
         });
         await session.commitTransaction();
+        await notifyPaidOrderVendors({ app, order, paymentMethod: 'Flutterwave' });
         await grantReferralRewardForVerifiedUser(order.user);
         console.log(`[PAYMENT RECOVERY] Order ${order._id} verified via ${txRef}`);
       } catch (error) {
@@ -3372,6 +3426,7 @@ router.processPendingSquadPayments = processPendingSquadPayments;
 router.paymentMatchesOrder = paymentMatchesOrder;
 router.calculateCheckoutSummary = calculateCheckoutSummary;
 router.createUnpaidOrder = createUnpaidOrder;
+router.settleVerifiedPayment = settleVerifiedPayment;
 
 
 

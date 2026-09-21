@@ -1,6 +1,7 @@
 'use strict';
 const { fail } = require('../utils/orderPlanningPolicy');
 const { resolveScheduleResources } = require('../utils/deliveryScheduleAvailability');
+const { assertScheduleQuoteUnchanged } = require('../utils/scheduledOrderSnapshot');
 
 function createSchedulePolicyReader(AppSetting) {
     return async ({ session } = {}) => {
@@ -42,7 +43,11 @@ function createDeliveryScheduleService({ Window, readPolicy, reservations, now =
         // Do not reject a retry because its OWN existing hold filled a window.
         // The reservation service checks identity first, then atomically claims
         // all resources with used < capacity inside this same transaction.
-        const { windows, resourceKeys, policy } = await resolve(args, false);
+        const { windows, resourceKeys, policy, times, areaKey } = await resolve(args, false);
+        if (args.expectedSchedule) assertScheduleQuoteUnchanged(args.expectedSchedule, {
+            mode: 'scheduled', timeZone: 'Africa/Lagos', startAt: times.startAt, endAt: times.endAt,
+            dispatchAt: times.dispatchAt, changeCutoffAt: times.changeCutoffAt, policyRevision: policy.revision, areaKey,
+        });
         return reservations.reserve({ orderId: args.orderId, owner: args.owner, windowIds: windows.map((row) => String(row._id)), resourceKeys, policy, session: args.session });
     }
     return { check, reserve };

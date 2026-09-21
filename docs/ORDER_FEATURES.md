@@ -8,12 +8,61 @@ its payment, privacy, inventory or acceptance requirements.
 ## Current boundary: foundations and shared checkout, NOT four completed features
 
 The new domain services and schemas are local. No new planning/review public
-routes are mounted, no scheduled payment/dispatch hook is activated, and no worker
-is running these new jobs. Existing order summary/creation now share authoritative
+routes are mounted. Local payment and dispatch hooks now recognize scheduled
+receipts, but the public scheduled-checkout gate and planned-order composition
+remain closed. No planning/reminder worker is running these new jobs.
+Existing order summary/creation now share authoritative
 catalog validation; the existing wallet/provider stock hook handles offer variants
 transactionally. Provider verification and delivery pricing policies are unchanged.
 No app screen, release build, migration or production deployment is claimed.
 Do not enable/publish the four features based on these foundations alone.
+
+### Receipt, payment and dispatch checkpoint (2026-09-21, local only)
+
+- Optional `MainOrder.schedule` stores the reservation identity, approved WAT
+  window, policy revision, expiry and confirmation. Historical orders do not
+  acquire a schedule. Quote comparison includes the window and policy; the private
+  creator rechecks availability and reserves capacity in its caller's transaction
+  before writing the real receipt/shipments. It does not reserve product stock.
+- Wallet debit and provider settlement confirm the owned reservation in the same
+  transaction as inventory and the receipt. A verified gateway payment arriving
+  after an expired/missing/changed reservation becomes paid `payment_review`, not
+  a dispatchable order or a second payment request. Only expired held capacity is
+  released automatically; confirmed or mismatched capacity needs support review.
+- The shared settlement helper is idempotent for its recorded provider/reference.
+  Wallet buyer/vendor alerts and legacy Flutterwave vendor alerts now run after
+  commit, matching the existing Squad post-commit path. A failed stock write sends
+  no success alert. Durable delivery/retry of these alerts remains an open gate;
+  post-commit best effort is not an exactly-once outbox.
+- The same paid/confirmed/due/unexpired predicate guards automatic offers, rider
+  listing/atomic claims and admin HTTP/socket assignment. Customer pickup and
+  company-owned work are excluded from individual rider jobs. The existing timeout
+  runner also scans due scheduled orders. Vendor alerts identify the WAT window
+  instead of asking for immediate preparation.
+- Admin individual/company assignment writes are transactional. Company ownership
+  uses the existing `company` field, not the undeclared `assignedToCompany` field;
+  company rider IDs no longer enter an individual `Rider` reference. Inactive/
+  foreign company riders, unpaid/early/review orders and customer pickup are rejected.
+
+**Required before activation:** compose the real reservation adapter into planned
+checkout; authenticated policy/window administration; current-price/eligibility
+checks before initiating payment; stock-conflicted verified-payment reconciliation;
+support/customer payment-review screens and safe resolution; reservation-expiry
+worker; cancellation/rescheduling/refund rules; reminder outboxes; all-app views.
+Finish dispatch lifecycle review too: automatic offer/shipment/outbox atomicity,
+due-scan fairness and bounded no-rider notices, company accept/reject/status/OTP
+checks and order/shipment completion synchronization. These existing downstream
+paths are not proven end-to-end by the assignment tests.
+
+Offline tests use the actual route/service code with injected databases/providers;
+fake transaction rollback and query predicates do not prove Mongo concurrency.
+Final full backend regression: **356 passed, zero failed, eight credential-gated
+Mongo suites skipped (364 total, 67879.3626ms)**. All changed JavaScript syntax
+and Git diff checks passed. There are 25 new tests beyond the previous checkpoint;
+focused reruns are not added to the total. Earlier test-fixture failures are superseded.
+Collect current-HEAD isolated Mongo evidence in the combined acceptance run,
+then provider/browser/device evidence. No production database change, new key,
+provider call, push, deployment, Flutter upgrade or app build accompanies this work.
 
 ### Scheduled availability and future quotes (2026-09-20, local only)
 
@@ -55,9 +104,10 @@ with stored-policy reads, derived resources, concurrent reservations, repeat ide
 rollback and revision mismatch. Its real Atlas result is **pending**, to be collected
 in the combined acceptance run, not through another user test interruption now.
 
-**Still blocked deliberately:** scheduled/recurring receipt creation, payment-slot
-confirmation, late-success reconciliation, actual rider dispatch guards, rescheduling,
-reminders and app/admin screens. No public scheduling API was enabled, no database
+**Historical boundary at this earlier checkpoint (superseded by 2026-09-21 above):**
+scheduled/recurring receipt creation, payment-slot confirmation, late-success
+reconciliation and actual rider dispatch guards were not integrated. Rescheduling,
+reminders and app/admin screens remain open. No public scheduling API was enabled, no database
 was changed, and no provider, push, deployment or app build was performed for this
 checkpoint. Next integrate receipt/hold lifecycle and payment freshness/settlement,
 then every dispatch entry point before relaxing the existing scheduled-checkout gate.

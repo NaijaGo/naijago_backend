@@ -17,7 +17,7 @@ const query = (value) => ({ select() { return this; }, session() { return this; 
     then(resolve, reject) { return Promise.resolve(value).then(resolve, reject); } });
 
 async function setup(t, options = {}) {
-    const saved = { orders: [], shipments: [], commits: 0, aborts: 0, ends: 0, feeCalls: [], buyerReads: [], sessionReads: [] };
+    const saved = { orders: [], shipments: [], commits: 0, aborts: 0, ends: 0, feeCalls: [], buyerReads: [], sessionReads: [], vendorNotices: [], buyerNotices: [], inventoryWrites: 0 };
     const readQuery = (name, value) => { const result = query(value); result.session = function(value) { saved.sessionReads.push({ name, value }); return this; }; return result; };
     // Lean Mongo results retain BSON ObjectIds; HTTP serialization must not be
     // required to make an internal quote usable by the order creator.
@@ -31,13 +31,14 @@ async function setup(t, options = {}) {
     class MainOrder { constructor(data) { Object.assign(this, data); this._id = '666666666666666666666666'; }
         async save() { if (!saved.orders.includes(this)) saved.orders.push(this); return this; } }
     class Shipment { constructor(data) { Object.assign(this, data); this._id = `shipment-${saved.shipments.length}`; }
-        async save() { saved.shipments.push(this); return this; } static countDocuments() { return query(0); } }
+        async save() { if (!saved.shipments.includes(this)) saved.shipments.push(this); return this; } static countDocuments() { return query(0); } }
     const session = { startTransaction() {}, inTransaction: () => true, endSession() { saved.ends++; },
         async abortTransaction() { saved.aborts++; }, async commitTransaction() { saved.commits++; } };
     const models = { MainOrder, Shipment, Product: { find: () => options.databaseError ? { lean: async () => { throw new Error('synthetic-private-connection-string'); } } : readQuery('products', [product, ...(options.products || [])]) },
         ProductOffer: { find: () => readQuery('offers', [offer, ...(options.offers || [])]) },
         User: { find: () => readQuery('sellers', [seller]), findById: (id) => { saved.buyerReads.push(String(id)); return readQuery('buyer', String(id) === S ? seller : options.buyer || {}); }, findOne: () => query(seller) },
-        AppSetting: { findOne: () => readQuery('commission', { costLowStore: { vendorId: S, commissionKoboPerUnit: 5700 } }) } };
+        AppSetting: { findOne: () => readQuery('commission', { costLowStore: { vendorId: S, commissionKoboPerUnit: 5700 } }) },
+        DeliveryReservation: {} };
     if (options.realOrderModels) {
         for (const name of ['MainOrder', 'Shipment']) {
             models[name] = require('../models/' + name);
@@ -60,7 +61,12 @@ async function setup(t, options = {}) {
         if (name === '../middleware/authMiddleware') return { protect: middleware, authorizeRoles: () => middleware };
         if (name === '../services/deliveryFeeService') return { getDeliveryFeeSettings: async () => ({}), buildDeliveryFeeQuote: (args) => { saved.feeCalls.push(args); return { amount: options.deliveryFee ?? 500, source: 'test', zone: null }; } };
         if (name.endsWith('/analyticsService')) return { trackAnalyticsEvent() { if (options.analyticsError) throw new Error('synthetic-analytics-failure'); return Promise.resolve(); } };
-        if (name.startsWith('../services/') && !['../services/checkoutCatalogService', '../services/checkoutInventoryService'].includes(name)) return {};
+        if (name === '../services/vendorOrderNotificationService') return { notifyVendorOfPaidShipment: async () => { saved.vendorNotices.push(saved.commits); } };
+        if (name === '../services/notificationService') return { sendToUser: async () => { saved.buyerNotices.push(saved.commits); } };
+        if (name === '../services/checkoutInventoryService' && options.fakeInventory) return { createCheckoutInventoryService: () => ({ decrement: async () => {
+            saved.inventoryWrites++; if (options.failInventory) throw new Error('synthetic-stock-conflict');
+        } }) };
+        if (name.startsWith('../services/') && !['../services/checkoutCatalogService', '../services/checkoutInventoryService', '../services/deliveryReservationService', '../services/scheduledOrderPaymentService'].includes(name)) return {};
         return actualRequire(name);
     }
     vm.runInThisContext('(function(require, module, exports, console) {\n' + fs.readFileSync(file, 'utf8') + '\n})', { filename: file })(requireForRoute, module, module.exports, { log() {}, error() {} });
@@ -68,8 +74,78 @@ async function setup(t, options = {}) {
     const listener = app.listen(0, '127.0.0.1'); await new Promise((resolve) => listener.once('listening', resolve));
     t.after(() => { listener.closeAllConnections(); return new Promise((resolve) => listener.close(resolve)); });
     return { saved, models, session, product, offer, seller, createUnpaidOrder: module.exports.createUnpaidOrder,
-        calculateCheckoutSummary: module.exports.calculateCheckoutSummary, async post(route, input) { const response = await fetch(`http://127.0.0.1:${listener.address().port}/orders${route}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input), signal: AbortSignal.timeout(15000) }); return { status: response.status, data: await response.json() }; } };
+        settleVerifiedPayment: module.exports.settleVerifiedPayment,
+        calculateCheckoutSummary: module.exports.calculateCheckoutSummary, async post(route, input, method = 'POST') { const response = await fetch(`http://127.0.0.1:${listener.address().port}/orders${route}`, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input), signal: AbortSignal.timeout(15000) }); return { status: response.status, data: await response.json() }; } };
 }
+
+test('private scheduled creator preserves the approved window and transaction-owned reservation on the real receipt', async (t) => {
+    const f = await setup(t, { realOrderModels: true }), userId = '777777777777777777777777';
+    const schedule = { mode: 'scheduled', timeZone: 'Africa/Lagos', areaKey: 'abuja', policyRevision: 2,
+        startAt: new Date('2100-01-01T12:00:00Z'), endAt: new Date('2100-01-01T14:00:00Z'),
+        dispatchAt: new Date('2100-01-01T11:00:00Z'), changeCutoffAt: new Date('2100-01-01T10:00:00Z') };
+    const quote = { ...await f.calculateCheckoutSummary({ ...body(), userId, deliveryAt: schedule.startAt }), schedule };
+    let reservations = 0;
+    const service = { check: async ({ session, lines }) => {
+        assert.equal(session, f.session); assert.equal(lines.length, 1); return { eligible: true, schedule };
+    }, reserve: async (args) => {
+        reservations++; assert.equal(args.session, f.session); assert.equal(args.owner, userId);
+        assert.deepEqual(args.expectedSchedule, schedule); assert.equal(args.lines.length, 1);
+        return { ...schedule, _id: new Types.ObjectId(), order: args.orderId, owner: userId,
+            state: 'held', expiresAt: new Date('2100-01-01T09:00:00Z') };
+    } };
+    const args = { userId, session: f.session, expectedQuote: quote, scheduleService: service,
+        planning: { kind: 'recurring', sourceId: P2, revision: 1 }, input: body({ shipmentSummaries: quote.shipmentSummaries, schedule }) };
+    const result = await f.createUnpaidOrder(args);
+    assert.equal(result.order.schedule.state, 'held'); assert.equal(result.order.schedule.areaKey, 'abuja');
+    assert.equal(result.order.schedule.startAt.toISOString(), schedule.startAt.toISOString());
+    assert.equal(result.order.isPaid, false); assert.equal(result.order.totalPrice, 2500); assert.equal(reservations, 1);
+    assert.equal(f.saved.commits, 0); assert.equal(f.saved.inventoryWrites, 0); assert.equal(f.saved.vendorNotices.length, 0);
+    await assert.rejects(f.createUnpaidOrder({ ...args, input: { ...args.input, schedule: { ...schedule, areaKey: 'forged' } } }), { code: 'SCHEDULE_CHANGED' });
+    await assert.rejects(f.createUnpaidOrder({ ...args, scheduleService: { ...service,
+        check: async () => ({ eligible: true, schedule: { ...schedule, policyRevision: 3 } }) } }), { code: 'SCHEDULE_CHANGED' });
+    assert.equal(reservations, 1); assert.equal(f.saved.orders.length, 1);
+});
+
+test('failed scheduled capacity reservation writes no receipt or shipment and never commits the caller transaction', async (t) => {
+    const f = await setup(t, { realOrderModels: true }), userId = '777777777777777777777777';
+    const schedule = { mode: 'scheduled', timeZone: 'Africa/Lagos', areaKey: 'abuja', policyRevision: 1,
+        startAt: '2100-01-01T12:00:00Z', endAt: '2100-01-01T14:00:00Z', dispatchAt: '2100-01-01T11:00:00Z', changeCutoffAt: '2100-01-01T10:00:00Z' };
+    const quote = { ...await f.calculateCheckoutSummary({ ...body(), userId, deliveryAt: schedule.startAt }), schedule };
+    await assert.rejects(f.createUnpaidOrder({ userId, session: f.session, expectedQuote: quote,
+        scheduleService: { check: async () => ({ eligible: true, schedule }), reserve: async () => { throw new Error('synthetic-capacity-conflict'); } },
+        input: body({ shipmentSummaries: quote.shipmentSummaries, schedule }) }), /synthetic-capacity-conflict/);
+    assert.equal(f.saved.orders.length, 0); assert.equal(f.saved.shipments.length, 0); assert.equal(f.saved.commits, 0);
+});
+
+test('shared provider settlement is idempotent and never sends external notifications inside the payment transaction', async (t) => {
+    const f = await setup(t, { fakeInventory: true }), userId = '777777777777777777777777';
+    const quote = await f.calculateCheckoutSummary({ ...body(), userId });
+    const { order } = await f.createUnpaidOrder({ userId, session: f.session, input: body({ shipmentSummaries: quote.shipmentSummaries }) });
+    f.models.Shipment.find = () => query([...f.saved.shipments]);
+    const args = { order, session: f.session, buyer: {}, verifiedTx: { id: 'verified', tx_ref: 'synthetic-ref', status: 'successful', amount: 2500, currency: 'NGN' }, provider: 'squad', method: 'test' };
+    await f.settleVerifiedPayment(args);
+    assert.equal(order.isPaid, true); assert.equal(order.mainOrderStatus, 'processing'); assert.equal(f.saved.inventoryWrites, 1);
+    assert.equal(f.saved.vendorNotices.length, 0); assert.equal(f.saved.buyerNotices.length, 0);
+    await f.settleVerifiedPayment(args); assert.equal(f.saved.inventoryWrites, 1);
+    await assert.rejects(f.settleVerifiedPayment({ ...args, verifiedTx: { ...args.verifiedTx, tx_ref: 'different-payment' } }), { code: 'PAYMENT_ALREADY_RECORDED' });
+    await assert.rejects(f.settleVerifiedPayment({ ...args, session: null }), { code: 'TRANSACTION_REQUIRED' });
+});
+
+test('wallet sends buyer/vendor alerts only after commit; failed inventory sends neither', async (t) => {
+    for (const failInventory of [false, true]) {
+        const buyer = { userWalletBalance: 10000, async save() { return this; } };
+        const f = await setup(t, { buyer, fakeInventory: true, failInventory }), userId = '777777777777777777777777';
+        const quote = await f.calculateCheckoutSummary({ ...body(), userId });
+        const { order } = await f.createUnpaidOrder({ userId, session: f.session, input: body({ paymentMethod: 'Wallet', shipmentSummaries: quote.shipmentSummaries }) });
+        order.toObject = () => ({ ...order });
+        f.models.MainOrder.findById = () => query(order); f.models.Shipment.find = () => query([...f.saved.shipments]);
+        const result = await f.post('/' + order._id + '/pay/wallet', {}, 'PUT');
+        assert.equal(result.status, failInventory ? 500 : 200);
+        assert.deepEqual(f.saved.vendorNotices, failInventory ? [] : [1]);
+        assert.deepEqual(f.saved.buyerNotices, failInventory ? [] : [1]);
+        assert.equal(f.saved.commits, failInventory ? 0 : 1);
+    }
+});
 
 test('future quotes evaluate subscription expiry and benefit hours at delivery time', async (t) => {
     const f = await setup(t, { buyer: { naijagoSubscription: { status: 'active', expiresAt: '2100-02-01T00:00:00Z',

@@ -24,6 +24,7 @@ const {
   notifyRiderAssignmentOffer,
 } = require('./services/riderAssignmentService');
 const notificationService = require('./services/notificationService');
+const { createAdminDispatchService } = require('./services/adminDispatchService');
 const { publishAdminActivity } = require('./services/adminActivityService');
 const adminActivityMiddleware = require('./middleware/adminActivityMiddleware');
 const { cleanupObsoleteIndexes } = require('./utils/dbIndexMaintenance');
@@ -202,6 +203,7 @@ const Shipment = require('./models/Shipment');
 const Company = require('./models/Company');
 const CompanyRider = require('./models/CompanyRider');
 const CompanyDelivery = require('./models/CompanyDelivery');
+const adminDispatch = createAdminDispatchService({ MainOrder, Shipment, Rider, Company, CompanyRider, CompanyDelivery, connection: MainOrder.db });
 
 // expose io to controllers
 app.set('io', io);
@@ -1567,45 +1569,7 @@ io.on('connection', (socket) => {
         const { orderId, riderId, riderType = 'individual', companyId } = data;
         
         if (riderType === 'individual') {
-          const order = await MainOrder.findOneAndUpdate(
-            {
-              _id: orderId,
-              isClaimed: false,
-              mainOrderStatus: { $nin: ['delivered', 'completed', 'cancelled'] },
-            },
-            {
-              $set: {
-                assignedRider: riderId,
-                assignedAt: new Date(),
-                shipmentStatus: 'ready_for_pickup',
-                assignedToCompany: null,
-              },
-              $pull: {
-                assignmentRejectedBy: riderId,
-              },
-            },
-            { new: true }
-          )
-            .populate('assignedRider', 'fullName phoneNumber plateNumber currentLocation lastActive isAvailable isActive')
-            .populate('user', 'firstName lastName phoneNumber');
-
-          if (!order) {
-            return socket.emit('error', { message: 'Order not found or already claimed' });
-          }
-
-          await Shipment.updateMany(
-            { mainOrder: orderId, isClaimed: false },
-            {
-              $set: {
-                assignedRider: riderId,
-                assignedAt: new Date(),
-                shipmentStatus: 'ready_for_pickup',
-              },
-              $pull: {
-                assignmentRejectedBy: riderId,
-              },
-            }
-          );
+          const order = await adminDispatch.assignIndividual({ orderId, riderId });
 
           await notifyRiderAssignmentOffer({
             app,
@@ -1654,57 +1618,7 @@ io.on('connection', (socket) => {
           });
 
         } else if (riderType === 'company' && companyId) {
-          // NEW LOGIC for company assignment
-          const order = await MainOrder.findById(orderId)
-            .populate('user', 'firstName lastName phoneNumber')
-            .populate({
-              path: 'shipments',
-              populate: { path: 'vendor', select: 'businessName businessLocation phoneNumber' }
-            });
-
-          if (!order) {
-            return socket.emit('error', { message: 'Order not found' });
-          }
-
-          // Create company delivery record
-          const delivery = await CompanyDelivery.create({
-            company: companyId,
-            mainOrder: orderId,
-            rider: riderId || null, // Can assign specific company rider or let company assign
-            customer: {
-              name: `${order.user.firstName} ${order.user.lastName}`,
-              phoneNumber: order.user.phoneNumber,
-              address: order.shippingAddress.address
-            },
-            pickupDetails: {
-              vendorName: order.shipments[0]?.vendor?.businessName || 'Vendor',
-              vendorAddress: order.shipments[0]?.vendor?.businessLocation || '',
-              pickupOTP: Math.floor(100000 + Math.random() * 900000).toString()
-            },
-            deliveryDetails: {
-              deliveryAddress: order.shippingAddress.address,
-              city: order.shippingAddress.city,
-              postalCode: order.shippingAddress.postalCode,
-              deliveryOTP: Math.floor(100000 + Math.random() * 900000).toString()
-            },
-            items: order.shipments.flatMap(shipment => 
-              shipment.items.map(item => ({
-                name: item.name,
-                quantity: item.quantity,
-                price: item.price
-              }))
-            ),
-            amount: order.totalShippingPrice,
-            status: riderId ? 'offered' : 'pending',
-            assignedAt: riderId ? new Date() : null,
-          });
-
-          // Update main order
-          order.assignedToCompany = companyId;
-          if (riderId) {
-            order.rider = riderId;
-          }
-          await order.save();
+          const { delivery } = await adminDispatch.assignCompany({ orderId, riderId, companyId });
 
           // Notify company
           broadcastToCompany(companyId, 'new_delivery_assigned', {
@@ -1743,7 +1657,7 @@ io.on('connection', (socket) => {
 
       } catch (error) {
         console.error('Assign rider error:', error);
-        socket.emit('error', { message: 'Failed to assign rider' });
+        socket.emit('error', { message: error.statusCode ? error.message : 'Failed to assign rider', code: error.code });
       }
     });
 

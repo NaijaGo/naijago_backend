@@ -8,6 +8,7 @@ const Product = require('../models/Product');
 const ProductOffer = require('../models/ProductOffer');
 const cloudinary = require('../utils/cloudinary');
 const MainOrder = require('../models/MainOrder');
+const { createAdminDispatchService } = require('../services/adminDispatchService');
 const Shipment = require('../models/Shipment');
 const NotificationLog = require('../models/NotificationLog');
 const AdminScheduledNotification = require('../models/AdminScheduledNotification');
@@ -3288,93 +3289,15 @@ router.put('/riders/:riderId/status', protect, authorizeAdmin, async (req, res) 
 // @route   PUT /api/admin/riders/assign-order
 // @access  Private (Admin only)
 router.put('/riders/assign-order', protect, authorizeAdmin, async (req, res) => {
+    const adminDispatch = createAdminDispatchService({ MainOrder, Shipment, Rider, connection: MainOrder.db });
     const { orderId, riderId } = req.body;
 
     if (!orderId || !riderId) {
         return res.status(400).json({ message: 'orderId and riderId are required.' });
     }
 
-    const session = await MainOrder.startSession();
-    session.startTransaction();
-
     try {
-        const rider = await Rider.findOne({
-            _id: riderId,
-            status: 'approved',
-            isActive: true,
-        }).session(session);
-
-        if (!rider) {
-            await session.abortTransaction();
-            session.endSession();
-            return res.status(404).json({ message: 'Approved active rider not found.' });
-        }
-
-        if ((rider.activeDeliveries || 0) >= 5) {
-            await session.abortTransaction();
-            session.endSession();
-            return res.status(400).json({ message: 'Rider already has the maximum active deliveries.' });
-        }
-
-        const readyShipments = await Shipment.find({
-            mainOrder: orderId,
-            shipmentStatus: 'ready_for_pickup',
-            isClaimed: false,
-        }).session(session);
-
-        if (readyShipments.length === 0) {
-            await session.abortTransaction();
-            session.endSession();
-            return res.status(400).json({ message: 'No unclaimed ready shipments found for this order.' });
-        }
-
-        const mainOrder = await MainOrder.findOneAndUpdate(
-            {
-                _id: orderId,
-                isPaid: true,
-                isClaimed: false,
-                mainOrderStatus: { $nin: ['delivered', 'completed', 'cancelled'] },
-                $or: [{ rider: null }, { rider: { $exists: false } }],
-                $and: [
-                    { $or: [{ assignedRider: null }, { assignedRider: { $exists: false } }] },
-                    { assignmentRejectedBy: { $ne: riderId } },
-                ],
-            },
-            {
-                $set: {
-                    assignedRider: riderId,
-                    assignedAt: Date.now(),
-                    shipmentStatus: 'ready_for_pickup',
-                },
-            },
-            { new: true, session },
-        );
-
-        if (!mainOrder) {
-            await session.abortTransaction();
-            session.endSession();
-            return res.status(409).json({ message: 'Order has already been claimed or is not available.' });
-        }
-
-        await Shipment.updateMany(
-            {
-                _id: { $in: readyShipments.map((shipment) => shipment._id) },
-                isClaimed: false,
-                shipmentStatus: 'ready_for_pickup',
-                assignmentRejectedBy: { $ne: riderId },
-                $or: [{ assignedRider: null }, { assignedRider: { $exists: false } }],
-            },
-            {
-                $set: {
-                    assignedRider: riderId,
-                    assignedAt: Date.now(),
-                },
-            },
-            { session },
-        );
-
-        await session.commitTransaction();
-        session.endSession();
+        const mainOrder = await adminDispatch.assignIndividual({ orderId, riderId });
 
         await notifyRiderAssignmentOffer({
             app: req.app,
@@ -3384,7 +3307,7 @@ router.put('/riders/assign-order', protect, authorizeAdmin, async (req, res) => 
 
         req.app.get('notifyAdmin')?.({
             type: 'manual_rider_assignment',
-            message: `Order ${orderId} manually assigned to rider ${rider.fullName}.`,
+            message: `Order ${orderId} manually assigned to rider ${mainOrder.assignedRider?.fullName || riderId}.`,
             orderId,
             riderId,
         });
@@ -3395,10 +3318,8 @@ router.put('/riders/assign-order', protect, authorizeAdmin, async (req, res) => 
             riderId,
         });
     } catch (error) {
-        await session.abortTransaction();
-        session.endSession();
         console.error('Manual rider assignment error:', error);
-        res.status(500).json({ message: 'Server error assigning rider.', error: error.message });
+        res.status(error.statusCode || 500).json({ message: error.statusCode ? error.message : 'Server error assigning rider.', code: error.code });
     }
 });
 
