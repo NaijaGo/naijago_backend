@@ -19,6 +19,38 @@ admin orders locally. The new scheduled/group/recurring/photo-review screens,
 release build, migration and production deployment are not complete.
 Do not enable/publish the four features based on these foundations alone.
 
+### Payment freshness and verified-conflict checkpoint (2026-09-28, local only)
+
+Receipt-based payment initialization and wallet debit now call the same real
+checkout calculation used for quoting. Economic/fulfilment fingerprints compare
+each fee, price, seller, offer, variant, location, subscription and pickup choice,
+not only the grand total. Changed availability/price asks for a refreshed cart;
+no existing receipt or charge is silently repriced. The customer also compares
+the new receipt total with the total reviewed before creating it. Older installed
+clients are not changed by this customer guard; compatibility remains a release gate.
+
+Verified gateway inventory/subscription/item conflicts now abort the whole
+settlement transaction before a separate, ownership/reference/provider-checked
+transaction records payment_review. Recovery uses a freshly loaded receipt,
+not an in-memory document mutated in the aborted transaction. A simultaneous
+successful settlement wins unchanged; repeated review recording does not rewrite
+the timestamp. No inventory, sales, subscription, wallet, shipment or capacity
+mutation is performed by the review recorder. It does not refund, release or
+fulfil an order. Existing due/vendor/admin guards continue to block review orders.
+
+Both providers' direct confirmation, signed webhook and background recovery
+paths use this boundary. In-memory evidence comes only from the internal
+server-verified settlement call; client fields and ordinary database errors cannot
+mark an order paid. If the process or review write fails, the persisted pending
+reference remains for provider re-verification/retry; no false success is returned.
+Durable operational alert delivery and audited resolution are still required.
+
+Offline backend: 411 passed, zero failed, eight gated database suites skipped
+(419 total, 150205.7225ms). Focused combined checks: 73 passed. The extended
+Checkout Atlas suite's two real rollback/review-concurrency cases remain unrun.
+See INTEGRATED_RELEASE_CHECKLIST.md for current customer validation evidence.
+No key change, paid/provider call, live DB write, push, deployment or build.
+
 ### Receipt, payment and dispatch checkpoint (2026-09-21, local only)
 
 - Optional `MainOrder.schedule` stores the reservation identity, approved WAT
@@ -47,9 +79,9 @@ Do not enable/publish the four features based on these foundations alone.
   foreign company riders, unpaid/early/review orders and customer pickup are rejected.
 
 **Required before activation:** compose the real reservation adapter into planned
-checkout; authenticated policy/window administration; current-price/eligibility
-checks before initiating payment; stock-conflicted verified-payment reconciliation;
-browser/device acceptance of payment-review messaging and safe resolution; reservation-expiry
+checkout; authenticated policy/window administration; DB/provider/device acceptance
+of the locally implemented freshness and verified-conflict recording above;
+browser/device acceptance of payment-review messaging and audited safe resolution; reservation-expiry
 worker; cancellation/rescheduling/refund rules; reminder outboxes; all-app views.
 Automatic offer/shipment assignment and expired-offer release now use transactions;
 vendor shipment transitions guard paid/review state in a parent-writing transaction.

@@ -6,7 +6,46 @@ Started 2026-09-20. User authorized implementation of the integrated release acr
 
 States: Pending -> Working -> Implemented -> Tested -> Deployed -> Device verified. Record evidence, blockers and remaining tasks. No unsupported completion percentages. Local tests do not imply a production deployment or device verification. Work in verified vertical slices within one release programme. Do not run paid provider calls, transactions or production migrations as automated tests.
 
-## Latest local checkpoint — dispatch and payment-review controls (2026-09-21)
+## Latest local checkpoint — payment freshness and recovery (2026-09-28)
+
+- Payment initialization (including a reused hosted URL) and wallet debit now
+  recheck the stored receipt against the existing authoritative checkout service:
+  offer/variant eligibility and aggregate stock, prices, individual fee components,
+  seller/location, pickup selection and subscription eligibility. Scheduled quotes
+  use the receipt's trusted delivery time. A mismatch asks for a refreshed cart;
+  the receipt and amount are never silently rewritten. Marketing copy/image edits
+  alone do not invalidate payment. Initial UI quote-to-receipt total approval is
+  also checked in the updated customer app before either payment method.
+- A server-verified gateway payment followed by a typed stock/subscription/items
+  failure first rolls back settlement, then reloads the receipt in a new
+  transaction and records paid payment_review. Ownership, amount, reference and
+  provider are rechecked. Concurrent successful settlement is not downgraded;
+  retries preserve the first review. Wallet failures, raw request/error fields and
+  unrelated network/database errors cannot supply paid evidence.
+- Direct Squad/Flutterwave confirmation, both signed webhooks and both recovery
+  runners use this path. Legacy Flutterwave recovery no longer scans Squad
+  receipts. Failed review persistence remains retryable, never acknowledged as
+  recovered. The customer receives a do-not-pay-again hold without a false paid
+  claim; the updated app exits repeat checkout for that response.
+- Full offline backend regression: **411 passed, zero failed, eight credential-gated
+  database suites skipped (419 total, 150205.7225ms)**. This adds 36 offline tests
+  to the previous 375-pass checkpoint, not 411 new scenarios. Focused combined
+  checkout/payment checks passed 73/73. JavaScript syntax and Git whitespace
+  checks passed. Two real rollback/concurrent-review cases were added to the
+  existing Checkout Atlas suite but have NOT been run with test credentials.
+- Customer focused tests/static analysis are being recorded separately after
+  completion; no fresh client/device result is claimed by the backend counts.
+- Still required: audited review resolution/refund/cancel/reschedule rules,
+  lifecycle/expiry workers, durable notification delivery and dispatch fairness,
+  authenticated planning/review APIs and screens, provider/privacy/security gates,
+  website work, combined database/browser/device/performance acceptance and release.
+  Historical pending receipts and older clients require compatibility acceptance;
+  the new customer amount guard does not update already-installed older apps.
+- No new credentials, dependency upgrades, production data/provider calls, pushes,
+  deployments or app builds. No public planning feature was enabled. This is
+  further implementation within the same integrated release, not its completion.
+
+## Previous local checkpoint — dispatch and payment-review controls (2026-09-21)
 
 - Automatic individual-rider offers and expired-offer release now write the
   order and shipments in one transaction. A stale shipment or failed write rolls
@@ -62,7 +101,7 @@ Workspace root has no usable Git repository. Cross-repository tracker lives here
 
 | ID | Requirement / acceptance criteria | Components | State |
 |---|---|---|---|
-| BASE-01 | Regression tests for payments, stock, sellers, pickup, addresses, notifications; document existing failures | Backend/apps | Working: shared authoritative checkout and transaction-only variant stock connected locally; 21 new service/HTTP regressions and Checkout Atlas 6/6 passed; payment freshness/reconciliation and cross-app acceptance pending |
+| BASE-01 | Regression tests for payments, stock, sellers, pickup, addresses, notifications; document existing failures | Backend/apps | Working: authoritative checkout/inventory, receipt freshness and verified stock-conflict review connected locally; final offline backend 411/411 passed. Prior Checkout Atlas 6/6 does not cover the new cases. Audited resolution, current-HEAD database/provider and cross-app acceptance pending |
 | BASE-02 | Retain/version PDF, tracker, configuration/deployment/test evidence | All | Working |
 | BASE-03 | Backup, dry run, repeatable migrations and rollback before backfills | Backend | Pending |
 | BASE-04 | Review vulnerabilities, startup, credentials/log hygiene; no blind forced upgrades | All | Pending |
@@ -282,7 +321,7 @@ Do not treat successful unit tests as permission to publish this unfinished rele
 
 1. Save verified local checkpoints; keep flags off and do not deploy the incomplete release automatically.
 2. All eight prepared Atlas gates (Explore, Search, Workers, Requests, Refinement, Planning, Checkout and PlannedCheckout) passed at their recorded revisions. Latest PlannedCheckout run eadc272f392c4c0dbfc060368e9237e6 passed 6/6. Do not repeat passing suites solely to record progress; rerun relevant regressions when code changes and all required gates at final sign-off. Never change production MONGO_URI for tests.
-3. Finish the connected order lifecycle: payment-initiation freshness, verified-payment stock-conflict reconciliation and audited support resolution; reservation expiry/cancellation/rescheduling/refund handling; durable dispatch/reminder notifications and fair retries. Receipt reservation, payment confirmation, due guards and basic review presentation are already local, not pending from scratch. Compose the real scheduled reservation adapter and audited policy/window administration, then authenticated planning/review APIs, workers and remaining customer/vendor/admin/rider feature views. All planning public APIs remain unmounted until those gates are ready. Preserve historical orders, delivery/pickup and Squad/legacy flows. Follow ORDER_FEATURES.md; one coordinated release, no separate activation. Batch relevant Atlas acceptance rather than stopping the user after each small change.
+3. Finish the connected order lifecycle: audited paid-review resolution; reservation expiry/cancellation/rescheduling/refunds; durable dispatch/reminder notifications and fair retries. Receipt-based payment freshness and verified stock/subscription conflict recording are now local and offline-tested, alongside receipt reservation, payment confirmation, due guards and review presentation; collect their actual DB/provider/device acceptance rather than rebuilding them. Compose the real scheduled reservation adapter and audited policy/window administration, then authenticated planning/review APIs, workers and remaining customer/vendor/admin/rider feature views. All planning public APIs remain unmounted until those gates are ready. Preserve historical orders, delivery/pickup and Squad/legacy flows. Follow ORDER_FEATURES.md; one coordinated release, no separate activation. Batch relevant Atlas acceptance rather than stopping the user after each small change.
 4. Keep the real Photoroom sandbox/live trial, private-link checks, browser/device review and shared retention/erasure/takedown work tracked as unfinished release gates (see IMAGE_REFINEMENT.md). Keep flags off pending acceptance; no paid calls have run. Do not rerun already-passed gates solely to claim progress.
 5. Close prior radar/security/regression items, rehearse migrations with a fresh backup, then deploy/build/device-test the complete release.
 6. Do not mark the programme complete with required items unresolved. Record local tests, deployment and device evidence separately.

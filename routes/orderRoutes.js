@@ -21,10 +21,14 @@ const DeliveryWindow = require('../models/DeliveryWindow');
 const DeliveryReservation = require('../models/DeliveryReservation');
 const { createDeliveryReservationService } = require('../services/deliveryReservationService');
 const { createScheduledOrderPaymentService } = require('../services/scheduledOrderPaymentService');
+const { createVerifiedPaymentReviewService } = require('../services/verifiedPaymentReviewService');
+const verifiedPaymentReviews = createVerifiedPaymentReviewService({ Order: MainOrder, connection: mongoose.connection });
 const deliveryReservations = createDeliveryReservationService({ Window: DeliveryWindow, Reservation: DeliveryReservation, connection: mongoose.connection });
 const scheduledPayments = createScheduledOrderPaymentService({ Reservation: DeliveryReservation, reservations: deliveryReservations });
 const checkoutCatalog = createCheckoutCatalogService({ Product, ProductOffer, User });
 const checkoutInventory = createCheckoutInventoryService({ Product, ProductOffer });
+const { createCheckoutPaymentFreshnessService } = require('../services/checkoutPaymentFreshnessService');
+const paymentFreshness = createCheckoutPaymentFreshnessService({ Shipment, calculateCheckoutSummary });
 const Rider = require('../models/Rider');
 const CompanyDelivery = require('../models/CompanyDelivery');
 const { protect, authorizeRoles } = require('../middleware/authMiddleware');
@@ -238,7 +242,7 @@ async function consumeSubscriptionDeliveryIfNeeded({ buyer, mainOrder, session }
 
     const subscription = getActiveNaijaGoSubscription(buyer);
     if (!subscription) {
-        throw new Error('Subscription delivery benefit is no longer available.');
+        throw new CheckoutCatalogError('SUBSCRIPTION_BENEFIT_UNAVAILABLE', 'Subscription delivery benefit is no longer available. Please review this order.');
     }
 
     subscription.deliveriesRemaining = Math.max(0, (subscription.deliveriesRemaining || 0) - 1);
@@ -266,7 +270,19 @@ async function notifyPaidOrderVendors({ app, order, paymentMethod }) {
     }
 }
 
-async function settleVerifiedPayment({ order, buyer, verifiedTx, app, session, method, provider = 'flutterwave' }) {
+async function settleVerifiedPayment(args) {
+    return verifiedPaymentReviews.attempt(args, () => settleVerifiedPaymentInTransaction(args));
+}
+
+async function recoverVerifiedPaymentFailure(error) {
+    try { return await verifiedPaymentReviews.recover(error); }
+    catch (reviewError) {
+        console.error('[PAYMENT REVIEW] Reconciliation needs retry:', { code: reviewError.code || 'REVIEW_WRITE_FAILED' });
+        return null; // Never acknowledge successful recovery when its write failed.
+    }
+}
+
+async function settleVerifiedPaymentInTransaction({ order, buyer, verifiedTx, app, session, method, provider = 'flutterwave' }) {
     if (!session?.inTransaction()) throw new CheckoutCatalogError('TRANSACTION_REQUIRED', 'Payment settlement requires an active transaction.', 500);
     if (order.isPaid) {
         if (order.paymentResult?.tx_ref !== verifiedTx.tx_ref || order.paymentResult?.provider !== provider) {
@@ -305,6 +321,9 @@ async function settleVerifiedPayment({ order, buyer, verifiedTx, app, session, m
 
     await consumeSubscriptionDeliveryIfNeeded({ buyer, mainOrder: order, session });
     const shipments = await Shipment.find({ mainOrder: order._id }).session(session);
+    if (!shipments.length || shipments.some(shipment => !shipment.items?.length)) {
+        throw new CheckoutCatalogError('ORDER_ITEMS_UNAVAILABLE', 'Your paid order needs an inventory review. Please do not pay again.');
+    }
     for (const shipment of shipments) {
         shipment.shipmentStatus = 'processing';
         await shipment.save({ session });
@@ -1913,6 +1932,7 @@ router.put('/:id/pay/wallet', protect, async (req, res) => {
             session.endSession();
             return res.status(404).json({ message: 'Buyer user account not found.' });
         }
+        await paymentFreshness.check(mainOrder, { session });
         // 3. Balance check
         const orderTotal = mainOrder.totalPrice;
         if (buyer.userWalletBalance < orderTotal) {
@@ -2002,6 +2022,7 @@ router.post('/:id/payment-intent', protect, async (req, res) => {
         }
 
         await scheduledPayments.inspect(order);
+        await paymentFreshness.check(order);
 
         const provider = configuredPaymentProvider();
         if (provider === 'squad') {
@@ -2268,8 +2289,14 @@ router.put('/:id/pay', protect, async (req, res) => {
         console.log(`[PAY ENDPOINT] SUCCESS - Order ${mainOrder._id} marked as paid | Total: ₦${updatedOrder.totalPrice}`);
         res.json(updatedOrder);
     } catch (error) {
-        await session.abortTransaction();
+        if (session.inTransaction()) await session.abortTransaction();
         session.endSession();
+        const reviewedOrder = await recoverVerifiedPaymentFailure(error);
+        if (reviewedOrder) return res.status(200).json(reviewedOrder);
+        if (verifiedPaymentReviews.hasEvidence(error)) {
+            return res.status(503).json({ code: 'PAYMENT_RECONCILIATION_PENDING',
+                message: 'Payment confirmation is delayed. Please do not pay again. Check My Orders or contact support.' });
+        }
         const flutterwaveMessage = error.response?.data?.message || '';
         if (/no transaction was found/i.test(flutterwaveMessage)) {
             console.warn(`[PAY ENDPOINT] Flutterwave could not find transaction after retries for order ${req.params.id}: ${flutterwaveMessage}`);
@@ -3038,7 +3065,8 @@ router.post('/webhooks/squad', async (req, res) => {
     }
     return res.sendStatus(200);
   } catch (error) {
-    await session.abortTransaction();
+    if (session.inTransaction()) await session.abortTransaction();
+    if (await recoverVerifiedPaymentFailure(error)) return res.sendStatus(200);
     console.error('Squad webhook processing error:', {
       message: error.message,
       providerError: error.response?.data || null,
@@ -3090,6 +3118,7 @@ router.post('/webhooks/flutterwave', async (req, res) => {
     // Find the order by the tx_ref we generated client-side
     const order = await MainOrder.findOne({
       'paymentResult.tx_ref': webhookTxRef,
+      $or: [{ 'paymentResult.provider': 'flutterwave' }, { 'paymentResult.provider': { $exists: false } }],
       isPaid: false   // only process if not already marked paid
     }).session(session);
 
@@ -3131,8 +3160,9 @@ router.post('/webhooks/flutterwave', async (req, res) => {
 
     res.sendStatus(200);
   } catch (err) {
-    await session.abortTransaction();
-    console.error('Webhook processing error:', err);
+    if (session.inTransaction()) await session.abortTransaction();
+    if (await recoverVerifiedPaymentFailure(err)) return res.sendStatus(200);
+    console.error('Webhook processing error:', { code: err.code, message: err.message });
     res.status(500).send('Internal error');
   } finally {
     session.endSession();
@@ -3147,6 +3177,7 @@ async function processPendingFlutterwavePayments(app) {
     const candidates = await MainOrder.find({
       isPaid: false,
       mainOrderStatus: 'pending_payment',
+      $or: [{ 'paymentResult.provider': 'flutterwave' }, { 'paymentResult.provider': { $exists: false } }],
       'paymentResult.tx_ref': { $exists: true, $ne: '' },
       'paymentResult.status': { $in: ['initiated', 'pending', 'unknown'] },
     }).sort({ 'paymentResult.lastCheckedAt': 1, createdAt: 1 }).limit(20);
@@ -3157,7 +3188,8 @@ async function processPendingFlutterwavePayments(app) {
       const session = await mongoose.startSession();
       session.startTransaction();
       try {
-        const order = await MainOrder.findOne({ _id: candidate._id, isPaid: false }).session(session);
+        const order = await MainOrder.findOne({ _id: candidate._id, isPaid: false, 'paymentResult.tx_ref': txRef,
+          $or: [{ 'paymentResult.provider': 'flutterwave' }, { 'paymentResult.provider': { $exists: false } }] }).session(session);
         if (!order) {
           await session.commitTransaction();
           continue;
@@ -3193,8 +3225,10 @@ async function processPendingFlutterwavePayments(app) {
         await grantReferralRewardForVerifiedUser(order.user);
         console.log(`[PAYMENT RECOVERY] Order ${order._id} verified via ${txRef}`);
       } catch (error) {
-        await session.abortTransaction();
-        console.error(`[PAYMENT RECOVERY] Failed for order ${candidate._id}:`, error.message);
+        if (session.inTransaction()) await session.abortTransaction();
+        const reviewedOrder = await recoverVerifiedPaymentFailure(error);
+        if (reviewedOrder) console.log(`[PAYMENT RECOVERY] Payment recorded for review: ${reviewedOrder._id}`);
+        else console.error(`[PAYMENT RECOVERY] Failed for order ${candidate._id}:`, error.message);
       } finally {
         session.endSession();
       }
@@ -3224,7 +3258,9 @@ async function processPendingSquadPayments(app) {
       let settledOrder;
       try {
         await session.withTransaction(async () => {
-          const order = await MainOrder.findOne({ _id: candidate._id, isPaid: false }).session(session);
+          settledOrder = undefined; // Discard a prior aborted attempt before retrying.
+          const order = await MainOrder.findOne({ _id: candidate._id, isPaid: false,
+            'paymentResult.tx_ref': txRef, 'paymentResult.provider': 'squad' }).session(session);
           if (!order) return;
           const verified = await verifySquadPayment({
             transactionRef: txRef,
@@ -3264,7 +3300,9 @@ async function processPendingSquadPayments(app) {
           console.log(`[SQUAD PAYMENT RECOVERY] Order ${settledOrder._id} verified via ${txRef}`);
         }
       } catch (error) {
-        console.error(`[SQUAD PAYMENT RECOVERY] Failed for order ${candidate._id}:`, error.message);
+        const reviewedOrder = await recoverVerifiedPaymentFailure(error);
+        if (reviewedOrder) console.log(`[SQUAD PAYMENT RECOVERY] Payment recorded for review: ${reviewedOrder._id}`);
+        else console.error(`[SQUAD PAYMENT RECOVERY] Failed for order ${candidate._id}:`, error.message);
       } finally {
         session.endSession();
       }

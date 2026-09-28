@@ -69,7 +69,7 @@ async function setup(t, options = {}) {
         if (name === '../services/checkoutInventoryService' && options.fakeInventory) return { createCheckoutInventoryService: () => ({ decrement: async () => {
             saved.inventoryWrites++; if (options.failInventory) throw new Error('synthetic-stock-conflict');
         } }) };
-        if (name.startsWith('../services/') && !['../services/checkoutCatalogService', '../services/checkoutInventoryService', '../services/deliveryReservationService', '../services/scheduledOrderPaymentService', '../services/shipmentStatusService'].includes(name)) return {};
+        if (name.startsWith('../services/') && !['../services/checkoutCatalogService', '../services/checkoutInventoryService', '../services/deliveryReservationService', '../services/scheduledOrderPaymentService', '../services/verifiedPaymentReviewService', '../services/checkoutPaymentFreshnessService', '../services/shipmentStatusService'].includes(name)) return {};
         return actualRequire(name);
     }
     vm.runInThisContext('(function(require, module, exports, console) {\n' + fs.readFileSync(file, 'utf8') + '\n})', { filename: file })(requireForRoute, module, module.exports, { log() {}, error() {} });
@@ -197,6 +197,55 @@ test('wallet sends buyer/vendor alerts only after commit; failed inventory sends
         assert.deepEqual(f.saved.vendorNotices, failInventory ? [] : [1]);
         assert.deepEqual(f.saved.buyerNotices, failInventory ? [] : [1]);
         assert.equal(f.saved.commits, failInventory ? 0 : 1);
+    }
+});
+
+test('payment intent rechecks current prices and never silently reprices an existing unpaid receipt', async t => {
+    const f = await setup(t), userId = '777777777777777777777777';
+    const quote = await f.calculateCheckoutSummary({ ...body(), userId });
+    const { order } = await f.createUnpaidOrder({ userId, session: f.session, input: body({ shipmentSummaries: quote.shipmentSummaries }) });
+    f.models.MainOrder.findById = () => query(order); f.models.Shipment.find = () => query([...f.saved.shipments]);
+    f.offer.price = 1500;
+    const result = await f.post('/' + order._id + '/payment-intent', {});
+    assert.equal(result.status, 409); assert.equal(result.data.code, 'PAYMENT_QUOTE_CHANGED');
+    assert.equal(order.totalPrice, 2500); assert.equal(order.paymentResult, undefined); assert.equal(order.isPaid, false);
+});
+
+test('wallet rejects changed prices before debiting, consuming benefits or inventory', async t => {
+    const buyer = { userWalletBalance: 10000, async save() { throw new Error('Unexpected debit'); } };
+    const f = await setup(t, { buyer, fakeInventory: true }), userId = '777777777777777777777777';
+    const quote = await f.calculateCheckoutSummary({ ...body(), userId });
+    const { order } = await f.createUnpaidOrder({ userId, session: f.session, input: body({ paymentMethod: 'Wallet', shipmentSummaries: quote.shipmentSummaries }) });
+    f.models.MainOrder.findById = () => query(order); f.models.Shipment.find = () => query([...f.saved.shipments]);
+    f.offer.price++;
+    const result = await f.post('/' + order._id + '/pay/wallet', {}, 'PUT');
+    assert.equal(result.status, 409); assert.equal(buyer.userWalletBalance, 10000);
+    assert.equal(f.saved.inventoryWrites, 0); assert.equal(order.isPaid, false); assert.equal(f.saved.commits, 0);
+});
+
+test('disabled offers are rejected before returning an earlier hosted-checkout URL', async t => {
+    const f = await setup(t), userId = '777777777777777777777777';
+    const quote = await f.calculateCheckoutSummary({ ...body(), userId });
+    const { order } = await f.createUnpaidOrder({ userId, session: f.session, input: body({ shipmentSummaries: quote.shipmentSummaries }) });
+    order.paymentResult = { provider: 'squad', tx_ref: 'synthetic-ref', checkoutUrl: 'https://example.invalid/old-checkout' };
+    f.models.MainOrder.findById = () => query(order); f.models.Shipment.find = () => query([...f.saved.shipments]);
+    f.offer.status = 'disabled';
+    const result = await f.post('/' + order._id + '/payment-intent', {});
+    assert.equal(result.status, 409); assert.equal(result.data.checkout_url, undefined);
+    assert.equal(result.data.code, 'OFFER_UNAVAILABLE');
+});
+
+test('unchanged real delivery and pickup receipts pass wallet freshness with legacy selection and notes intact', async t => {
+    for (const method of ['delivery', 'pickup']) {
+        const buyer = { userWalletBalance: 10000, async save() { return this; } };
+        const f = await setup(t, { buyer, fakeInventory: true, realOrderModels: true }), userId = '777777777777777777777777';
+        const quote = await f.calculateCheckoutSummary({ ...body(), userId, fulfillmentSelections: { [S]: { method } } });
+        const { order } = await f.createUnpaidOrder({ userId, session: f.session, input: body({ paymentMethod: 'Wallet', shipmentSummaries: quote.shipmentSummaries }) });
+        f.models.MainOrder.findById = () => query(order); f.models.Shipment.find = () => query([...f.saved.shipments]);
+        const result = await f.post('/' + order._id + '/pay/wallet', {}, 'PUT');
+        assert.equal(result.status, 200, JSON.stringify(result.data));
+        assert.equal(buyer.userWalletBalance, method === 'pickup' ? 8000 : 7500);
+        assert.equal(f.saved.inventoryWrites, 1); assert.equal(f.saved.commits, 1);
     }
 });
 

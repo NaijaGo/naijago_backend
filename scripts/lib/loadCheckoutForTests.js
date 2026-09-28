@@ -17,10 +17,11 @@ function loadCheckoutForTests({ models, connection }) {
     const pure = new Set(['express', 'crypto', '../services/checkoutCatalogService', '../services/checkoutInventoryService',
         '../utils/checkoutQuoteSnapshot', '../utils/flutterwavePayment', '../utils/squadPayment',
         '../utils/orderPlanningPolicy', '../utils/orderFulfillmentPolicy', '../utils/deliveryScheduleAvailability', '../utils/scheduledOrderSnapshot',
-        '../services/deliveryReservationService', '../services/scheduledOrderPaymentService']);
+        '../services/deliveryReservationService', '../services/scheduledOrderPaymentService', '../services/verifiedPaymentReviewService',
+        '../services/checkoutPaymentFreshnessService']);
     function safeRequire(name) {
         if (pure.has(name)) return actualRequire(name);
-        if (name === 'mongoose') return { startSession: () => connection.startSession() };
+        if (name === 'mongoose') return { connection, startSession: () => connection.startSession() };
         if (name.startsWith('../models/')) return models[name.split('/').pop()] || blocked;
         if (name === '../middleware/authMiddleware') return { protect: forbidden, authorizeRoles: () => forbidden };
         if (name === '../services/deliveryFeeService') return { getDeliveryFeeSettings: async () => ({}),

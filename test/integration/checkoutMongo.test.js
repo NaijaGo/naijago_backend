@@ -5,13 +5,15 @@ const { Types } = require('mongoose');
 const { openIsolatedTestDatabase } = require('../../scripts/lib/openIsolatedTestDatabase');
 const { createCheckoutCatalogService } = require('../../services/checkoutCatalogService');
 const { createCheckoutInventoryService } = require('../../services/checkoutInventoryService');
+const { createVerifiedPaymentReviewService } = require('../../services/verifiedPaymentReviewService');
 
 test('isolated Mongo: authoritative checkout, variant inventory races and settlement rollback', {
     skip: !process.env.NAIJAGO_TEST_MONGO_URI, timeout: 180000,
 }, async (t) => {
-    const { connection, models } = await openIsolatedTestDatabase(t, ['Product', 'ProductOffer', 'User']);
-    const { Product, ProductOffer, User } = models;
+    const { connection, models } = await openIsolatedTestDatabase(t, ['Product', 'ProductOffer', 'User', 'MainOrder', 'Shipment']);
+    const { Product, ProductOffer, User, MainOrder, Shipment } = models;
     const catalog = createCheckoutCatalogService(models), inventory = createCheckoutInventoryService(models);
+    const reviews = createVerifiedPaymentReviewService({ Order: MainOrder, connection });
     const seller = new Types.ObjectId();
     await User.collection.insertOne({ _id: seller, isVendor: true, vendorStatus: 'approved', businessName: 'Synthetic shop',
         businessLocation: { latitude: 9, longitude: 7 } });
@@ -25,6 +27,33 @@ test('isolated Mongo: authoritative checkout, variant inventory races and settle
             price: 2000, discountPrice: null, stockQuantity: 8,
             variants: [{ _id: new Types.ObjectId(), productVariantId: variantId, isActive: true, price: 2500, discountPrice: 2000, stockQuantity: 2 }] });
         return { productId, offerId, variantId, item: { product: String(productId), offer: String(offerId), variantId: String(variantId), quantity: 1 } };
+    }
+    async function failedVerifiedSettlement() {
+        const f = await fixture(), orderId = new Types.ObjectId(), reference = 'synthetic-review-' + orderId;
+        const order = await MainOrder.create({ _id: orderId, user: seller, paymentMethod: 'Card',
+            shippingAddress: { address: 'Synthetic only', city: 'Abuja', country: 'NG', postalCode: '900001' },
+            userLocation: { latitude: 9.1, longitude: 7.1 }, totalPrice: 6000, totalSubtotal: 6000,
+            paymentResult: { provider: 'squad', tx_ref: reference, status: 'initiated' } });
+        const baseItem = { ...f.item, name: 'Synthetic only', image: 'https://example.invalid/item.jpg', price: 1500 };
+        const shipment = await Shipment.create({ mainOrder: order._id, sellerType: 'naijago', sellerId: null,
+            items: [baseItem, { ...baseItem, quantity: 3 }], subtotal: 6000 });
+        let failed;
+        try {
+            await connection.transaction(async session => {
+                const receipt = await MainOrder.findById(orderId).session(session);
+                return reviews.attempt({ order: receipt, session, provider: 'squad', method: 'synthetic-integration',
+                    verifiedTx: { id: reference, tx_ref: reference, status: 'successful', amount: 6000, currency: 'NGN' } },
+                async () => {
+                    // A successful first item write must roll back when the next
+                    // line can no longer be supplied. No provider is contacted.
+                    const lines = await Shipment.findById(shipment._id).session(session);
+                    for (const item of lines.items) await inventory.decrement({ item, session, sellerType: 'naijago' });
+                    receipt.isPaid = true; await receipt.save({ session });
+                });
+            });
+        } catch (error) { failed = error; }
+        assert.equal(failed?.code, 'INSUFFICIENT_STOCK');
+        return { ...f, orderId, shipmentId: shipment._id, error: failed };
     }
     await t.test('real catalog queries prefer offer prices and reject combined variant quantities', async () => {
         const f = await fixture();
@@ -73,5 +102,26 @@ test('isolated Mongo: authoritative checkout, variant inventory races and settle
         await assert.rejects(connection.transaction((session) => inventory.decrement({ item, session })), { code: 'INSUFFICIENT_STOCK' });
         const product = await Product.findById(productId);
         assert.equal(product.stockQuantity, 1); assert.equal(product.variants[0].stockQuantity, 0); assert.equal(product.salesCount, 1);
+    });
+    await t.test('verified-payment review follows real transaction rollback without consuming inventory or releasing shipments', async () => {
+        const f = await failedVerifiedSettlement();
+        assert.equal((await MainOrder.findById(f.orderId)).isPaid, false);
+        const reviewed = await reviews.recover(f.error);
+        assert.equal(reviewed.isPaid, true); assert.equal(reviewed.mainOrderStatus, 'payment_review');
+        assert.equal(reviewed.paymentResult.reviewInventoryState, 'not_committed');
+        assert.equal((await ProductOffer.findById(f.offerId)).stockQuantity, 8);
+        assert.equal((await ProductOffer.findById(f.offerId)).variants[0].stockQuantity, 2);
+        assert.equal((await Product.findById(f.productId)).stockQuantity, 999);
+        assert.equal((await Product.findById(f.productId)).salesCount, 0);
+        assert.equal((await Shipment.findById(f.shipmentId)).isClaimed, false);
+    });
+    await t.test('concurrent reconciliation retries retain one paid-review receipt and first verification timestamp', async () => {
+        const f = await failedVerifiedSettlement();
+        const results = await Promise.all(Array.from({ length: 4 }, () => reviews.recover(f.error)));
+        assert.equal(new Set(results.map(order => String(order._id))).size, 1);
+        assert.equal(new Set(results.map(order => +new Date(order.paymentResult.verifiedAt))).size, 1);
+        assert.equal(await MainOrder.countDocuments({ _id: f.orderId, isPaid: true, mainOrderStatus: 'payment_review' }), 1);
+        assert.equal((await ProductOffer.findById(f.offerId)).stockQuantity, 8);
+        assert.equal((await Product.findById(f.productId)).salesCount, 0);
     });
 });
