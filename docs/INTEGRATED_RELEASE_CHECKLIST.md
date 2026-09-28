@@ -33,8 +33,15 @@ States: Pending -> Working -> Implemented -> Tested -> Deployed -> Device verifi
   checkout/payment checks passed 73/73. JavaScript syntax and Git whitespace
   checks passed. Two real rollback/concurrent-review cases were added to the
   existing Checkout Atlas suite but have NOT been run with test credentials.
-- Customer focused tests/static analysis are being recorded separately after
-  completion; no fresh client/device result is claimed by the backend counts.
+- Customer focused payment tests passed **8/8** (six state tests and two widget
+  tests), using the pinned Flutter 3.35.6 SDK, one worker and a dedicated local
+  temporary directory. Initial compilation/loading was slow; all eight tests
+  completed successfully. Focused static analysis did not complete: its verified
+  process tree was stopped after 971 seconds without a result. No other Flutter
+  session was stopped. Rerun this static check before release; no cause or pass is
+  claimed. These tests are not device or end-to-end checkout results.
+- Local code checkpoints: backend `b6c2e50`; customer `a9b3ec3`. Screenshots and
+  unrelated repositories were not changed or included in these commits.
 - Still required: audited review resolution/refund/cancel/reschedule rules,
   lifecycle/expiry workers, durable notification delivery and dispatch fairness,
   authenticated planning/review APIs and screens, provider/privacy/security gates,
@@ -147,7 +154,7 @@ Workspace root has no usable Git repository. Cross-repository tracker lives here
 
 | ID | Item | Evidence / remaining work |
 |---|---|---|
-| OLD-01 | Squad checkout/recovery without duplicate settlement or stock changes | User reports end-to-end success; regression tests required |
+| OLD-01 | Squad checkout/recovery without duplicate settlement or stock changes | Historical user-reported success; current offline Squad/legacy confirmation, webhook, recovery and receipt-freshness checks passed. Current database/provider/device acceptance still required |
 | OLD-02 | Wallet deposits still use Flutterwave | Audit intended provider coverage before release |
 | OLD-03 | Vendor OneSignal config | Missing vendor audience in latest live logs |
 | OLD-04 | Vendor WhatsApp | Latest logs: Connection Closed |
@@ -319,7 +326,7 @@ Do not treat successful unit tests as permission to publish this unfinished rele
 
 ## Next actions
 
-1. Save verified local checkpoints; keep flags off and do not deploy the incomplete release automatically.
+1. Save verified local checkpoints; keep flags off and do not deploy the incomplete release automatically. Rerun the incomplete focused customer static check: `flutter analyze --no-pub lib/models/order_payment_state.dart lib/screens/Main/checkout_screen.dart test/order_payment_state_test.dart` (previous attempt stopped after 971 seconds without a result).
 2. All eight prepared Atlas gates (Explore, Search, Workers, Requests, Refinement, Planning, Checkout and PlannedCheckout) passed at their recorded revisions. Latest PlannedCheckout run eadc272f392c4c0dbfc060368e9237e6 passed 6/6. Do not repeat passing suites solely to record progress; rerun relevant regressions when code changes and all required gates at final sign-off. Never change production MONGO_URI for tests.
 3. Finish the connected order lifecycle: audited paid-review resolution; reservation expiry/cancellation/rescheduling/refunds; durable dispatch/reminder notifications and fair retries. Receipt-based payment freshness and verified stock/subscription conflict recording are now local and offline-tested, alongside receipt reservation, payment confirmation, due guards and review presentation; collect their actual DB/provider/device acceptance rather than rebuilding them. Compose the real scheduled reservation adapter and audited policy/window administration, then authenticated planning/review APIs, workers and remaining customer/vendor/admin/rider feature views. All planning public APIs remain unmounted until those gates are ready. Preserve historical orders, delivery/pickup and Squad/legacy flows. Follow ORDER_FEATURES.md; one coordinated release, no separate activation. Batch relevant Atlas acceptance rather than stopping the user after each small change.
 4. Keep the real Photoroom sandbox/live trial, private-link checks, browser/device review and shared retention/erasure/takedown work tracked as unfinished release gates (see IMAGE_REFINEMENT.md). Keep flags off pending acceptance; no paid calls have run. Do not rerun already-passed gates solely to claim progress.
