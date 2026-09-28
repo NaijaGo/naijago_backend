@@ -14,7 +14,7 @@ function createVerifiedPaymentReviewService({ Order, connection, now = () => new
         const { order, verifiedTx, provider = 'flutterwave', method, session } = args;
         const snapshot = {
             orderId: String(order._id), owner: String(order.user), total: Number(order.totalPrice),
-            reference: verifiedTx.tx_ref, provider, method, session,
+            reference: verifiedTx.tx_ref, provider, method, session, mode: order.paymentResult?.mode,
             payment: { id: verifiedTx.id, status: verifiedTx.status, tx_ref: verifiedTx.tx_ref,
                 provider, gateway_ref: verifiedTx.gateway_ref, flw_ref: verifiedTx.flw_ref,
                 amount: verifiedTx.amount, currency: verifiedTx.currency,
@@ -32,7 +32,7 @@ function createVerifiedPaymentReviewService({ Order, connection, now = () => new
         const proof = evidence.get(error);
         if (!proof) return null; // Wallet, provider/network and database errors are NOT paid evidence.
         if (proof.session?.inTransaction()) fail('ROLLBACK_REQUIRED', 'Payment review must wait for settlement rollback.');
-        if (!['squad', 'flutterwave'].includes(proof.provider) || proof.payment.status !== 'successful' ||
+        if (!['squad', 'flutterwave', 'korapay'].includes(proof.provider) || proof.payment.status !== 'successful' ||
             typeof proof.reference !== 'string' || !proof.reference.trim() ||
             String(proof.payment.currency).toUpperCase() !== 'NGN' ||
             !Number.isFinite(proof.total) || proof.total < 0 ||
@@ -45,7 +45,8 @@ function createVerifiedPaymentReviewService({ Order, connection, now = () => new
             const order = await Order.findById(proof.orderId).session(session);
             if (!order || String(order.user) !== proof.owner || Number(order.totalPrice) !== proof.total ||
                 (order.paymentResult?.tx_ref && order.paymentResult.tx_ref !== proof.reference) ||
-                String(order.paymentResult?.provider || 'flutterwave') !== proof.provider) {
+                String(order.paymentResult?.provider || 'flutterwave') !== proof.provider ||
+                (proof.provider === 'korapay' && order.paymentResult?.mode !== proof.mode)) {
                 fail('PAYMENT_REVIEW_CONFLICT', 'Payment needs support reconciliation. Please do not pay again.');
             }
             if (order.isPaid) {

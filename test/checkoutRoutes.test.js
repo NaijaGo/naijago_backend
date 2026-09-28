@@ -69,7 +69,7 @@ async function setup(t, options = {}) {
         if (name === '../services/checkoutInventoryService' && options.fakeInventory) return { createCheckoutInventoryService: () => ({ decrement: async () => {
             saved.inventoryWrites++; if (options.failInventory) throw new Error('synthetic-stock-conflict');
         } }) };
-        if (name.startsWith('../services/') && !['../services/checkoutCatalogService', '../services/checkoutInventoryService', '../services/deliveryReservationService', '../services/scheduledOrderPaymentService', '../services/verifiedPaymentReviewService', '../services/checkoutPaymentFreshnessService', '../services/shipmentStatusService'].includes(name)) return {};
+        if (name.startsWith('../services/') && !['../services/checkoutCatalogService', '../services/checkoutInventoryService', '../services/deliveryReservationService', '../services/scheduledOrderPaymentService', '../services/verifiedPaymentReviewService', '../services/checkoutPaymentFreshnessService', '../services/korapayOrderService', '../services/shipmentStatusService'].includes(name)) return {};
         return actualRequire(name);
     }
     vm.runInThisContext('(function(require, module, exports, console) {\n' + fs.readFileSync(file, 'utf8') + '\n})', { filename: file })(requireForRoute, module, module.exports, { log() {}, error() {} });

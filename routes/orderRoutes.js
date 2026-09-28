@@ -49,6 +49,8 @@ const {
     paymentMatchesOrder,
 } = require('../utils/flutterwavePayment');
 const { initiateSquadPayment, verifySquadPayment } = require('../services/squadPaymentService');
+const { getKorapayConfig, initiateKorapayPayment, verifyKorapayPayment } = require('../services/korapayPaymentService');
+const { createKorapayOrderService } = require('../services/korapayOrderService');
 const {
     buildSquadPendingPaymentResult,
     normalizeSquadTransaction,
@@ -2006,6 +2008,12 @@ router.put('/:id/pay/wallet', protect, async (req, res) => {
     }
 });
 
+const korapayOrders = createKorapayOrderService({ Order: MainOrder, User,
+    startSession: () => mongoose.startSession(), getConfig: getKorapayConfig,
+    initiate: initiateKorapayPayment, verify: verifyKorapayPayment,
+    settle: settleVerifiedPayment, recover: recoverVerifiedPaymentFailure,
+    notify: notifyPaidOrderVendors, referral: grantReferralRewardForVerifiedUser });
+
 router.post('/:id/payment-intent', protect, async (req, res) => {
     try {
         const order = await MainOrder.findById(req.params.id);
@@ -2025,6 +2033,20 @@ router.post('/:id/payment-intent', protect, async (req, res) => {
         await paymentFreshness.check(order);
 
         const provider = configuredPaymentProvider();
+        const previousProvider = order.paymentResult?.tx_ref
+            ? String(order.paymentResult.provider || 'flutterwave').toLowerCase() : null;
+        if (previousProvider && previousProvider !== provider) {
+            return res.status(409).json({ code: 'PAYMENT_PROVIDER_LOCKED',
+                message: 'This order already has a payment attempt. Check My Orders or contact support before paying again.' });
+        }
+        if (provider === 'korapay') {
+            if (!Array.isArray(req.body?.supported_payment_providers) || !req.body.supported_payment_providers.includes('korapay')) {
+                return res.status(409).json({ code: 'PAYMENT_APP_UPDATE_REQUIRED',
+                    message: 'Please update NaijaGo before using the new payment option.' });
+            }
+            const buyer = await User.findById(req.user.id).select('firstName lastName email');
+            return res.status(200).json(await korapayOrders.initialize(order, buyer));
+        }
         if (provider === 'squad') {
             const buyer = await User.findById(req.user.id).select('firstName lastName email');
             if (!buyer?.email) {
@@ -2164,6 +2186,19 @@ router.put('/:id/pay', protect, async (req, res) => {
         }
         console.log(`[PAY ENDPOINT] Idempotency check passed - no conflicting order found for tx_ref: ${transaction_id}`);
         const provider = String(mainOrder.paymentResult?.provider || 'flutterwave').toLowerCase();
+        if (provider === 'korapay') {
+            const result = await korapayOrders.confirm({ order: mainOrder, buyer, session,
+                app: req.app, method: 'direct_verify' });
+            await session.commitTransaction();
+            session.endSession();
+            if (!result.settled) return res.status(202).json({ status: 'pending',
+                message: 'Payment confirmation is pending. Please do not pay again.' });
+            await korapayOrders.afterCommit(req.app, result.order);
+            return res.json(result.order);
+        }
+        if (!['squad', 'flutterwave'].includes(provider)) {
+            throw new CheckoutCatalogError('UNKNOWN_PAYMENT_PROVIDER', 'This payment needs support review. Please do not pay again.', 409);
+        }
         if (provider === 'squad') {
             const verified = await verifySquadPayment({
                 transactionRef: transaction_id,
@@ -3023,6 +3058,28 @@ router.get('/:id', protect, async (req, res) => {
 });
 
 
+// Public, informational return page only. Query strings and browser redirects
+// are never proof of payment; authenticated confirmation/webhooks verify it.
+router.get('/payments/korapay/return', (req, res) => {
+    res.set({ 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer',
+        'X-Content-Type-Options': 'nosniff',
+        'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'" });
+    res.type('html').send(`<!doctype html><html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Return to NaijaGo</title><style>
+body{margin:0;padding:24px;background:#f2f5fb;color:#18233b;font:17px/1.6 system-ui,sans-serif}
+main{max-width:480px;margin:10vh auto;padding:28px;background:white;border-radius:20px;box-shadow:0 8px 32px #18233b12}
+.brand{display:inline-block;font-weight:800;font-size:24px;background:#10192d;padding:4px 12px;border-radius:8px;color:#4169e1}.brand span{color:greenyellow}
+h1{font-size:26px;line-height:1.3}li{margin:12px 0}.notice{padding:14px;background:#edf3ff;border-radius:12px;font-size:15px}
+</style></head><body><main><div class="brand">Naija<span>Go</span></div>
+<h1>Return to NaijaGo</h1><p>Your payment status must be checked securely in the app.</p>
+<ol><li>Switch back to NaijaGo.</li><li>Tap <strong>Verify payment</strong>. If you closed the app, open <strong>My Orders</strong> and check this order.</li></ol>
+<p class="notice">If you were debited, do not pay again. Confirmation may take a little time. Contact NaijaGo support if the order stays pending.</p>
+</main></body></html>`);
+});
+
+router.post('/webhooks/korapay', korapayOrders.webhook);
+
 router.post('/webhooks/squad', async (req, res) => {
   const signature = req.headers['x-squad-encrypted-body'] || req.headers['x-squad-signature'];
   const secretKey = String(process.env.SQUAD_SECRET_KEY || '').trim();
@@ -3314,6 +3371,7 @@ async function processPendingSquadPayments(app) {
 
 router.processPendingFlutterwavePayments = processPendingFlutterwavePayments;
 router.processPendingSquadPayments = processPendingSquadPayments;
+router.processPendingKorapayPayments = korapayOrders.recoverPending;
 router.paymentMatchesOrder = paymentMatchesOrder;
 router.calculateCheckoutSummary = calculateCheckoutSummary;
 router.createUnpaidOrder = createUnpaidOrder;

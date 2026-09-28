@@ -6,7 +6,49 @@ Started 2026-09-20. User authorized implementation of the integrated release acr
 
 States: Pending -> Working -> Implemented -> Tested -> Deployed -> Device verified. Record evidence, blockers and remaining tasks. No unsupported completion percentages. Local tests do not imply a production deployment or device verification. Work in verified vertical slices within one release programme. Do not run paid provider calls, transactions or production migrations as automated tests.
 
-## Latest local checkpoint — payment freshness and recovery (2026-09-28)
+## Latest local checkpoint — KoraPay order checkout (2026-09-28)
+
+Readable whole-platform status: [RELEASE_OVERVIEW.md](RELEASE_OVERVIEW.md).
+Setup, compatibility and sandbox acceptance: [KORAPAY_PAYMENTS.md](KORAPAY_PAYMENTS.md).
+
+- Added the KoraPay hosted order-payment adapter, backend-only secret handling,
+  server verification of actual received funds, signed webhooks, background
+  recovery and existing transactional inventory/paid-review settlement.
+- Initialization pins one receipt/reference/mode, claims a bounded lease and
+  preserves uncertain attempts. Late provider responses cannot save a checkout
+  URL to a receipt whose owner, amount, payment state or status changed.
+- Existing Squad/Flutterwave references remain bound to those providers; older
+  customer apps cannot accidentally interpret KoraPay as Flutterwave. The updated
+  app checks its approved amount, validates hosted checkout URLs and explains
+  sandbox payments. The new browser return page never trusts/reflects query
+  parameters or marks an order paid.
+- Test keys require an explicitly non-production environment. Operator validation
+  of a separate test backend/database is still mandatory; no production settings
+  or provider account were changed. Wallet deposits/payouts remain on existing
+  paths and are not included in this order-checkout migration.
+- Focused backend checks passed **95/95**. Customer focused checks passed **11/11**
+  using the existing Flutter 3.35.6 SDK. The previous loading-timeout attempt was
+  stopped; this successful retry supersedes it. These are not device or provider
+  results. Final full offline backend regression passed **441, zero failed,
+  eight credential-gated database suites skipped (449 total; 775878.1585ms)**.
+  This includes 30 additional checks versus the earlier 411-pass checkpoint;
+  the focused 95 are a subset, not extra tests to add to the total. All 11 changed
+  JavaScript files passed syntax checks. Focused customer static analysis reached
+  'Analyzing 5 items' but returned no final result after more than 14 minutes
+  (865 seconds observed before the last wait). Only this agent's analyzer session
+  was interrupted. Cause is unconfirmed; rerun/troubleshoot this release gate.
+  No static-analysis pass is claimed. Git whitespace/credential-pattern checks
+  passed; generated test temporary files were removed, screenshots preserved.
+- Customer local checkpoint: `e42af4d`. Backend implementation and both status
+  documents are saved in this checkpoint. Other four repositories stayed clean.
+  No keys were supplied, providers charged, production records modified,
+  dependency versions changed, commits pushed, deployments or app builds run.
+- Required next: isolated KoraPay sandbox and real-Mongo concurrency acceptance;
+  audited payment-review/refund resolution; durable alerts; wallet/provider scope;
+  the unfinished APIs, workers, screens and release gates in the overview. No
+  second public phase is being created and no whole-platform completion claimed.
+
+## Previous local checkpoint — payment freshness and recovery (2026-09-28)
 
 - Payment initialization (including a reused hosted URL) and wallet debit now
   recheck the stored receipt against the existing authoritative checkout service:
@@ -108,7 +150,9 @@ Workspace root has no usable Git repository. Cross-repository tracker lives here
 
 | ID | Requirement / acceptance criteria | Components | State |
 |---|---|---|---|
-| BASE-01 | Regression tests for payments, stock, sellers, pickup, addresses, notifications; document existing failures | Backend/apps | Working: authoritative checkout/inventory, receipt freshness and verified stock-conflict review connected locally; final offline backend 411/411 passed. Prior Checkout Atlas 6/6 does not cover the new cases. Audited resolution, current-HEAD database/provider and cross-app acceptance pending |
+| BASE-01 | Regression tests for payments, stock, sellers, pickup, addresses, notifications; document existing failures | Backend/apps | Working: authoritative checkout/inventory, freshness, paid-conflict review and KoraPay order paths are local. See latest checkpoint for test evidence. Prior Atlas results do not cover all later changes. Audited resolution, current-HEAD database/provider and cross-app acceptance pending |
+| PAY-01 | KoraPay for new online orders without losing existing gateway receipts or mixing test/live payments | Backend/customer | Local adapter, callbacks/recovery and customer support; focused tests passed. Sandbox/current-Mongo/device acceptance pending; KORAPAY_PAYMENTS.md |
+| PAY-02 | Explicit provider coverage for deposits, withdrawals, paid plans and refunds | Backend/apps/admin | Existing wallet/payout paths preserved, not migrated; coverage/implementation and acceptance required before platform-wide KoraPay completion |
 | BASE-02 | Retain/version PDF, tracker, configuration/deployment/test evidence | All | Working |
 | BASE-03 | Backup, dry run, repeatable migrations and rollback before backfills | Backend | Pending |
 | BASE-04 | Review vulnerabilities, startup, credentials/log hygiene; no blind forced upgrades | All | Pending |
@@ -174,7 +218,8 @@ Workspace root has no usable Git repository. Cross-repository tracker lives here
 | Product requests | Implemented, disabled by default | PRODUCT_REQUESTS_ENABLED, BACKGROUND_JOBS_ENABLED; separate PRODUCT_REQUEST_PREVIEWS_ENABLED and GEMINI_PREVIEW_DAILY_LIMIT / GEMINI_PREVIEW_USER_DAILY_LIMIT; reuse existing backend Gemini/Cloudinary/customer OneSignal; see PRODUCT_REQUESTS.md |
 | Cloudinary | Existing images/carousels | Signed video uploads/transcoding/storage capacity |
 | Geoapify | Existing autocomplete | Preserve config and test resolution |
-| Squad | Hosted checkout/recovery live | Preserve rotated secret/webhook/recovery; wallet coverage audit |
+| KoraPay | User has test keys; local order-checkout implementation only | Separate test backend/database; KORAPAY_SECRET_KEY, KORAPAY_MODE, KORAPAY_REDIRECT_URL, KORAPAY_WEBHOOK_URL and PAYMENT_PROVIDER; no Flutter key; KORAPAY_PAYMENTS.md |
+| Squad / Flutterwave | Existing hosted checkout/recovery and wallet/payout consumers | Preserve historical keys/webhooks/recovery; audit unmigrated provider coverage before removing anything |
 | OneSignal | Existing audience services | Vendor config missing in latest logs; verify each audience |
 | Photoroom | Adapter implemented; no confirmed key or real provider call | PHOTOROOM_API_KEY, PHOTOROOM_SANDBOX, PHOTOROOM_DAILY_LIMIT, PHOTOROOM_VENDOR_DAILY_LIMIT; IMAGE_REFINEMENT_ENABLED + existing background jobs/Cloudinary, configured privately on backend AND worker; see IMAGE_REFINEMENT.md |
 | Video moderation | No confirmed provider | Inspect existing moderation before selecting service |
@@ -326,7 +371,7 @@ Do not treat successful unit tests as permission to publish this unfinished rele
 
 ## Next actions
 
-1. Save verified local checkpoints; keep flags off and do not deploy the incomplete release automatically. Rerun the incomplete focused customer static check: `flutter analyze --no-pub lib/models/order_payment_state.dart lib/screens/Main/checkout_screen.dart test/order_payment_state_test.dart` (previous attempt stopped after 971 seconds without a result).
+1. Save verified local checkpoints and their actual test/static results; keep flags off and do not deploy the incomplete release automatically. Confirm a separate test backend/database before KoraPay sandbox acceptance (KORAPAY_PAYMENTS.md). Never substitute test keys into the live checkout service. Use RELEASE_OVERVIEW.md as the readable overall checklist.
 2. All eight prepared Atlas gates (Explore, Search, Workers, Requests, Refinement, Planning, Checkout and PlannedCheckout) passed at their recorded revisions. Latest PlannedCheckout run eadc272f392c4c0dbfc060368e9237e6 passed 6/6. Do not repeat passing suites solely to record progress; rerun relevant regressions when code changes and all required gates at final sign-off. Never change production MONGO_URI for tests.
 3. Finish the connected order lifecycle: audited paid-review resolution; reservation expiry/cancellation/rescheduling/refunds; durable dispatch/reminder notifications and fair retries. Receipt-based payment freshness and verified stock/subscription conflict recording are now local and offline-tested, alongside receipt reservation, payment confirmation, due guards and review presentation; collect their actual DB/provider/device acceptance rather than rebuilding them. Compose the real scheduled reservation adapter and audited policy/window administration, then authenticated planning/review APIs, workers and remaining customer/vendor/admin/rider feature views. All planning public APIs remain unmounted until those gates are ready. Preserve historical orders, delivery/pickup and Squad/legacy flows. Follow ORDER_FEATURES.md; one coordinated release, no separate activation. Batch relevant Atlas acceptance rather than stopping the user after each small change.
 4. Keep the real Photoroom sandbox/live trial, private-link checks, browser/device review and shared retention/erasure/takedown work tracked as unfinished release gates (see IMAGE_REFINEMENT.md). Keep flags off pending acceptance; no paid calls have run. Do not rerun already-passed gates solely to claim progress.

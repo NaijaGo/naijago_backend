@@ -2134,10 +2134,13 @@ const startServer = async () => {
         orderRoutes.processPendingSquadPayments(app).catch((error) => {
           console.error(colors.red(`Squad recovery runner error: ${error.message}`));
         });
+        orderRoutes.processPendingKorapayPayments(app).catch((error) => {
+          console.error(colors.red(`KoraPay recovery runner error: ${error.code || 'RECONCILIATION_FAILED'}`));
+        });
       };
       runPaymentRecovery();
       setInterval(runPaymentRecovery, Number(process.env.PAYMENT_RECOVERY_INTERVAL_MS || 300000));
-      console.log(colors.green('Payment recovery runners active (Squad + legacy Flutterwave).'));
+      console.log(colors.green('Payment recovery runners active (KoraPay + existing Squad/Flutterwave payments).'));
     }
     if (process.env.DISABLE_RIDER_ASSIGNMENT_TIMEOUT_RUNNER !== 'true') {
       const runAssignmentExpiry = () => {

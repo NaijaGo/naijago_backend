@@ -18,7 +18,7 @@ function loadCheckoutForTests({ models, connection }) {
         '../utils/checkoutQuoteSnapshot', '../utils/flutterwavePayment', '../utils/squadPayment',
         '../utils/orderPlanningPolicy', '../utils/orderFulfillmentPolicy', '../utils/deliveryScheduleAvailability', '../utils/scheduledOrderSnapshot',
         '../services/deliveryReservationService', '../services/scheduledOrderPaymentService', '../services/verifiedPaymentReviewService',
-        '../services/checkoutPaymentFreshnessService']);
+        '../services/checkoutPaymentFreshnessService', '../services/korapayOrderService']);
     function safeRequire(name) {
         if (pure.has(name)) return actualRequire(name);
         if (name === 'mongoose') return { connection, startSession: () => connection.startSession() };
