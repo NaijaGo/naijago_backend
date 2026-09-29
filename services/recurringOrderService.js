@@ -53,6 +53,16 @@ function createRecurringOrderService({ Plan, Occurrence, connection, queue, vali
         const occurrences = await Occurrence.find({ plan: plan._id, owner: actor }).sort({ number: -1 }).limit(30).lean();
         return { plan: plan.toObject(), occurrences };
     }
+    async function list({ actor, before, limit = 20 }) {
+        const owner = id(actor); const safeLimit = integer(Number(limit), 1, 30, 'page size');
+        const filter = { owner };
+        if (before) filter._id = { $lt: id(before) };
+        const rows = await Plan.find(filter).sort({ _id: -1 }).limit(safeLimit + 1).lean();
+        return {
+            plans: rows.slice(0, safeLimit),
+            nextCursor: rows.length > safeLimit ? String(rows[safeLimit - 1]._id) : null,
+        };
+    }
     async function control({ planId, actor, revision, action, pauseUntil }) {
         integer(revision, 0, Number.MAX_SAFE_INTEGER, 'plan revision');
         return connection.transaction(async (session) => {
@@ -202,6 +212,6 @@ function createRecurringOrderService({ Plan, Occurrence, connection, queue, vali
         await row.save({ session }); await notify(row, 'checkout_started', session);
         return { orderId: String(order._id), reused: false };
     }
-    return { create, get, control, editFuture, editOccurrence, generate, generateDue, quote, checkout: checkoutOrder };
+    return { create, list, get, control, editFuture, editOccurrence, generate, generateDue, quote, checkout: checkoutOrder };
 }
 module.exports = { createRecurringOrderService };

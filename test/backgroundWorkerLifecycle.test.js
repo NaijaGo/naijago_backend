@@ -185,6 +185,30 @@ test('scheduler cannot begin cleanup if shutdown arrives during the revocation s
         media: { schedule: async () => assert.fail('Shutdown must prevent the next scan.') } });
     await assert.rejects(schedule({ signal: controller.signal }), { name: 'AbortError' });
 });
+test('planning scheduler expires holds, closes groups and generates occurrences in order', async () => {
+    let now = 0;
+    const calls = [];
+    const controller = new AbortController();
+    const schedule = createWorkerSchedule({
+        allowedTypes: ['group.notify', 'recurring.notify'],
+        now: () => now,
+        planning: {
+            expireReservations: async ({ signal, limit }) => {
+                assert.equal(signal, controller.signal); assert.equal(limit, 50); calls.push('expire');
+            },
+            closeDueGroups: async ({ signal, limit }) => {
+                assert.equal(signal, controller.signal); assert.equal(limit, 50); calls.push('groups');
+            },
+            generateDueRecurring: async ({ signal, limit }) => {
+                assert.equal(signal, controller.signal); assert.equal(limit, 20); calls.push('recurring');
+            },
+        },
+    });
+    await schedule({ signal: controller.signal });
+    now = 14000; await schedule({ signal: controller.signal });
+    now = 15000; await schedule({ signal: controller.signal });
+    assert.deepEqual(calls, ['expire', 'groups', 'recurring', 'expire', 'groups', 'recurring']);
+});
 for (const [label, createService] of [['cleanup', createMediaCleanupService], ['revocation', createMediaRevocationService]]) {
     test(label + ' scan stops between writes and never queues a second asset after cancellation', async () => {
         for (const abortAt of ['before_query', 'after_query', 'enqueue', 'update']) {

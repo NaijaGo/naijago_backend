@@ -125,6 +125,53 @@ test('group service keeps participant data private and rejects stale or unauthor
     const saved = await f.groups.edit({ groupId, actor: guest, revision: joined.revision, items: [{ product, quantity: 2, price: 1 }] });
     assert.equal(saved.own.items[0].price, undefined); assert.equal(saved.own.items[0].quantity, 2);
 });
+test('group invite rotation is owner-only, invalidates the old token and rolls back with its outbox', async (t) => {
+    const f = fixture(t), created = await f.createGroup(), groupId = created.group.id;
+    const joined = await f.groups.join({ token: created.inviteToken, actor: guest, displayName: 'Guest' });
+    await assert.rejects(f.groups.rotateInvite({
+        groupId, actor: guest, revision: joined.revision,
+    }), { code: 'OWNER_REQUIRED' });
+    await assert.rejects(f.groups.rotateInvite({
+        groupId, actor: owner, revision: created.group.revision - 1,
+    }), { code: 'GROUP_CHANGED' });
+
+    const rotated = await f.groups.rotateInvite({
+        groupId, actor: owner, revision: joined.revision,
+    });
+    assert.notEqual(rotated.inviteToken, created.inviteToken);
+    const nextGuest = '000000000000000000000005';
+    await assert.rejects(f.groups.join({
+        token: created.inviteToken, actor: nextGuest, displayName: 'Late guest',
+    }), { code: 'GROUP_NOT_FOUND' });
+    const accepted = await f.groups.join({
+        token: rotated.inviteToken, actor: nextGuest, displayName: 'Late guest',
+    });
+    assert.equal(accepted.memberCount, 3);
+    assert.equal(accepted.isOwner, false);
+    assert.equal(accepted.members, undefined);
+
+    const before = clone(f.records('GroupOrder'));
+    f.queue.enqueue = async () => { throw new Error('synthetic-invite-outbox-failure'); };
+    await assert.rejects(f.groups.rotateInvite({
+        groupId, actor: owner, revision: accepted.revision,
+    }), /synthetic-invite-outbox-failure/);
+    assert.deepEqual(f.records('GroupOrder'), before);
+});
+test('group creation stores the owner basket atomically without trusting submitted prices', async (t) => {
+    const f = fixture(t);
+    const created = await f.groups.create({ actor: owner, displayName: 'Owner', input: {
+        name: 'Synthetic initial cart', sellerType: 'vendor', sellerId: seller,
+        cutoffAt: '2100-01-01T12:00:00Z', destinationLabel: 'Office',
+        destination: { address: 'Private synthetic address', city: 'Abuja', postalCode: '900001',
+            country: 'NG', phoneNumber: 'private-phone', latitude: 9, longitude: 7 },
+        items: [{ product, quantity: 2, price: 1 }],
+    } });
+    assert.equal(created.group.own.items.length, 1);
+    assert.equal(created.group.own.items[0].quantity, 2);
+    assert.equal(created.group.own.items[0].price, undefined);
+    assert.ok(created.group.own.submittedAt);
+    assert.equal(f.jobs().filter((job) => job.type === 'group.notify').length, 1);
+});
 test('group outbox failure rolls back revision and submitted items', async (t) => {
     const f = fixture(t), created = await f.createGroup(); const before = clone(f.records('GroupOrder'));
     f.queue.enqueue = async () => { throw new Error('synthetic-outbox-failure'); };

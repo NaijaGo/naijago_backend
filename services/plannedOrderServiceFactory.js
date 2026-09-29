@@ -10,10 +10,13 @@ const { createDeliveryScheduleService, createSchedulePolicyReader } = require('.
 // Explicit composition only: no env reads, jobs, database connection or routes
 // start on import. Supply the existing router.calculateCheckoutSummary and the
 // backend's private JWT_SECRET (>=32 bytes) when authenticated APIs are mounted.
-function createPlannedOrderServices({ models, connection, queue, calculateCheckoutSummary, createUnpaidOrder, checkSchedule, readSchedulePolicy, signingSecret, now }) {
+function createPlannedOrderServices({ models, connection, queue, calculateCheckoutSummary, createUnpaidOrder,
+    reservations, checkSchedule, readSchedulePolicy, signingSecret, now }) {
     const catalog = createCheckoutCatalogService(models);
     const policyReader = readSchedulePolicy || (models.DeliveryWindow && models.AppSetting ? createSchedulePolicyReader(models.AppSetting) : null);
-    const scheduleService = policyReader ? createDeliveryScheduleService({ Window: models.DeliveryWindow, readPolicy: policyReader, now }) : null;
+    const scheduleService = policyReader ? createDeliveryScheduleService({
+        Window: models.DeliveryWindow, readPolicy: policyReader, reservations, now,
+    }) : null;
     const adapters = createPlannedOrderCatalogService({ catalog, User: models.User, calculateCheckoutSummary, checkSchedule: scheduleService?.check || checkSchedule });
     const approval = createPlannedCheckoutApproval({ secret: signingSecret, now });
     const checkout = { ...adapters, approval };
@@ -27,6 +30,7 @@ function createPlannedOrderServices({ models, connection, queue, calculateChecko
             const source = group || occurrence;
             const result = await createUnpaidOrder({ userId: owner, session, expectedQuote: quote,
                 planning: { kind, sourceId: source._id, revision: source.revision },
+                scheduleService,
                 input: { shippingAddress: quote.shippingAddress, userLocation: quote.userLocation,
                     shipmentSummaries: quote.shipmentSummaries, schedule: quote.schedule, paymentMethod } });
             return result.order;

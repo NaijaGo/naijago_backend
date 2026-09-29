@@ -11,9 +11,9 @@ async function finishesWithin(work, timeoutMs) {
         ]);
     } finally { clearTimeout(timer); }
 }
-function createWorkerSchedule({ allowedTypes, media, revocation, refinement, now = Date.now }) {
+function createWorkerSchedule({ allowedTypes, media, revocation, refinement, planning, now = Date.now }) {
     const types = new Set(allowedTypes);
-    let lastCleanup = null, lastRevocation = null, lastRefinement = null;
+    let lastCleanup = null, lastRevocation = null, lastRefinement = null, lastPlanning = null;
     return async function schedule({ signal }) {
         signal.throwIfAborted();
         if (types.has('image.refine') && (lastRefinement === null || now() - lastRefinement >= 60000)) {
@@ -26,6 +26,16 @@ function createWorkerSchedule({ allowedTypes, media, revocation, refinement, now
         signal.throwIfAborted();
         if (types.has('media.cleanup') && (lastCleanup === null || now() - lastCleanup >= 3600000)) {
             await media.schedule({ signal }); lastCleanup = now();
+        }
+        signal.throwIfAborted();
+        if ((types.has('group.notify') || types.has('recurring.notify')) &&
+            (lastPlanning === null || now() - lastPlanning >= 15000)) {
+            await planning.expireReservations({ signal, limit: 50 });
+            signal.throwIfAborted();
+            await planning.closeDueGroups({ signal, limit: 50 });
+            signal.throwIfAborted();
+            await planning.generateDueRecurring({ signal, limit: 20 });
+            lastPlanning = now();
         }
     };
 }
@@ -89,6 +99,7 @@ async function startManagedWorker({ env, db, ensureIndexes, createRuntime, host 
         if (env.EXPLORE_ENABLED === 'true') allowedTypes.push('explore.notify');
         if (env.PRODUCT_REQUESTS_ENABLED === 'true') allowedTypes.push('request.preview', 'request.notify');
         if (env.IMAGE_REFINEMENT_ENABLED === 'true') allowedTypes.push('image.refine', 'image.publish');
+        if (env.PLANNED_ORDERS_ENABLED === 'true') allowedTypes.push('group.notify', 'recurring.notify');
         if (!allowedTypes.length) throw new Error('No worker handlers are enabled.');
         await db.connect(env.MONGO_URI, { serverSelectionTimeoutMS: 10000 });
         await ensureIndexes(allowedTypes);

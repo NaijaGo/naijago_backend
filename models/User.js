@@ -490,7 +490,9 @@ const UserSchema = new mongoose.Schema({
           'Transaction',
           'User',
           'MainOrder',
-          'Shipment'            // ← ADDED THIS LINE
+          'Shipment',           // ← ADDED THIS LINE
+          'GroupOrder',
+          'RecurringOccurrence'
         ],
         sparse: true,
       },
@@ -499,6 +501,10 @@ const UserSchema = new mongoose.Schema({
         target: mongoose.Schema.Types.ObjectId,
         comment: mongoose.Schema.Types.ObjectId,
         parent: mongoose.Schema.Types.ObjectId,
+      },
+      plannedOrder: {
+        kind: { type: String, enum: ['group', 'recurring'] },
+        id: mongoose.Schema.Types.ObjectId,
       },
     }
   ],

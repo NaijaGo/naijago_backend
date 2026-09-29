@@ -23,6 +23,7 @@ function createGroupOrderService({ Group, connection, queue, validateItems, chec
     }
     async function create({ actor, displayName, input }) {
         id(actor); integer(input.participantLimit ?? 10, 2, 50, 'participant limit');
+        const initialItems = normalizeItems(input.items || []);
         const cutoffAt = instant(input.cutoffAt);
         if (cutoffAt <= now() || cutoffAt - now() > 7 * 86400000) fail('INVALID_CUTOFF', 'Choose a cutoff within the next seven days.');
         if (!['vendor', 'naijago'].includes(input.sellerType)) fail('INVALID_SELLER', 'Choose one seller.');
@@ -38,14 +39,21 @@ function createGroupOrderService({ Group, connection, queue, validateItems, chec
         }
         const invite = createInvite();
         const result = await connection.transaction(async (session) => {
-            const context = await validateItems({ purpose: 'create', items: [], sellerType: input.sellerType, sellerId,
+            const context = await validateItems({ purpose: 'create', items: initialItems, sellerType: input.sellerType, sellerId,
                 fulfillmentKey: input.fulfillmentKey, anchorItem: input.anchorItem, session });
             if (!context?.fulfillmentKey) fail('INVALID_SELLER', 'This shop is not available for group orders.', 409);
+            const ownerItems = initialItems.length
+                ? normalizeItems(context.items || [])
+                : [];
+            if (initialItems.length && ownerItems.length !== initialItems.length) {
+                fail('VALIDATION_UNAVAILABLE', 'Catalog validation is unavailable.', 503);
+            }
             const row = new Group({ owner: actor, ownerDisplayName: displayName, name: input.name,
                 sellerType: input.sellerType, sellerId, fulfillmentKey: context.fulfillmentKey,
                 inviteHash: invite.hash, destination: input.destination, destinationLabel: input.destinationLabel,
                 schedule: safeSchedule, cutoffAt, participantLimit: input.participantLimit ?? 10,
-                members: [{ user: actor, displayName, state: 'active', items: [], joinedAt: now() }] });
+                members: [{ user: actor, displayName, state: 'active', items: ownerItems,
+                    joinedAt: now(), ...(ownerItems.length ? { submittedAt: now() } : {}) }] });
             await record(row, actor, 'group_created', session);
             return groupView(row, actor);
         });
@@ -53,6 +61,16 @@ function createGroupOrderService({ Group, connection, queue, validateItems, chec
     }
     async function get({ groupId, actor }) {
         const row = await load(groupId, null); return groupView(row, actor);
+    }
+    async function list({ actor, before, limit = 20 }) {
+        const actorId = id(actor); const safeLimit = integer(Number(limit), 1, 30, 'page size');
+        const filter = { 'members.user': actorId };
+        if (before) filter._id = { $lt: id(before) };
+        const rows = await Group.find(filter).select('+destination').sort({ _id: -1 }).limit(safeLimit + 1);
+        return {
+            groups: rows.slice(0, safeLimit).map((row) => groupView(row, actorId)),
+            nextCursor: rows.length > safeLimit ? String(rows[safeLimit - 1]._id) : null,
+        };
     }
     async function join({ token, actor, displayName }) {
         id(actor); const hash = inviteHash(token);
@@ -68,6 +86,19 @@ function createGroupOrderService({ Group, connection, queue, validateItems, chec
             row.members.push({ user: actor, displayName, state: 'active', items: [], joinedAt: now() });
             await record(row, actor, 'participant_joined', session); return groupView(row, actor);
         });
+    }
+    async function rotateInvite({ groupId, actor, revision }) {
+        integer(revision, 0, Number.MAX_SAFE_INTEGER, 'group revision');
+        const invite = createInvite();
+        const group = await connection.transaction(async (session) => {
+            const row = await load(groupId, session);
+            memberOf(row, actor); assertOwner(row, actor); assertOpen(row, now());
+            if (row.revision !== revision) fail('GROUP_CHANGED', 'The group changed. Refresh before creating a new invitation.', 409);
+            row.inviteHash = invite.hash;
+            await record(row, actor, 'invite_rotated', session);
+            return groupView(row, actor);
+        });
+        return { group, inviteToken: invite.token };
     }
     async function edit({ groupId, actor, revision, items }) {
         integer(revision, 0, Number.MAX_SAFE_INTEGER, 'group revision'); const safeItems = normalizeItems(items);
@@ -149,6 +180,6 @@ function createGroupOrderService({ Group, connection, queue, validateItems, chec
         }
         return rows.length;
     }
-    return { create, get, join, edit, control, quote, checkout: checkoutOrder, closeDue };
+    return { create, list, get, join, rotateInvite, edit, control, quote, checkout: checkoutOrder, closeDue };
 }
 module.exports = { createGroupOrderService };

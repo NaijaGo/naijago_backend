@@ -26,12 +26,18 @@ async function main() {
             if (types.includes('explore.notify') && !await require('../services/exploreRuntime').ready()) {
                 throw new Error('Explore indexes are not ready.');
             }
+            if (types.includes('group.notify') && !await require('../services/plannedOrderRuntime').ready()) {
+                throw new Error('Planned order indexes are not ready.');
+            }
         },
         createRuntime: (allowedTypes) => {
             const queue = createBackgroundJobService({ Job: BackgroundJob, allowedTypes });
             const media = createMediaCleanupService({ MediaAsset, Product, CarouselSlide, cloudinary, queue });
             const revocation = createMediaRevocationService({ MediaAsset, cloudinary, queue });
             const handlers = {};
+            const planning = allowedTypes.includes('group.notify')
+                ? require('../services/plannedOrderRuntime').lifecycle()
+                : null;
             const refinement = allowedTypes.includes('image.refine') ? require('../services/imageRefinementRuntime') : null;
             if (refinement) Object.assign(handlers, refinement.handlers());
             if (allowedTypes.includes('request.notify')) Object.assign(handlers, require('../services/productRequestRuntime').handlers());
@@ -42,8 +48,20 @@ async function main() {
                     UserBlock: require('../models/UserBlock'), FeedComment: require('../models/FeedComment'),
                     explore: require('../services/exploreRuntime').explore, notifications: require('../services/notificationService') });
             }
+            if (planning) {
+                const { createPlanningNotificationService } = require('../services/planningNotificationService');
+                const notifyPlanning = createPlanningNotificationService({
+                    Group: require('../models/GroupOrder'),
+                    Occurrence: require('../models/RecurringOccurrence'),
+                    User: require('../models/User'),
+                    notifications: require('../services/notificationService'),
+                });
+                handlers['group.notify'] = notifyPlanning;
+                handlers['recurring.notify'] = notifyPlanning;
+            }
             return { runner: createJobRunner({ queue, handlers }),
-                schedule: createWorkerSchedule({ allowedTypes, media, revocation, refinement: refinement?.service }) };
+                schedule: createWorkerSchedule({ allowedTypes, media, revocation,
+                    refinement: refinement?.service, planning }) };
         },
     });
 }

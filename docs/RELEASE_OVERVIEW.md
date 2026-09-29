@@ -51,8 +51,8 @@ Terms used below:
 | AI preview + product requests | Clearly labelled non-purchasable concept previews, consent/submission, private request history, admin sourcing/matching and notifications. Offline and Atlas evidence. | Real preview/provider and all-screen acceptance, customer alerts, retention/account erasure/orphan cleanup and privacy copy. |
 | AI image refinement | Photoroom adapter, private preserved originals, durable work marker, bulk generation, comparison/approve/reject/regenerate and versioned publication. Offline and Atlas evidence. | Real Photoroom key/trial, product identity/quality, original/candidate access control, provider cleanup/revocation, admin browser and customer-image acceptance. |
 | Scheduled deliveries (PDF) | WAT calendar/capacity/hold rules; private receipt/reservation and payment/dispatch guards; transactional foundations tested. | Real slot/policy administration, expiry/reminder/reschedule/cancel/refund lifecycle, all dispatch entry points, authenticated APIs and customer/vendor/rider/admin views. |
-| Group orders (PDF) | Owner/member privacy and limits, shared quote/approval, one real unpaid receipt/shipment/fee and transactional source identity. Planning/PlannedCheckout Atlas evidence. | Public authenticated APIs, invites/deep links/realtime cart UI, payment/completion linkage, unavailable items, expiry/cancellation and all-party views. |
-| Recurring orders (PDF) | Calendar/plans/occurrences, pause/skip/cancel, reminder-to-pay, real catalog quotes and protected pending basket/address edits. | Future scheduling/substitution approval, actual checkout/payment linkage, bounded workers and customer/admin management screens. Automatic charging is not authorized or implemented. |
+| Group orders (PDF) | Owner/member privacy and limits, authenticated create/list/join/edit/control/quote/checkout APIs, atomic initial basket, customer create/join/cart/close/pay/receipt UI, notification routing, owner-only invite rotation, one real unpaid receipt/shipment/fee and transactional source identity. | Website deep-link fallback, realtime collaborative refresh, unavailable-item decision UI, expiry/cancellation acceptance and vendor/admin operational views. |
+| Recurring orders (PDF) | Calendar/plans/occurrences, authenticated customer APIs and management screens, future-cart replacement, pause/resume/skip/cancel, reminder-to-pay, signed quote plus real checkout/payment linkage and protected pending basket/address edits. Automatic charging remains off. | Rich substitution/price-threshold editor, schedule-change workflow, customer reminder/device acceptance and admin operational oversight. |
 | Photo reviews (PDF) | Delivered-purchase eligibility and photo byte/count rules plus private conversion adapter tested with mocks. | Connect existing review route/model; uploads, decoding/HEIC/EXIF stripping, transactional ratings, customer editor/gallery/filter, vendor replies and reporting/admin moderation. Existing paid-only review behavior is not yet fixed by the unconnected policy. |
 | Background jobs | Durable job claims, retry identity, leases, transaction-linked notifications and process-crash/shutdown tests. | Remaining handlers, durable dispatch/alerts, fair scanning, production worker rehearsal/health/alerts and provider acceptance. |
 
@@ -60,9 +60,10 @@ Terms used below:
 
 - [ ] Finish scheduled checkout, available windows/ETA, order tracking/reschedule
   and support-review actions; matching vendor/rider queues and admin operations.
-- [ ] Finish group creation/invite/join/cart/owner approval/payment/status screens.
-- [ ] Finish recurring-plan editor, substitutions, next occurrence and pause/skip/
-  cancel controls; admin oversight.
+- [ ] Accept the implemented group creation/invite/join/cart/owner approval/payment/
+  status screens; add website deep links, realtime refresh and admin oversight.
+- [ ] Extend the implemented recurring plan/occurrence/payment screens with rich
+  substitutions, price thresholds and admin oversight.
 - [ ] Finish photo-review composer/gallery/filter, vendor reply UI and admin
   report/moderation/audit screens.
 - [ ] Accept the existing Explore/ad/media/refinement/request screens in real
@@ -128,6 +129,11 @@ suites passed at their recorded revisions: Explore, Search, Workers, Requests,
 Refinement, Planning, Checkout and PlannedCheckout. Their providers were simulated.
 Later changes need relevant regressions. Do not add those counts to the offline
 suite or count repeated runs as newly completed features.
+
+Current uncommitted planning checkpoint: the complete focused backend planning
+gate passed 46/46, including owner-only invite rotation, old-token invalidation
+and outbox rollback. Customer formatting and focused Flutter analysis passed
+with no issues; planned-order/payment customer tests passed 13/13.
 
 1. Finish this local KoraPay checkpoint, customer validation and documentation.
 2. Confirm a separate Render test backend/database; run controlled KoraPay sandbox
