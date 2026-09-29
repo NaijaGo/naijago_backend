@@ -1,9 +1,13 @@
 const Rider = require('../models/Rider');
 
-const dropIndexIfExists = async (collection, indexName) => {
+const isMissingNamespace = (error) => (
+  error?.codeName === 'NamespaceNotFound' || error?.code === 26
+);
+
+const dropIndexIfExists = async (collection, indexName, log = console.log) => {
   try {
     await collection.dropIndex(indexName);
-    console.log(`Dropped obsolete MongoDB index: ${indexName}`);
+    log(`Dropped obsolete MongoDB index: ${indexName}`);
   } catch (error) {
     if (error?.codeName === 'IndexNotFound' || error?.code === 27) {
       return;
@@ -12,8 +16,21 @@ const dropIndexIfExists = async (collection, indexName) => {
   }
 };
 
-const cleanupObsoleteIndexes = async () => {
-  const indexes = await Rider.collection.indexes();
+const cleanupObsoleteIndexes = async ({
+  collection = Rider.collection,
+  log = console.log,
+} = {}) => {
+  let indexes;
+  try {
+    indexes = await collection.indexes();
+  } catch (error) {
+    // A newly provisioned database has no riders collection yet. There cannot
+    // be an obsolete index to remove, so startup should continue and let
+    // Mongoose create the collection when the first rider is written.
+    if (isMissingNamespace(error)) return;
+    throw error;
+  }
+
   const obsoleteRiderWithdrawalIndexes = indexes.filter((index) => {
     const key = index.key || {};
     return (
@@ -23,7 +40,7 @@ const cleanupObsoleteIndexes = async () => {
   });
 
   for (const index of obsoleteRiderWithdrawalIndexes) {
-    await dropIndexIfExists(Rider.collection, index.name);
+    await dropIndexIfExists(collection, index.name, log);
   }
 };
 
