@@ -1,6 +1,27 @@
 // models/MainOrder.js 
 const mongoose = require('mongoose');
 
+const PickupSequenceStopSchema = new mongoose.Schema({
+    sequence: { type: Number, required: true, min: 1 },
+    shipment: { type: mongoose.Schema.Types.ObjectId, ref: 'Shipment', required: true },
+    sellerType: { type: String, enum: ['naijago', 'vendor'], default: 'vendor' },
+    sellerId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    sellerName: { type: String, trim: true, default: 'Vendor' },
+    latitude: { type: Number, default: null },
+    longitude: { type: Number, default: null },
+    formattedAddress: { type: String, trim: true, default: '' },
+}, { _id: false });
+
+const DeliveryFeeOverrideSchema = new mongoose.Schema({
+    calculatedFee: { type: Number, min: 0, required: true },
+    previousFinalFee: { type: Number, min: 0, required: true },
+    finalFee: { type: Number, min: 0, required: true },
+    adjustment: { type: Number, required: true },
+    reason: { type: String, trim: true, maxlength: 500, required: true },
+    admin: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    changedAt: { type: Date, default: Date.now },
+}, { _id: false });
+
 const MainOrderSchema = new mongoose.Schema({
     user: {
         type: mongoose.Schema.Types.ObjectId,
@@ -36,6 +57,19 @@ const MainOrderSchema = new mongoose.Schema({
         type: mongoose.Schema.Types.ObjectId,
         ref: 'Shipment',
     }], 
+    // Snapshot of delivery pickup stops in stable MainOrder.shipments order.
+    // Older orders may not have this field and are given a safe runtime fallback.
+    pickupSequence: {
+        type: [PickupSequenceStopSchema],
+        default: [],
+    },
+    // Server-maintained dispatch state; multi-vendor orders become ready only
+    // when every non-cancelled delivery shipment is ready for pickup.
+    readyForDispatch: {
+        type: Boolean,
+        default: false,
+        index: true,
+    },
     
     // User's delivery details
     shippingAddress: {
@@ -55,6 +89,11 @@ const MainOrderSchema = new mongoose.Schema({
     totalPlatformFees: { type: Number, required: true, default: 0.0 },
     totalShippingPrice: { type: Number, required: true, default: 0.0 }, // Sum of all shipment shippingPrices
     originalShippingPrice: { type: Number, default: 0.0 },
+    deliveryFeeCalculation: { type: mongoose.Schema.Types.Mixed, default: null },
+    freeDeliveryCampaignApplied: { type: Boolean, default: false },
+    freeDeliveryCampaignDiscount: { type: Number, min: 0, default: 0 },
+    freeDeliveryCampaignReason: { type: String, trim: true, default: '' },
+    deliveryFeeOverrideHistory: { type: [DeliveryFeeOverrideSchema], default: [] },
     subscriptionDeliveryDiscount: { type: Number, default: 0.0 },
     subscriptionFreeDeliveryApplied: { type: Boolean, default: false },
     subscriptionDeliveryConsumed: { type: Boolean, default: false },

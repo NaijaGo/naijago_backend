@@ -15,6 +15,36 @@ const {
     buildHierarchicalCategoryFilter,
     buildEffectivePriceExpression,
 } = require('../utils/productFilters');
+const {
+    parseCatalogSearchRequest,
+    SearchInputError,
+    searchCatalog,
+} = require('../services/catalogSearchService');
+const { generateGroundedSearchFallback } = require('../services/geminiCatalogService');
+const externalSearchUsage = new Map();
+const EXTERNAL_SEARCH_WINDOW_MS = 60 * 1000;
+const EXTERNAL_SEARCH_MAX_PER_IP = 6;
+
+function mayUseExternalSearchFallback(req) {
+    const now = Date.now();
+    const key = req.ip || req.socket?.remoteAddress || 'unknown';
+    let usage = externalSearchUsage.get(key);
+    if (!usage || now - usage.startedAt >= EXTERNAL_SEARCH_WINDOW_MS) {
+        usage = { startedAt: now, count: 0 };
+    }
+    if (usage.count >= EXTERNAL_SEARCH_MAX_PER_IP) {
+        externalSearchUsage.set(key, usage);
+        return false;
+    }
+    usage.count += 1;
+    externalSearchUsage.set(key, usage);
+    if (externalSearchUsage.size > 10000) {
+        for (const [ip, entry] of externalSearchUsage) {
+            if (now - entry.startedAt >= EXTERNAL_SEARCH_WINDOW_MS) externalSearchUsage.delete(ip);
+        }
+    }
+    return true;
+}
 
 // =============================================================
 // MULTER CONFIG (MEMORY STORAGE)
@@ -1166,42 +1196,41 @@ router.get('/vendor/:vendorId', async (req, res) => {
 });
 
 /**
- * @desc    Search products by name (case-insensitive partial match)
+ * @desc    Search products using the paginated catalog contract
  * @route   GET /api/products/search
  * @access  Public
  * @query   ?q=search term
  */
 router.get('/search', async (req, res) => {
   try {
-    const { q } = req.query;
-
-    if (!q || q.trim() === '') {
-      return res.status(200).json([]); // or 400 - your choice
+    const searchInput = parseCatalogSearchRequest(req.query);
+    const result = await searchCatalog(searchInput, { attachOffers: attachPrimaryOffers });
+    const response = {
+      ...result,
+      externalAnswer: '',
+      externalSources: [],
+      externalLabel: 'External information — not a NaijaGo listing.',
+    };
+    if (result.products.length === 0 && /[\p{L}\p{N}]{2,}/u.test(searchInput.query)
+        && searchInput.allowSmartMatching
+        && searchInput.page === 1 && mayUseExternalSearchFallback(req)) {
+      try {
+        const external = await generateGroundedSearchFallback({ query: searchInput.query });
+        if (external.answer && external.sources.length) {
+          response.externalAnswer = external.answer;
+          response.externalSources = external.sources;
+        }
+      } catch (_) {
+        // Catalog search remains successful when optional grounded search is unavailable.
+      }
     }
-
-    const searchTerm = q.trim();
-
-    const products = await Product.find({
-      isActive: true,
-      $or: [
-        { name: { $regex: searchTerm, $options: 'i' } },
-        { description: { $regex: searchTerm, $options: 'i' } },
-        { brand: { $regex: searchTerm, $options: 'i' } },
-        { category: { $regex: searchTerm, $options: 'i' } },
-        { subcategory: { $regex: searchTerm, $options: 'i' } },
-        { searchTags: { $regex: searchTerm, $options: 'i' } },
-      ]
-    })
-      .populate('vendor', vendorPopulateFields)
-      .limit(50)
-      .lean();
-
-    console.log(`Search for "${searchTerm}" → found ${products.length} products`);
-
-    res.status(200).json(await attachPrimaryOffers(products));
+    return res.status(200).json(response);
   } catch (error) {
-    console.error('Search error:', error);
-    res.status(500).json({ message: 'Error performing search' });
+    if (error instanceof SearchInputError) {
+      return res.status(400).json({ message: error.message });
+    }
+    console.error('Product search failed.');
+    res.status(500).json({ message: 'Search is temporarily unavailable.' });
   }
 });
 

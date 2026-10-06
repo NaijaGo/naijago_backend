@@ -4,6 +4,11 @@ const Shipment = require('../models/Shipment');
 const notificationService = require('./notificationService');
 const { calculateDistance } = require('../utils/distanceCalculator');
 const { calculateOrderRiderEarningsBreakdown } = require('./riderEarningsService');
+const {
+  buildPickupSequence,
+  evaluateDispatchReadiness,
+  orderShipmentsByReference,
+} = require('./orderDispatchReadinessService');
 
 const MAX_ACTIVE_DELIVERIES = 5;
 const DEFAULT_OFFER_LIMIT = 1;
@@ -92,29 +97,47 @@ const notifyEligibleRidersForShipment = async ({
   markReady = true,
 }) => {
   if (!shipment || !mainOrder) return [];
-  if (shipment.fulfillmentMethod === 'pickup') return [];
+  const currentMainOrder = await MainOrder.findById(mainOrder._id || mainOrder);
+  if (!currentMainOrder) return [];
+
+  const currentShipments = orderShipmentsByReference(
+    currentMainOrder,
+    await Shipment.find({ mainOrder: currentMainOrder._id }),
+  );
+  const readiness = evaluateDispatchReadiness(currentShipments);
+  if (!readiness.readyForDispatch) return [];
+
+  const pickupSequence = buildPickupSequence(currentShipments);
+  const firstStopId = String(pickupSequence[0]?.shipment || '');
+  const firstStopShipment = currentShipments.find(
+    (candidate) => String(candidate._id) === firstStopId,
+  ) || readiness.requiredShipments[0];
+  if (!firstStopShipment || firstStopShipment.fulfillmentMethod === 'pickup') return [];
+  const assignmentShipments = readiness.isMultiVendor
+    ? readiness.requiredShipments
+    : [shipment];
 
   const riders = await findEligibleRiders({
-    pickupLocation: shipment.vendorLocation,
+    pickupLocation: firstStopShipment.vendorLocation,
     radiusKm,
     limit: limit || 1,
-    excludeRiderIds: mainOrder.assignmentRejectedBy || [],
+    excludeRiderIds: currentMainOrder.assignmentRejectedBy || [],
   });
 
   if (riders.length === 0) {
     app?.get('notifyAdmin')?.({
       type: 'no_online_rider_near_pickup',
-      message: `No online rider with a fresh GPS location was found near order ${mainOrder._id}.`,
-      orderId: mainOrder._id,
-      shipmentId: shipment._id,
+      message: `No online rider with a fresh GPS location was found near order ${currentMainOrder._id}.`,
+      orderId: currentMainOrder._id,
+      shipmentId: firstStopShipment._id,
     });
     return [];
   }
 
   const nearestRider = riders[0];
   const payoutBreakdown = calculateOrderRiderEarningsBreakdown({
-    mainOrder,
-    shipments: [shipment],
+    mainOrder: currentMainOrder,
+    shipments: assignmentShipments,
   });
   const message = `New pickup available for order ${mainOrder._id}. Estimated earning: ₦${Number(
     payoutBreakdown.amount || 0,
@@ -123,14 +146,16 @@ const notifyEligibleRidersForShipment = async ({
   const mainOrderSet = {
     assignedRider: nearestRider._id,
     assignedAt: new Date(),
+    readyForDispatch: readiness.readyForDispatch,
+    pickupSequence,
   };
-  if (markReady) {
+  if (markReady || readiness.isMultiVendor) {
     mainOrderSet.shipmentStatus = 'ready_for_pickup';
   }
 
   const assignedOrder = await MainOrder.findOneAndUpdate(
     {
-      _id: mainOrder._id,
+      _id: currentMainOrder._id,
       isClaimed: false,
       mainOrderStatus: { $nin: ['delivered', 'completed', 'cancelled'] },
       $or: [{ assignedRider: null }, { assignedRider: { $exists: false } }],
@@ -144,9 +169,10 @@ const notifyEligibleRidersForShipment = async ({
 
   if (!assignedOrder) return [];
 
-  await Shipment.findOneAndUpdate(
+  await Shipment.updateMany(
     {
-      _id: shipment._id,
+      _id: { $in: assignmentShipments.map((item) => item._id) },
+      shipmentStatus: { $in: ['accepted', 'ready_for_pickup'] },
       isClaimed: false,
       $or: [{ assignedRider: null }, { assignedRider: { $exists: false } }],
       assignmentRejectedBy: { $ne: nearestRider._id },
@@ -170,9 +196,9 @@ const notifyEligibleRidersForShipment = async ({
 
   app?.get('notifyAdmin')?.({
     type: 'nearest_rider_assignment_sent',
-    message: `Assigned order ${mainOrder._id} to nearest online rider ${nearestRider.fullName}.`,
-    orderId: mainOrder._id,
-    shipmentId: shipment._id,
+    message: `Assigned order ${currentMainOrder._id} to nearest online rider ${nearestRider.fullName}.`,
+    orderId: currentMainOrder._id,
+    shipmentId: firstStopShipment._id,
     riderId: nearestRider._id,
     distanceKm: nearestRider.distanceKm,
   });

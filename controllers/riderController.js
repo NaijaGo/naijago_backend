@@ -18,6 +18,10 @@ const {
   calculateShipmentRiderEarning,
   creditRiderForCompletedOrder,
 } = require('../services/riderEarningsService');
+const {
+  buildPickupSequence,
+  evaluateDispatchReadiness,
+} = require('../services/orderDispatchReadinessService');
 const notificationService = require('../services/notificationService');
 
 // Helper to create JWT
@@ -886,7 +890,8 @@ exports.getAvailableOrders = async (req, res) => {
     .populate({
       path: 'shipments',
       match: { 
-        shipmentStatus: { $in: ['accepted', 'ready_for_pickup'] },
+        shipmentStatus: { $nin: ['rejected', 'cancelled', 'returned'] },
+        fulfillmentMethod: { $ne: 'pickup' },
         isClaimed: false,
         assignmentRejectedBy: { $ne: req.rider._id },
         ...shipmentVisibilityFilter,
@@ -902,14 +907,23 @@ exports.getAvailableOrders = async (req, res) => {
     .limit(50); // Limit results for performance
 
     // Filter out orders with no available shipments
-    const filteredOrders = availableOrders.filter(order => 
-      order.shipments && order.shipments.length > 0
-    );
+    const filteredOrders = availableOrders.filter((order) => {
+      const readiness = evaluateDispatchReadiness(order.shipments || []);
+      if (!readiness.readyForDispatch || readiness.claimableShipments.length === 0) return false;
+
+      order.shipments = readiness.isMultiVendor
+        ? readiness.requiredShipments
+        : readiness.claimableShipments;
+      return order.shipments.length > 0;
+    });
 
     // Calculate distance for each order from rider's location
     const ordersWithDistance = filteredOrders.map(order => {
       // Get the first shipment's vendor location for distance calculation
-      const firstShipment = order.shipments[0];
+      const firstStopId = String(order.pickupSequence?.[0]?.shipment || '');
+      const firstShipment = order.shipments.find(
+        (shipment) => String(shipment._id) === firstStopId,
+      ) || order.shipments[0];
       let distance = null;
       
       if (rider.currentLocation && firstShipment?.vendorLocation) {
@@ -937,6 +951,9 @@ exports.getAvailableOrders = async (req, res) => {
         riderPayoutBreakdown: payoutBreakdown,
         riderDistanceKm: payoutBreakdown.totalDistanceKm,
         riderRatePerKm: payoutBreakdown.ratePerKm,
+        pickupSequence: order.pickupSequence?.length
+          ? order.pickupSequence
+          : buildPickupSequence(order.shipments),
         isAssignedToYou: order.assignedRider?.toString() === req.rider._id.toString(),
       };
     });
@@ -1039,6 +1056,16 @@ exports.claimOrder = async (req, res) => {
       });
     }
 
+    const dispatchReadiness = evaluateDispatchReadiness(mainOrder.shipments || []);
+    if (dispatchReadiness.isMultiVendor && !dispatchReadiness.readyForDispatch) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(409).json({
+        success: false,
+        message: 'Order is not ready for consolidated pickup.',
+      });
+    }
+
     // Check rider availability
     const rider = await Rider.findById(riderId).session(session);
     if (!rider.isAvailable || !rider.isActive) {
@@ -1064,12 +1091,8 @@ exports.claimOrder = async (req, res) => {
     const pickupOTP = Math.floor(1000 + Math.random() * 9000).toString();
     const deliveryOTP = Math.floor(1000 + Math.random() * 9000).toString();
 
-    const readyShipmentIds = mainOrder.shipments
-      .filter(
-        (shipment) =>
-          ['accepted', 'ready_for_pickup'].includes(shipment.shipmentStatus) &&
-          !shipment.isClaimed,
-      )
+    const readyShipmentIds = dispatchReadiness.claimableShipments
+      .filter((shipment) => !shipment.isClaimed)
       .map((shipment) => shipment._id);
 
     if (readyShipmentIds.length === 0) {
@@ -1107,7 +1130,9 @@ exports.claimOrder = async (req, res) => {
           claimedAt: Date.now(),
           pickupOTP,
           deliveryOTP,
-          shipmentStatus: 'ready_for_pickup'
+          shipmentStatus: 'ready_for_pickup',
+          readyForDispatch: true,
+          pickupSequence: buildPickupSequence(mainOrder.shipments || []),
         },
         $unset: {
           assignedRider: '',

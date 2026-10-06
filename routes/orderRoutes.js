@@ -2,6 +2,7 @@
 const express = require('express');
 const crypto = require('crypto');
 const mongoose = require('mongoose');
+const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
 const router = express.Router();
 const MainOrder = require('../models/MainOrder');
 const Shipment = require('../models/Shipment');
@@ -16,6 +17,8 @@ const axios = require("axios");
 const notificationService = require('../services/notificationService');
 const { grantReferralRewardForVerifiedUser } = require('../services/referralService');
 const { getDeliveryFeeSettings, buildDeliveryFeeQuote } = require('../services/deliveryFeeService');
+const { calculateConsolidatedDelivery, getRoadRoute } = require('../services/deliveryRoutingService');
+const { evaluateFreeDeliveryCampaign } = require('../services/freeDeliveryCampaignService');
 const { notifyVendorOfPaidShipment } = require('../services/vendorOrderNotificationService');
 const {
     calculateOrderRiderEarningsBreakdown,
@@ -24,6 +27,11 @@ const {
 } = require('../services/riderEarningsService');
 const { trackAnalyticsEvent } = require('../services/analyticsService');
 const { notifyEligibleRidersForShipment } = require('../services/riderAssignmentService');
+const {
+    buildPickupSequence,
+    evaluateDispatchReadiness,
+    refreshMainOrderDispatchState,
+} = require('../services/orderDispatchReadinessService');
 const {
     buildPendingPaymentResult,
     paymentMatchesOrder,
@@ -41,6 +49,109 @@ const buildFlutterwaveTxRef = (orderId) =>
 
 const buildSquadTxRef = (orderId) =>
     `NGS_${orderId}_${crypto.randomBytes(12).toString('hex')}`;
+
+const hasValidCoordinates = (location) => {
+    if (location?.latitude === null || location?.latitude === undefined || location?.latitude === '' ||
+        location?.longitude === null || location?.longitude === undefined || location?.longitude === '') {
+        return false;
+    }
+    const latitude = Number(location?.latitude);
+    const longitude = Number(location?.longitude);
+    return Number.isFinite(latitude) && latitude >= -90 && latitude <= 90 &&
+        Number.isFinite(longitude) && longitude >= -180 && longitude <= 180;
+};
+
+const resolvePickupLocation = ({ offerLocation, sellerLocation, productLocation }) => {
+    const candidates = [offerLocation, sellerLocation, productLocation].filter(Boolean);
+    const source = candidates.find(hasValidCoordinates);
+    if (!source) return null;
+    const addressSource = candidates.find((candidate) =>
+        candidate.formattedAddress || candidate.address || candidate.addressLine,
+    ) || source;
+    return {
+        latitude: Number(source.latitude),
+        longitude: Number(source.longitude),
+        formattedAddress: String(addressSource.formattedAddress || '').trim(),
+        address: String(addressSource.address || '').trim(),
+        addressLine: String(addressSource.addressLine || '').trim(),
+    };
+};
+
+const refreshAndOfferDispatchableOrder = async ({ mainOrderId, app, markReady = false }) => {
+    const dispatchState = await refreshMainOrderDispatchState({ mainOrderId });
+    if (!dispatchState?.readiness.readyForDispatch) return dispatchState;
+
+    const firstStopId = String(dispatchState.mainOrder.pickupSequence?.[0]?.shipment || '');
+    const firstStopShipment = dispatchState.shipments.find(
+        (shipment) => String(shipment._id) === firstStopId,
+    ) || dispatchState.readiness.requiredShipments[0];
+    if (firstStopShipment) {
+        await notifyEligibleRidersForShipment({
+            app,
+            shipment: firstStopShipment,
+            mainOrder: dispatchState.mainOrder,
+            markReady,
+        });
+    }
+    return dispatchState;
+};
+
+const deliveryQuoteLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 30,
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (req) => req.user?._id?.toString() || ipKeyGenerator(req.ip),
+    message: { message: 'Too many delivery quotes. Please wait and try again.' },
+});
+
+const applyRoadPricingToSummaries = async ({
+    shipmentSummaries,
+    userLocation,
+    deliveryPricing,
+    riderPayoutPricing,
+}) => {
+    const deliveryShipments = shipmentSummaries.filter(
+        (summary) => String(summary.fulfillmentMethod || 'delivery').toLowerCase() !== 'pickup',
+    );
+    const calculation = await calculateConsolidatedDelivery({
+        shipments: deliveryShipments,
+        customerLocation: userLocation,
+        deliveryPricing,
+        riderPayoutPricing,
+    });
+    deliveryShipments.forEach((summary, index) => {
+        const shippingPrice = calculation.shipmentFees[index] || 0;
+        summary.shippingPrice = shippingPrice;
+        summary.originalShippingPrice = shippingPrice;
+        summary.deliveryFeeSource = 'road_km';
+        summary.deliveryFeeZone = null;
+        summary.deliveryRouteLegDistanceKm = calculation.route.legDistancesKm[index] || 0;
+    });
+    for (const summary of shipmentSummaries) {
+        if (String(summary.fulfillmentMethod || '').toLowerCase() === 'pickup') {
+            summary.shippingPrice = 0;
+            summary.originalShippingPrice = 0;
+            summary.deliveryFeeSource = 'customer_pickup';
+            summary.deliveryRouteLegDistanceKm = 0;
+        }
+    }
+    return calculation;
+};
+
+const resolveCampaignRouteDistance = async ({ campaign, shipmentSummaries, userLocation, existingRoute }) => {
+    if (existingRoute?.distanceKm != null) return existingRoute.distanceKm;
+    if (!campaign?.enabled || campaign.maximumDistanceKm == null) return 0;
+    const deliveryShipments = shipmentSummaries.filter(
+        (summary) => String(summary.fulfillmentMethod || 'delivery').toLowerCase() !== 'pickup',
+    );
+    if (!deliveryShipments.length) return 0;
+    const route = await getRoadRoute([
+        ...deliveryShipments.map((summary) => summary.vendorLocation),
+        userLocation,
+    ]);
+    return route.distanceKm;
+};
 
 const configuredPaymentProvider = () =>
     String(process.env.PAYMENT_PROVIDER || 'flutterwave').trim().toLowerCase();
@@ -886,12 +997,164 @@ router.get('/', protect, async (req, res) => {
 // @desc    Calculate total price, split by vendor, and return summary
 // @route   POST /api/orders/calculate_summary
 // @access  Private
-router.post('/summary', protect, async (req, res) => {
+router.post('/delivery-quote', protect, deliveryQuoteLimiter, async (req, res) => {
+    // Legacy informational endpoint only. Checkout/order summary and order creation remain authoritative.
+    res.set('Deprecation', 'true');
+    res.set('X-NaijaGo-Quote-Authority', 'non-authoritative');
+    const { cartItems, shippingAddress, userLocation, fulfillmentSelections = {}, promoCode = '' } = req.body || {};
+    if (!Array.isArray(cartItems) || cartItems.length === 0) {
+        return res.status(400).json({ message: 'Cart items are required to calculate a delivery quote.' });
+    }
+    if (!hasValidCoordinates(userLocation)) {
+        return res.status(400).json({ message: 'Valid customer coordinates are required.' });
+    }
+
+    try {
+        const sellerStops = new Map();
+        let orderSubtotal = 0;
+        for (const item of cartItems) {
+            if (!item?.product || !Number.isFinite(Number(item.quantity)) || Number(item.quantity) <= 0) {
+                return res.status(400).json({ message: 'Each cart item must contain a valid product and quantity.' });
+            }
+            if (!mongoose.Types.ObjectId.isValid(String(item.product))) {
+                return res.status(400).json({ message: 'Each cart item must reference a valid product.' });
+            }
+            const product = await Product.findById(item.product)
+                .populate('vendor', 'businessName businessLocation')
+                .lean();
+            if (!product) return res.status(404).json({ message: 'A selected product could not be found.' });
+
+            const offerQuery = item.offer
+                ? ProductOffer.findOne({ _id: item.offer, product: product._id, status: 'active' })
+                : ProductOffer.findOne({ product: product._id, isPrimary: true, status: 'active' });
+            const selectedOffer = await offerQuery
+                .populate('sellerId', 'businessName businessLocation')
+                .lean();
+            const sellerType = selectedOffer?.sellerType || (product.vendor ? 'vendor' : product.sellerType || 'naijago');
+            const sellerId = selectedOffer?.sellerId?._id || selectedOffer?.sellerId || product.sellerId || product.vendor?._id || null;
+            const seller = selectedOffer?.sellerId && typeof selectedOffer.sellerId === 'object'
+                ? selectedOffer.sellerId
+                : product.vendor;
+            const location = resolvePickupLocation({
+                offerLocation: selectedOffer?.fulfilmentLocation,
+                sellerLocation: seller?.businessLocation,
+                productLocation: product.productLocation,
+            });
+            if (!location) {
+                return res.status(400).json({ message: `A valid fulfilment location must be configured for ${product.name}.` });
+            }
+            const key = sellerType === 'naijago' ? 'naijago' : `vendor:${String(sellerId || '')}`;
+            const selection = fulfillmentSelections[key] || fulfillmentSelections[String(sellerId || '')] || {};
+            const fulfillmentMethod = String(selection.method || '').toLowerCase() === 'pickup' ? 'pickup' : 'delivery';
+            if (!sellerStops.has(key)) {
+                sellerStops.set(key, {
+                    sellerType,
+                    sellerId,
+                    sellerName: sellerType === 'naijago' ? 'NaijaGo' : seller?.businessName || 'Vendor',
+                    fulfillmentMethod,
+                    vendorLocation: location,
+                    items: [],
+                });
+            }
+            const stop = sellerStops.get(key);
+            if (stop.fulfillmentMethod !== fulfillmentMethod) {
+                return res.status(400).json({ message: 'Choose one fulfilment method for each vendor.' });
+            }
+            stop.items.push({ product: product._id });
+            orderSubtotal += Number(selectedOffer?.discountPrice ?? selectedOffer?.price ?? product.discountPrice ?? product.price ?? 0) * Number(item.quantity);
+        }
+
+        const shipmentSummaries = [...sellerStops.values()];
+        const settings = await getDeliveryFeeSettings();
+        let route = null;
+        let customerFee = null;
+        let riderPayout = null;
+        let totalDeliveryFee = 0;
+        let freeCampaign = { eligible: false, reason: '' };
+        if (settings.deliveryPricing?.mode === 'road_km') {
+            const calculation = await calculateConsolidatedDelivery({
+                shipments: shipmentSummaries,
+                customerLocation: userLocation,
+                deliveryPricing: settings.deliveryPricing,
+                riderPayoutPricing: settings.riderPayoutPricing,
+            });
+            route = calculation.route;
+            customerFee = calculation.customerFee;
+            riderPayout = calculation.riderPayout;
+            totalDeliveryFee = calculation.customerFee.deliveryFee;
+            freeCampaign = await evaluateFreeDeliveryCampaign({
+                campaign: settings.freeDeliveryCampaign,
+                userId: req.user._id,
+                orderSubtotal,
+                routeDistanceKm: route.distanceKm,
+                shippingAddress,
+                deliveryShipments: shipmentSummaries.filter((stop) => stop.fulfillmentMethod !== 'pickup'),
+                promoCode,
+            });
+            if (freeCampaign.eligible) {
+                freeCampaign.discount = totalDeliveryFee;
+                totalDeliveryFee = 0;
+            }
+        } else {
+            for (const stop of shipmentSummaries) {
+                if (stop.fulfillmentMethod === 'pickup') continue;
+                const distanceKm = calculateDistance(
+                    stop.vendorLocation.latitude,
+                    stop.vendorLocation.longitude,
+                    userLocation.latitude,
+                    userLocation.longitude,
+                );
+                totalDeliveryFee += buildDeliveryFeeQuote({ shippingAddress, distanceKm, settings }).amount;
+            }
+            const campaignDistance = await resolveCampaignRouteDistance({
+                campaign: settings.freeDeliveryCampaign,
+                shipmentSummaries,
+                userLocation,
+            });
+            freeCampaign = await evaluateFreeDeliveryCampaign({
+                campaign: settings.freeDeliveryCampaign,
+                userId: req.user._id,
+                orderSubtotal,
+                routeDistanceKm: campaignDistance,
+                shippingAddress,
+                deliveryShipments: shipmentSummaries.filter((stop) => stop.fulfillmentMethod !== 'pickup'),
+                promoCode,
+            });
+            if (freeCampaign.eligible) {
+                freeCampaign.discount = totalDeliveryFee;
+                totalDeliveryFee = 0;
+            }
+        }
+
+        res.status(200).json({
+            success: true,
+            pricingMode: settings.deliveryPricing?.mode || 'zone',
+            deliveryFee: Number(totalDeliveryFee.toFixed(2)),
+            distanceKm: route?.distanceKm ?? null,
+            route,
+            customerFee,
+            estimatedRiderPayout: riderPayout?.amount ?? null,
+            freeDelivery: {
+                ...freeCampaign,
+                discount: Number(freeCampaign.discount || 0),
+            },
+        });
+    } catch (error) {
+        console.error('Delivery quote failed:', error.code || error.message);
+        res.status(error.statusCode || 502).json({
+            success: false,
+            message: error.statusCode ? error.message : 'Unable to calculate delivery distance right now. Please try again.',
+        });
+    }
+});
+
+router.post('/summary', protect, deliveryQuoteLimiter, async (req, res) => {
     const {
         cartItems,
         shippingAddress,
         userLocation,
         fulfillmentSelections = {},
+        promoCode = '',
     } = req.body;
 
     if (!cartItems || cartItems.length === 0) {
@@ -1081,6 +1344,7 @@ router.post('/summary', protect, async (req, res) => {
         const shipmentSummaries = [];
         let totalShippingPrice = 0;
         let originalShippingPrice = 0;
+        let deliveryCalculation = null;
 
         for (const data of sellerCartMap.values()) {
             const vendorLocation = data.vendorLocation;
@@ -1149,6 +1413,55 @@ router.post('/summary', protect, async (req, res) => {
             });
         }
 
+        if (deliveryFeeSettings.deliveryPricing?.mode === 'road_km') {
+            deliveryCalculation = await applyRoadPricingToSummaries({
+                shipmentSummaries,
+                userLocation,
+                deliveryPricing: deliveryFeeSettings.deliveryPricing,
+                riderPayoutPricing: deliveryFeeSettings.riderPayoutPricing,
+            });
+            totalShippingPrice = shipmentSummaries.reduce(
+                (sum, summary) => sum + Number(summary.shippingPrice || 0),
+                0,
+            );
+            originalShippingPrice = totalShippingPrice;
+            for (const summary of shipmentSummaries) {
+                summary.totalShipmentCost = Number(
+                    (Number(summary.subtotal || 0) + Number(summary.shippingPrice || 0)).toFixed(2),
+                );
+            }
+        }
+
+        const campaignDistance = await resolveCampaignRouteDistance({
+            campaign: deliveryFeeSettings.freeDeliveryCampaign,
+            shipmentSummaries,
+            userLocation,
+            existingRoute: deliveryCalculation?.route,
+        });
+        const freeDeliveryCampaign = await evaluateFreeDeliveryCampaign({
+            campaign: deliveryFeeSettings.freeDeliveryCampaign,
+            userId: req.user._id,
+            orderSubtotal: totalSubtotal,
+            routeDistanceKm: campaignDistance,
+            shippingAddress,
+            deliveryShipments: shipmentSummaries.filter(
+                (summary) => String(summary.fulfillmentMethod || 'delivery').toLowerCase() !== 'pickup',
+            ),
+            promoCode,
+        });
+        if (freeDeliveryCampaign.eligible) {
+            const discount = totalShippingPrice;
+            totalShippingPrice = 0;
+            shipmentSummaries.forEach((summary) => {
+                summary.subscriptionDeliveryDiscount = 0;
+                summary.freeDeliveryCampaignDiscount = summary.originalShippingPrice || 0;
+                summary.shippingPrice = 0;
+                summary.freeDeliveryCampaignApplied = true;
+                summary.totalShipmentCost = Number(Number(summary.subtotal || 0).toFixed(2));
+            });
+            freeDeliveryCampaign.discount = discount;
+        }
+
         const buyer = await User.findById(req.user._id).select('naijagoSubscription');
         const subscriptionDiscount = buildSubscriptionDeliveryDiscount({
             user: buyer,
@@ -1192,8 +1505,18 @@ router.post('/summary', protect, async (req, res) => {
             taxPrice: req.body.taxPrice || 0.0,
             shipmentSummaries,
             deliveryFeePolicy: {
+                pricingMode: deliveryFeeSettings.deliveryPricing?.mode || 'zone',
                 fallbackRatePerKm: deliveryFeeSettings.fallbackRatePerKm,
                 minimumDeliveryFee: deliveryFeeSettings.minimumDeliveryFee,
+                route: deliveryCalculation?.route || null,
+                consolidatedFee: deliveryCalculation?.customerFee || null,
+                estimatedRiderPayout: deliveryCalculation?.riderPayout?.amount ?? null,
+                estimatedRiderPayoutBreakdown: deliveryCalculation?.riderPayout || null,
+                freeDeliveryCampaign: {
+                    eligible: freeDeliveryCampaign.eligible,
+                    reason: freeDeliveryCampaign.reason,
+                    discount: freeDeliveryCampaign.discount || 0,
+                },
                 matchedZone: matchedDeliveryZone
                     ? {
                         zoneKey: matchedDeliveryZone.zoneKey,
@@ -1223,8 +1546,13 @@ router.post('/summary', protect, async (req, res) => {
         });
 
     } catch (error) {
-        console.error('Error calculating order summary:', error);
-        res.status(500).json({ message: 'Error calculating order summary.', error: error.message });
+        if (error.code && String(error.code).startsWith('DELIVERY_')) {
+            return res.status(error.statusCode || 502).json({ message: error.message });
+        }
+        console.error('Error calculating order summary:', error.code || error.message);
+        res.status(error.statusCode || 500).json({
+            message: error.statusCode ? error.message : 'Unable to calculate order summary right now.',
+        });
     }
 });
 
@@ -1255,28 +1583,38 @@ router.post('/', protect, async (req, res) => {
     session.startTransaction();
 
     try {
+        const deliveryFeeSettings = await getDeliveryFeeSettings();
         if (!shipmentSummaries || shipmentSummaries.length === 0) {
             await session.abortTransaction();
             session.endSession();
             return res.status(400).json({ message: 'No shipment summaries provided. Please calculate summary first.' });
         }
 
+        if (deliveryFeeSettings.deliveryPricing?.mode === 'road_km' && !hasValidCoordinates(userLocation)) {
+            await session.abortTransaction();
+            session.endSession();
+            return res.status(400).json({ message: 'Valid customer coordinates are required to confirm delivery distance.' });
+        }
+
         // --- Step 1: Stock Check (Must check stock for ALL items across ALL shipments) ---
-        const deliveryFeeSettings = await getDeliveryFeeSettings();
         const costLowConfig = await getCostLowCommissionConfig(session);
         let recalculatedSubtotal = 0;
         let recalculatedPlatformFees = 0;
         let recalculatedShippingPrice = 0;
         let recalculatedOriginalShippingPrice = 0;
         let matchedDeliveryZone = null;
+        let deliveryCalculation = null;
+        let appliedFreeDeliveryCampaign = { eligible: false, reason: '' };
 
         for (const summary of shipmentSummaries) {
-            let summarySubtotal = 0;
-            let summaryPlatformFee = 0;
-            let summaryVendorLocation = summary.vendorLocation || {};
+        let summarySubtotal = 0;
+        let summaryPlatformFee = 0;
+            let summaryVendorLocation = null;
             let summaryVendorId = summary.vendor || summary.vendorId;
             let summarySellerType = summary.sellerType || (summaryVendorId ? 'vendor' : 'naijago');
             let summarySellerId = summary.sellerId || summaryVendorId || null;
+            let summarySellerName = 'NaijaGo';
+            let summarySellerKey = null;
             const fulfillmentMethod =
                 String(summary.fulfillmentMethod || '').toLowerCase() === 'pickup'
                     ? 'pickup'
@@ -1340,8 +1678,12 @@ router.post('/', protect, async (req, res) => {
                     return res.status(404).json({ message: `Product not found: ${item.name}` });
                 }
                 const selectedOffer = item.offer
-                    ? await ProductOffer.findOne({ _id: item.offer, product: product._id, status: 'active' }).session(session)
-                    : await ProductOffer.findOne({ product: product._id, isPrimary: true, status: 'active' }).session(session);
+                    ? await ProductOffer.findOne({ _id: item.offer, product: product._id, status: 'active' })
+                        .populate('sellerId', 'businessName businessLocation phoneNumber businessSupportPhone pickupEnabled pickupSettings')
+                        .session(session)
+                    : await ProductOffer.findOne({ product: product._id, isPrimary: true, status: 'active' })
+                        .populate('sellerId', 'businessName businessLocation phoneNumber businessSupportPhone pickupEnabled pickupSettings')
+                        .session(session);
                 const availableStock = Number(selectedOffer?.stockQuantity ?? product.stockQuantity);
                 if (availableStock < item.quantity) {
                     await session.abortTransaction();
@@ -1390,17 +1732,57 @@ router.post('/', protect, async (req, res) => {
                     }
                 }
 
-                if (!summaryVendorLocation?.latitude && product.vendor?.businessLocation) {
-                    summaryVendorLocation = product.vendor.businessLocation;
+                const itemSellerType = selectedOffer?.sellerType ||
+                    (product.vendor ? 'vendor' : product.sellerType || summarySellerType);
+                const itemSellerId = selectedOffer?.sellerId?._id || selectedOffer?.sellerId ||
+                    product.sellerId || product.vendor?._id || null;
+                const itemSellerKey = itemSellerType === 'naijago'
+                    ? 'naijago'
+                    : `vendor:${String(itemSellerId || '')}`;
+                if (summarySellerKey && summarySellerKey !== itemSellerKey) {
+                    await session.abortTransaction();
+                    session.endSession();
+                    return res.status(400).json({
+                        message: 'Each shipment must contain products from the same fulfilment location.',
+                    });
                 }
-                if (!summaryVendorLocation?.latitude && product.productLocation?.latitude) {
-                    summaryVendorLocation = product.productLocation;
+                summarySellerName = pickupVendor.businessName || 'Vendor';
+                summarySellerKey = itemSellerKey;
+                summarySellerType = itemSellerType;
+                summarySellerId = itemSellerId;
+                summaryVendorId = itemSellerType === 'vendor' ? itemSellerId : null;
+
+                let sellerRecord = null;
+                if (itemSellerType === 'vendor' && itemSellerId) {
+                    const populatedOfferSeller = selectedOffer?.sellerId &&
+                        typeof selectedOffer.sellerId === 'object' && selectedOffer.sellerId.businessLocation
+                        ? selectedOffer.sellerId
+                        : null;
+                    const populatedProductVendor = product.vendor &&
+                        String(product.vendor._id || product.vendor) === String(itemSellerId)
+                        ? product.vendor
+                        : null;
+                    sellerRecord = populatedOfferSeller || populatedProductVendor || await User.findById(itemSellerId)
+                        .select('businessName businessLocation')
+                        .session(session);
                 }
-                if (!summaryVendorId && product.vendor?._id) {
-                    summaryVendorId = product.vendor._id;
+
+                const authoritativePickupLocation = resolvePickupLocation({
+                    offerLocation: selectedOffer?.fulfilmentLocation,
+                    sellerLocation: sellerRecord?.businessLocation,
+                    productLocation: product.productLocation,
+                });
+                if (!authoritativePickupLocation) {
+                    await session.abortTransaction();
+                    session.endSession();
+                    return res.status(400).json({
+                        message: `A valid fulfilment location must be configured for ${product.name}.`,
+                    });
                 }
-                summarySellerType = selectedOffer?.sellerType || (product.vendor ? 'vendor' : product.sellerType || summarySellerType);
-                summarySellerId = selectedOffer?.sellerId || product.sellerId || summarySellerId;
+                summarySellerName = sellerRecord?.businessName ||
+                    product.vendor?.businessName ||
+                    (itemSellerType === 'naijago' ? 'NaijaGo' : 'Vendor');
+                if (!summaryVendorLocation) summaryVendorLocation = authoritativePickupLocation;
 
                 const safeQuantity = Math.max(1, Number(item.quantity || 1));
                 const authoritativePrice = Number(selectedOffer?.discountPrice ?? selectedOffer?.price ?? product.discountPrice ?? product.price ?? 0);
@@ -1462,7 +1844,7 @@ router.post('/', protect, async (req, res) => {
             summary.vendorId = summaryVendorId;
             summary.sellerType = summarySellerType;
             summary.sellerId = summarySellerId;
-            summary.sellerName = summary.sellerName || (summarySellerType === 'naijago' ? 'NaijaGo' : summary.vendorName || 'Vendor');
+            summary.sellerName = summarySellerName;
             summary.fulfillmentMethod = fulfillmentMethod;
             summary.pickupDetails = fulfillmentMethod === 'pickup'
                 ? {
@@ -1510,6 +1892,50 @@ router.post('/', protect, async (req, res) => {
             recalculatedOriginalShippingPrice += shippingPrice;
         }
 
+        if (deliveryFeeSettings.deliveryPricing?.mode === 'road_km') {
+            deliveryCalculation = await applyRoadPricingToSummaries({
+                shipmentSummaries,
+                userLocation,
+                deliveryPricing: deliveryFeeSettings.deliveryPricing,
+                riderPayoutPricing: deliveryFeeSettings.riderPayoutPricing,
+            });
+            recalculatedShippingPrice = shipmentSummaries.reduce(
+                (sum, summary) => sum + Number(summary.shippingPrice || 0),
+                0,
+            );
+            recalculatedOriginalShippingPrice = recalculatedShippingPrice;
+        }
+
+        const campaignDistance = await resolveCampaignRouteDistance({
+            campaign: deliveryFeeSettings.freeDeliveryCampaign,
+            shipmentSummaries,
+            userLocation,
+            existingRoute: deliveryCalculation?.route,
+        });
+        appliedFreeDeliveryCampaign = await evaluateFreeDeliveryCampaign({
+            campaign: deliveryFeeSettings.freeDeliveryCampaign,
+            userId: req.user._id,
+            orderSubtotal: recalculatedSubtotal,
+            routeDistanceKm: campaignDistance,
+            shippingAddress,
+            deliveryShipments: shipmentSummaries.filter(
+                (summary) => String(summary.fulfillmentMethod || 'delivery').toLowerCase() !== 'pickup',
+            ),
+            promoCode: req.body.promoCode,
+            session,
+        });
+        if (appliedFreeDeliveryCampaign.eligible) {
+            appliedFreeDeliveryCampaign.discount = recalculatedShippingPrice;
+        }
+        if (appliedFreeDeliveryCampaign.eligible) {
+            shipmentSummaries.forEach((summary) => {
+                summary.freeDeliveryCampaignDiscount = Number(summary.originalShippingPrice || 0);
+                summary.freeDeliveryCampaignApplied = true;
+                summary.shippingPrice = 0;
+            });
+            recalculatedShippingPrice = 0;
+        }
+
         const buyerForSubscription = await User.findById(req.user._id)
             .select('naijagoSubscription')
             .session(session);
@@ -1545,6 +1971,21 @@ router.post('/', protect, async (req, res) => {
             totalPlatformFees: parseFloat(recalculatedPlatformFees.toFixed(2)),
             totalShippingPrice: parseFloat(recalculatedShippingPrice.toFixed(2)),
             originalShippingPrice: parseFloat(recalculatedOriginalShippingPrice.toFixed(2)),
+            deliveryFeeCalculation: deliveryCalculation
+                ? {
+                    ...deliveryCalculation.customerFee,
+                    route: deliveryCalculation.route,
+                    pricingSettings: deliveryFeeSettings.deliveryPricing,
+                    riderPayout: deliveryCalculation.riderPayout,
+                    riderPayoutSettings: deliveryFeeSettings.riderPayoutPricing,
+                    calculatedAt: new Date(),
+                }
+                : null,
+            freeDeliveryCampaignApplied: appliedFreeDeliveryCampaign.eligible,
+            freeDeliveryCampaignDiscount: appliedFreeDeliveryCampaign.eligible
+                ? parseFloat(Number(appliedFreeDeliveryCampaign.discount || recalculatedOriginalShippingPrice).toFixed(2))
+                : 0,
+            freeDeliveryCampaignReason: appliedFreeDeliveryCampaign.reason || '',
             subscriptionDeliveryDiscount: authoritativeSubscriptionDiscount.eligible
                 ? parseFloat(authoritativeSubscriptionDiscount.discount.toFixed(2))
                 : 0,
@@ -1561,6 +2002,7 @@ router.post('/', protect, async (req, res) => {
         const createdMainOrder = await mainOrder.save({ session });
         
         const shipmentIds = [];
+        const createdShipments = [];
         
         // --- Step 3: Create Shipment documents for each vendor ---
         for (const summary of shipmentSummaries) {
@@ -1590,7 +2032,7 @@ router.post('/', protect, async (req, res) => {
                 mainOrder: createdMainOrder._id,
                 sellerType: summary.sellerType || (summaryVendorId ? 'vendor' : 'naijago'),
                 sellerId: summary.sellerId || summaryVendorId || null,
-                sellerName: summary.sellerName || summary.vendorName || 'NaijaGo',
+                sellerName: summary.sellerName || 'Vendor',
                 vendor: summary.sellerType === 'naijago' ? null : summaryVendorId,
                 vendorLocation,
                 items: summary.items.map(item => ({
@@ -1626,6 +2068,8 @@ router.post('/', protect, async (req, res) => {
                 originalShippingPrice: summary.originalShippingPrice || summary.shippingPrice || 0,
                 subscriptionDeliveryDiscount: summary.subscriptionDeliveryDiscount || 0,
                 subscriptionFreeDeliveryApplied: summary.subscriptionFreeDeliveryApplied === true,
+                freeDeliveryCampaignDiscount: summary.freeDeliveryCampaignDiscount || 0,
+                freeDeliveryCampaignApplied: summary.freeDeliveryCampaignApplied === true,
                 commissionRate: summary.commissionRate, // Store average commission rate for this shipment
                 fulfillmentMethod: summary.fulfillmentMethod || 'delivery',
                 pickupDetails: summary.pickupDetails
@@ -1649,10 +2093,13 @@ router.post('/', protect, async (req, res) => {
 
             const createdShipment = await newShipment.save({ session });
             shipmentIds.push(createdShipment._id);
+            createdShipments.push(createdShipment);
         }
         
         // --- Step 4: Link Shipments back to the MainOrder ---
         createdMainOrder.shipments = shipmentIds;
+        createdMainOrder.pickupSequence = buildPickupSequence(createdShipments);
+        createdMainOrder.readyForDispatch = evaluateDispatchReadiness(createdShipments).readyForDispatch;
         await createdMainOrder.save({ session });
 
         await session.commitTransaction();
@@ -1695,8 +2142,15 @@ router.post('/', protect, async (req, res) => {
     } catch (error) {
         await session.abortTransaction();
         session.endSession();
-        console.error('Error creating multi-vendor order:', error);
-        res.status(500).json({ message: 'Server Error during order creation.', error: error.message });
+        console.error('Error creating multi-vendor order:', error.code || error.message);
+        if (String(error.code || '').startsWith('DELIVERY_') ||
+            String(error.code || '').startsWith('ROUTING_') ||
+            String(error.code || '').startsWith('MAPBOX_')) {
+            return res.status(error.statusCode || 502).json({
+                message: 'Unable to calculate delivery distance right now. Please try again.',
+            });
+        }
+        res.status(500).json({ message: 'Unable to create this order right now. Please try again.' });
     }
 });
 
@@ -1855,12 +2309,13 @@ router.put('/shipments/:id/accept', protect, authorizeRoles('vendor', 'admin'), 
 
         const mainOrder = await MainOrder.findById(shipment.mainOrder);
         if (mainOrder?.isPaid) {
-            await notifyEligibleRidersForShipment({
+            await refreshAndOfferDispatchableOrder({
+                mainOrderId: mainOrder._id,
                 app: req.app,
-                shipment,
-                mainOrder,
                 markReady: false,
             });
+        } else if (mainOrder) {
+            await refreshMainOrderDispatchState({ mainOrderId: mainOrder._id });
         }
 
         const io = req.app.get('io');
@@ -1897,6 +2352,17 @@ router.put('/shipments/:id/reject', protect, authorizeRoles('vendor', 'admin'), 
         shipment.rejectedAt = new Date();
         shipment.rejectionReason = reason.slice(0, 300);
         await shipment.save();
+
+        const dispatchState = await refreshMainOrderDispatchState({
+            mainOrderId: shipment.mainOrder,
+        });
+        if (dispatchState?.mainOrder?.isPaid && dispatchState.readiness.readyForDispatch) {
+            await refreshAndOfferDispatchableOrder({
+                mainOrderId: shipment.mainOrder,
+                app: req.app,
+                markReady: true,
+            });
+        }
 
         const io = req.app.get('io');
         if (io) {
@@ -2560,37 +3026,36 @@ router.put('/shipments/:id/status-update', protect, authorizeRoles('vendor', 'ad
         shipment.shipmentStatus = status;
         await shipment.save();
 
-        if (status === 'ready_for_pickup') {
+        if (['ready_for_pickup', 'cancelled', 'returned'].includes(status)) {
             const mainOrderId = shipment.mainOrder?._id || shipment.mainOrder;
-            const siblingShipments = await Shipment.find({
-                mainOrder: mainOrderId,
-                shipmentStatus: { $nin: ['rejected', 'cancelled', 'returned'] }
-            }).select('shipmentStatus');
-            const allFulfillableShipmentsReady = siblingShipments.length > 0 &&
-                siblingShipments.every((item) => item.shipmentStatus === 'ready_for_pickup');
-
+            const dispatchState = await refreshMainOrderDispatchState({ mainOrderId });
+            const isReadyForDispatch = dispatchState?.readiness.readyForDispatch === true;
             const mainOrder = await MainOrder.findByIdAndUpdate(mainOrderId, {
-                shipmentStatus: allFulfillableShipmentsReady ? 'ready_for_pickup' : 'processing',
-                mainOrderStatus: 'processing'
+                shipmentStatus: isReadyForDispatch ? 'ready_for_pickup' : 'processing',
+                mainOrderStatus: 'processing',
             }, { new: true });
 
-            const io = req.app.get('io');
-            if (io) {
-                io.emit('admin_notification', {
-                    type: 'shipment_ready_for_pickup',
-                    message: `Shipment ${shipment._id} is ready for rider pickup`,
-                    shipmentId: shipment._id,
-                    orderId: mainOrderId,
-                    vendorId: shipment.vendor,
-                    timestamp: Date.now()
-                });
+            if (status === 'ready_for_pickup') {
+                const io = req.app.get('io');
+                if (io) {
+                    io.emit('admin_notification', {
+                        type: 'shipment_ready_for_pickup',
+                        message: `Shipment ${shipment._id} is ready for rider pickup`,
+                        shipmentId: shipment._id,
+                        orderId: mainOrderId,
+                        vendorId: shipment.vendor,
+                        timestamp: Date.now()
+                    });
+                }
             }
 
-            await notifyEligibleRidersForShipment({
-                app: req.app,
-                shipment,
-                mainOrder: mainOrder || shipment.mainOrder,
-            });
+            if (isReadyForDispatch && mainOrder?.isPaid) {
+                await refreshAndOfferDispatchableOrder({
+                    mainOrderId,
+                    app: req.app,
+                    markReady: true,
+                });
+            }
         }
 
         res.json({ message: `Shipment ${SHIPMENT_ID} status updated to ${status}.`, shipment });

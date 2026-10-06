@@ -5,6 +5,7 @@ const { protect } = require('../middleware/authMiddleware');
 const { normalizeGeoapifySuggestion } = require('../utils/locationSuggestions');
 
 const router = express.Router();
+const clean = (value) => (typeof value === 'string' ? value.trim() : '');
 const suggestionCache = new Map();
 const SUGGESTION_CACHE_TTL_MS = 5 * 60 * 1000;
 const SUGGESTION_CACHE_MAX_ENTRIES = 250;
@@ -15,6 +16,7 @@ const autocompleteLimiter = rateLimit({
   legacyHeaders: false,
   message: { message: 'Too many location searches. Please wait a moment and try again.' },
 });
+const reverseCache = new Map();
 
 router.get('/autocomplete', protect, autocompleteLimiter, async (req, res) => {
   const query = String(req.query.q || '').trim();
@@ -78,6 +80,68 @@ router.get('/autocomplete', protect, autocompleteLimiter, async (req, res) => {
   } catch (error) {
     console.error('Geoapify autocomplete failed:', error.response?.status || error.message);
     return res.status(502).json({ message: 'Address suggestions are temporarily unavailable.' });
+  }
+});
+
+router.get('/reverse', protect, autocompleteLimiter, async (req, res) => {
+  if (typeof req.query.lat !== 'string' || !req.query.lat.trim()
+      || typeof req.query.lng !== 'string' || !req.query.lng.trim()) {
+    return res.status(400).json({ message: 'Valid latitude and longitude are required.' });
+  }
+  const latitude = Number(req.query.lat);
+  const longitude = Number(req.query.lng);
+  if (!Number.isFinite(latitude) || latitude < -90 || latitude > 90
+      || !Number.isFinite(longitude) || longitude < -180 || longitude > 180) {
+    return res.status(400).json({ message: 'Valid latitude and longitude are required.' });
+  }
+
+  const cacheKey = `${latitude.toFixed(5)},${longitude.toFixed(5)}`;
+  const cached = reverseCache.get(cacheKey);
+  if (cached && Date.now() - cached.createdAt <= SUGGESTION_CACHE_TTL_MS) {
+    return res.json({ address: cached.address, cached: true });
+  }
+
+  const apiKey = process.env.GEOAPIFY_API_KEY?.trim();
+  if (!apiKey) {
+    return res.status(503).json({ message: 'Automatic address lookup is temporarily unavailable.' });
+  }
+
+  try {
+    const response = await axios.get('https://api.geoapify.com/v1/geocode/reverse', {
+      params: { lat: latitude, lon: longitude, format: 'json', lang: 'en', apiKey },
+      timeout: 10000,
+    });
+    const result = response.data?.results?.[0];
+    if (!result) return res.status(404).json({ message: 'No address was found for these coordinates.' });
+
+    const addressLine = clean(result.address_line1)
+      || [clean(result.housenumber), clean(result.street)].filter(Boolean).join(' ')
+      || clean(result.suburb)
+      || clean(result.formatted);
+    const city = clean(result.city) || clean(result.town) || clean(result.village)
+      || clean(result.suburb) || clean(result.county) || clean(result.state);
+    if (!addressLine && !city) {
+      return res.status(404).json({ message: 'No address was found for these coordinates.' });
+    }
+    const address = {
+      addressLine: addressLine || city,
+      city,
+      postalCode: clean(result.postcode),
+      country: clean(result.country) || 'Nigeria',
+      formattedAddress: clean(result.formatted)
+        || [addressLine || city, city, clean(result.postcode), clean(result.country) || 'Nigeria']
+          .filter(Boolean).join(', '),
+      latitude,
+      longitude,
+    };
+    reverseCache.set(cacheKey, { address, createdAt: Date.now() });
+    if (reverseCache.size > SUGGESTION_CACHE_MAX_ENTRIES) {
+      reverseCache.delete(reverseCache.keys().next().value);
+    }
+    return res.json({ address });
+  } catch (error) {
+    console.error('Geoapify reverse geocoding failed:', error.response?.status || error.message);
+    return res.status(502).json({ message: 'Automatic address lookup is temporarily unavailable.' });
   }
 });
 

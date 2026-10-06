@@ -62,6 +62,17 @@ const calculateOrderRiderEarnings = ({ mainOrder, shipments = [] }) => {
 };
 
 const calculateOrderRiderEarningsBreakdown = ({ mainOrder, shipments = [] }) => {
+  const savedRoadPayout = mainOrder?.deliveryFeeCalculation?.riderPayout;
+  if (savedRoadPayout && Number.isFinite(Number(savedRoadPayout.amount))) {
+    return {
+      ...savedRoadPayout,
+      amount: roundMoney(savedRoadPayout.amount),
+      totalDistanceKm: roundMoney(savedRoadPayout.distanceKm || 0),
+      ratePerKm: Number(savedRoadPayout.pricePerKm || 0),
+      shipments: [],
+    };
+  }
+
   const sourceShipments = shipments.length ? shipments : mainOrder?.shipments || [];
   const shipmentBreakdowns = sourceShipments.map((shipment) =>
     calculateShipmentRiderEarningBreakdown(shipment, mainOrder),

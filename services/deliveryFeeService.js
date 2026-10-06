@@ -4,6 +4,107 @@ const DELIVERY_FEE_SETTINGS_KEY = 'delivery_fee_program';
 const ADMIN_IDENTITY_FIELDS = 'firstName lastName email';
 const DEFAULT_FALLBACK_RATE_PER_KM = 200;
 const DEFAULT_MINIMUM_DELIVERY_FEE = 1000;
+const DEFAULT_DELIVERY_PRICING = {
+  mode: 'zone',
+  baseFee: 0,
+  pricePerKm: 0,
+  minimumFee: 0,
+  maximumFee: null,
+  maximumDistanceKm: null,
+  routeProfile: 'driving',
+};
+const DEFAULT_RIDER_PAYOUT_PRICING = {
+  basePayout: 0,
+  pricePerKm: 0,
+  minimumPayout: 0,
+  maximumPayout: null,
+  multiVendorAdjustment: 0,
+};
+const DEFAULT_FREE_DELIVERY_CAMPAIGN = {
+  enabled: false,
+  minimumOrderAmount: 0,
+  maximumDistanceKm: null,
+  customerEligibility: 'everyone',
+  vendorIds: [],
+  productIds: [],
+  areas: [],
+  promoCode: '',
+  startsAt: null,
+  endsAt: null,
+};
+
+// Generous sanity caps prevent accidental/malicious admin values without constraining normal pricing.
+const DELIVERY_PRICING_LIMITS = Object.freeze({
+  baseFee: 50000,
+  pricePerKm: 10000,
+  minimumFee: 50000,
+  maximumFee: 500000,
+  maximumDistanceKm: 500,
+  basePayout: 100000,
+  riderPricePerKm: 10000,
+  minimumPayout: 100000,
+  maximumPayout: 1000000,
+  multiVendorAdjustment: 100000,
+  campaignMinimumOrderAmount: 100000000,
+  campaignMaximumDistanceKm: 500,
+});
+
+const validateDeliveryPricingBounds = ({ deliveryPricing, riderPayoutPricing, freeDeliveryCampaign } = {}) => {
+  const groups = [
+    [deliveryPricing, [
+      ['baseFee', DELIVERY_PRICING_LIMITS.baseFee],
+      ['pricePerKm', DELIVERY_PRICING_LIMITS.pricePerKm],
+      ['minimumFee', DELIVERY_PRICING_LIMITS.minimumFee],
+      ['maximumFee', DELIVERY_PRICING_LIMITS.maximumFee],
+      ['maximumDistanceKm', DELIVERY_PRICING_LIMITS.maximumDistanceKm],
+    ], 'Delivery pricing'],
+    [riderPayoutPricing, [
+      ['basePayout', DELIVERY_PRICING_LIMITS.basePayout],
+      ['pricePerKm', DELIVERY_PRICING_LIMITS.riderPricePerKm],
+      ['minimumPayout', DELIVERY_PRICING_LIMITS.minimumPayout],
+      ['maximumPayout', DELIVERY_PRICING_LIMITS.maximumPayout],
+      ['multiVendorAdjustment', DELIVERY_PRICING_LIMITS.multiVendorAdjustment],
+    ], 'Rider payout'],
+    [freeDeliveryCampaign, [
+      ['minimumOrderAmount', DELIVERY_PRICING_LIMITS.campaignMinimumOrderAmount],
+      ['maximumDistanceKm', DELIVERY_PRICING_LIMITS.campaignMaximumDistanceKm],
+    ], 'Free delivery'],
+  ];
+
+  for (const [values, fields, label] of groups) {
+    if (!values) continue;
+    for (const [field, max] of fields) {
+      if (!Object.prototype.hasOwnProperty.call(values, field)) continue;
+      const value = values[field];
+      if (value === null || value === '') {
+        if (field === 'maximumFee' || field === 'maximumDistanceKm' || field === 'maximumPayout') continue;
+        return `${label} ${field} must be a valid non-negative number.`;
+      }
+      if (typeof value !== 'number' && (typeof value !== 'string' || value.trim() === '')) {
+        return `${label} ${field} must be a valid non-negative number.`;
+      }
+      const number = Number(value);
+      if (!Number.isFinite(number) || number < 0) return `${label} ${field} must be a valid non-negative number.`;
+      if (number === 0 && ['maximumFee', 'maximumPayout', 'maximumDistanceKm'].includes(field)) {
+        return `${label} ${field} must be greater than zero when set.`;
+      }
+      if (number > max) return `${label} ${field} cannot exceed ${max}.`;
+    }
+  }
+
+  if (deliveryPricing?.mode != null && !['zone', 'road_km'].includes(deliveryPricing.mode)) {
+    return 'Pricing method must be zone or road_km.';
+  }
+  if (deliveryPricing?.maximumFee != null && deliveryPricing?.minimumFee != null &&
+      Number(deliveryPricing.maximumFee) < Number(deliveryPricing.minimumFee)) {
+    return 'Maximum delivery fee must be greater than or equal to the minimum fee.';
+  }
+  if (riderPayoutPricing?.maximumPayout != null && riderPayoutPricing?.minimumPayout != null &&
+      Number(riderPayoutPricing.maximumPayout) < Number(riderPayoutPricing.minimumPayout)) {
+    return 'Maximum rider payout must be greater than or equal to the minimum payout.';
+  }
+  return null;
+};
 
 const DEFAULT_ABUJA_DELIVERY_ZONES = [
   {
@@ -355,13 +456,60 @@ const mapDeliveryFeeHistoryEntry = (entry) => ({
   zones: normalizeDeliveryFeeZones(entry?.zones || []),
 });
 
+const normalizeOptionalNumber = (value) => {
+  if (value === null || value === undefined || value === '') return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? Number(parsed.toFixed(2)) : null;
+};
+
+const normalizeDeliveryPricing = (pricing = {}) => ({
+  mode: pricing?.mode === 'road_km' ? 'road_km' : 'zone',
+  baseFee: toNonNegativeNumber(pricing?.baseFee, DEFAULT_DELIVERY_PRICING.baseFee),
+  pricePerKm: toNonNegativeNumber(pricing?.pricePerKm, DEFAULT_DELIVERY_PRICING.pricePerKm),
+  minimumFee: toNonNegativeNumber(pricing?.minimumFee, DEFAULT_DELIVERY_PRICING.minimumFee),
+  maximumFee: normalizeOptionalNumber(pricing?.maximumFee),
+  maximumDistanceKm: normalizeOptionalNumber(pricing?.maximumDistanceKm),
+  routeProfile: 'driving',
+});
+
+const normalizeRiderPayoutPricing = (pricing = {}) => ({
+  basePayout: toNonNegativeNumber(pricing?.basePayout, 0),
+  pricePerKm: toNonNegativeNumber(pricing?.pricePerKm, 0),
+  minimumPayout: toNonNegativeNumber(pricing?.minimumPayout, 0),
+  maximumPayout: normalizeOptionalNumber(pricing?.maximumPayout),
+  multiVendorAdjustment: toNonNegativeNumber(pricing?.multiVendorAdjustment, 0),
+});
+
+const normalizeFreeDeliveryCampaign = (campaign = {}) => ({
+  enabled: campaign?.enabled === true,
+  minimumOrderAmount: toNonNegativeNumber(campaign?.minimumOrderAmount, 0),
+  maximumDistanceKm: normalizeOptionalNumber(campaign?.maximumDistanceKm),
+  customerEligibility: campaign?.customerEligibility === 'first_order' ? 'first_order' : 'everyone',
+  vendorIds: Array.isArray(campaign?.vendorIds) ? campaign.vendorIds.map(String) : [],
+  productIds: Array.isArray(campaign?.productIds) ? campaign.productIds.map(String) : [],
+  areas: Array.isArray(campaign?.areas)
+    ? campaign.areas.map((area) => String(area || '').trim()).filter(Boolean)
+    : [],
+  promoCode: String(campaign?.promoCode || '').trim().toUpperCase(),
+  startsAt: campaign?.startsAt || null,
+  endsAt: campaign?.endsAt || null,
+});
+
+const mapDeliverySettingsHistoryEntry = (entry) => ({
+  oldValue: entry?.oldValue || {},
+  newValue: entry?.newValue || {},
+  changedAt: entry?.changedAt || null,
+  changedBy: mapAdminIdentity(entry?.changedBy || null),
+});
+
 const getDeliveryFeeSettings = async () => {
   const existingSettings = await AppSetting.findOne({ key: DELIVERY_FEE_SETTINGS_KEY })
     .select(
-      'fallbackRatePerKm minimumDeliveryFee deliveryFeeZones updatedBy updatedAt createdAt deliveryFeeHistory',
+      'fallbackRatePerKm minimumDeliveryFee deliveryFeeZones updatedBy updatedAt createdAt deliveryFeeHistory deliveryPricing riderPayoutPricing freeDeliveryCampaign deliverySettingsHistory',
     )
     .populate('updatedBy', ADMIN_IDENTITY_FIELDS)
-    .populate('deliveryFeeHistory.changedBy', ADMIN_IDENTITY_FIELDS);
+    .populate('deliveryFeeHistory.changedBy', ADMIN_IDENTITY_FIELDS)
+    .populate('deliverySettingsHistory.changedBy', ADMIN_IDENTITY_FIELDS);
 
   if (existingSettings) {
     const zones = normalizeDeliveryFeeZones(existingSettings.deliveryFeeZones || []);
@@ -390,6 +538,12 @@ const getDeliveryFeeSettings = async () => {
       createdAt: existingSettings.createdAt || null,
       source: 'database',
       history,
+      deliveryPricing: normalizeDeliveryPricing(existingSettings.deliveryPricing),
+      riderPayoutPricing: normalizeRiderPayoutPricing(existingSettings.riderPayoutPricing),
+      freeDeliveryCampaign: normalizeFreeDeliveryCampaign(existingSettings.freeDeliveryCampaign),
+      deliverySettingsHistory: (existingSettings.deliverySettingsHistory || [])
+        .map(mapDeliverySettingsHistoryEntry)
+        .sort((left, right) => new Date(right.changedAt || 0) - new Date(left.changedAt || 0)),
     };
   }
 
@@ -402,6 +556,10 @@ const getDeliveryFeeSettings = async () => {
     createdAt: null,
     source: 'defaults',
     history: [],
+    deliveryPricing: { ...DEFAULT_DELIVERY_PRICING },
+    riderPayoutPricing: { ...DEFAULT_RIDER_PAYOUT_PRICING },
+    freeDeliveryCampaign: { ...DEFAULT_FREE_DELIVERY_CAMPAIGN },
+    deliverySettingsHistory: [],
   };
 };
 
@@ -577,9 +735,17 @@ const buildDeliveryFeeQuote = ({ shippingAddress, distanceKm = 0, settings }) =>
 module.exports = {
   DELIVERY_FEE_SETTINGS_KEY,
   DEFAULT_ABUJA_DELIVERY_ZONES,
+  DEFAULT_DELIVERY_PRICING,
+  DEFAULT_RIDER_PAYOUT_PRICING,
+  DEFAULT_FREE_DELIVERY_CAMPAIGN,
+  DELIVERY_PRICING_LIMITS,
+  validateDeliveryPricingBounds,
   getDeliveryFeeSettings,
   initializeDeliveryFeeSettings,
   normalizeDeliveryFeeZones,
+  normalizeDeliveryPricing,
+  normalizeRiderPayoutPricing,
+  normalizeFreeDeliveryCampaign,
   findMatchingDeliveryZone,
   buildDeliveryFeeQuote,
 };

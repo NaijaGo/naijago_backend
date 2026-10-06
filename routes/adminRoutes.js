@@ -1,5 +1,6 @@
 // adminRoutes.js
 const express = require('express');
+const mongoose = require('mongoose');
 const AppSetting = require('../models/AppSetting');
 const User = require('../models/User'); // Import the User model
 const Dispute = require('../models/DisputeRequest'); // Import the Dispute model
@@ -23,7 +24,11 @@ const {
 const {
     getDeliveryFeeSettings,
     normalizeDeliveryFeeZones,
+    normalizeDeliveryPricing,
+    normalizeRiderPayoutPricing,
+    normalizeFreeDeliveryCampaign,
     DELIVERY_FEE_SETTINGS_KEY,
+    validateDeliveryPricingBounds,
 } = require('../services/deliveryFeeService');
 const {
     getPharmacySubscriptionSettings,
@@ -35,6 +40,11 @@ const {
     findEligibleRiders,
     notifyRiderAssignmentOffer,
 } = require('../services/riderAssignmentService');
+const {
+    buildPickupSequence,
+    evaluateDispatchReadiness,
+    orderShipmentsByReference,
+} = require('../services/orderDispatchReadinessService');
 const { sendMarketingCampaign } = require('../services/marketingCampaignService');
 const {
     generateCatalogDrafts,
@@ -130,6 +140,10 @@ const buildDeliveryFeeSettingsPayload = (settings, message) => ({
     updatedBy: settings.updatedBy,
     createdAt: settings.createdAt,
     history: settings.history,
+    deliveryPricing: settings.deliveryPricing,
+    riderPayoutPricing: settings.riderPayoutPricing,
+    freeDeliveryCampaign: settings.freeDeliveryCampaign,
+    deliverySettingsHistory: settings.deliverySettingsHistory,
 });
 
 const buildPharmacySubscriptionSettingsPayload = (settings, message) => ({
@@ -2795,8 +2809,85 @@ router.put('/delivery-fee-settings', protect, authorizeAdmin, async (req, res) =
 
     try {
         const existingSettings = await AppSetting.findOne({ key: DELIVERY_FEE_SETTINGS_KEY }).select(
-            'fallbackRatePerKm minimumDeliveryFee deliveryFeeZones',
+            'fallbackRatePerKm minimumDeliveryFee deliveryFeeZones deliveryPricing riderPayoutPricing freeDeliveryCampaign',
         );
+
+        const currentSettings = await getDeliveryFeeSettings();
+        const deliveryPricing = normalizeDeliveryPricing(
+            req.body?.deliveryPricing || currentSettings.deliveryPricing,
+        );
+        const riderPayoutPricing = normalizeRiderPayoutPricing(
+            req.body?.riderPayoutPricing || currentSettings.riderPayoutPricing,
+        );
+        const freeDeliveryCampaign = normalizeFreeDeliveryCampaign(
+            req.body?.freeDeliveryCampaign || currentSettings.freeDeliveryCampaign,
+        );
+
+        const pricingBoundsError = validateDeliveryPricingBounds({
+            deliveryPricing: req.body?.deliveryPricing,
+            riderPayoutPricing: req.body?.riderPayoutPricing,
+            freeDeliveryCampaign: req.body?.freeDeliveryCampaign,
+        });
+        if (pricingBoundsError) return res.status(400).json({ message: pricingBoundsError });
+
+        if (req.body?.deliveryPricing) {
+            const rawPricing = req.body.deliveryPricing;
+            const values = [rawPricing.baseFee, rawPricing.pricePerKm, rawPricing.minimumFee];
+            if (values.some((value) => !Number.isFinite(Number(value)) || Number(value) < 0)) {
+                return res.status(400).json({ message: 'Road pricing fees must be valid non-negative numbers.' });
+            }
+            if (rawPricing.maximumFee != null && rawPricing.maximumFee !== '' &&
+                (!Number.isFinite(Number(rawPricing.maximumFee)) || Number(rawPricing.maximumFee) < deliveryPricing.minimumFee)) {
+                return res.status(400).json({ message: 'Maximum delivery fee must be greater than or equal to the minimum fee.' });
+            }
+            if (rawPricing.maximumDistanceKm != null && rawPricing.maximumDistanceKm !== '' &&
+                (!Number.isFinite(Number(rawPricing.maximumDistanceKm)) || Number(rawPricing.maximumDistanceKm) <= 0)) {
+                return res.status(400).json({ message: 'Maximum delivery distance must be greater than zero.' });
+            }
+            if (deliveryPricing.mode === 'road_km' &&
+                deliveryPricing.baseFee + deliveryPricing.pricePerKm <= 0) {
+                return res.status(400).json({ message: 'Configure a non-zero base fee or per-kilometre fee before enabling road pricing.' });
+            }
+        }
+
+        if (req.body?.riderPayoutPricing) {
+            const rawPayout = req.body.riderPayoutPricing;
+            const values = [rawPayout.basePayout, rawPayout.pricePerKm, rawPayout.minimumPayout, rawPayout.multiVendorAdjustment];
+            if (values.some((value) => !Number.isFinite(Number(value)) || Number(value) < 0)) {
+                return res.status(400).json({ message: 'Rider payout values must be valid non-negative numbers.' });
+            }
+            if (rawPayout.maximumPayout != null && rawPayout.maximumPayout !== '' &&
+                (!Number.isFinite(Number(rawPayout.maximumPayout)) || Number(rawPayout.maximumPayout) < riderPayoutPricing.minimumPayout)) {
+                return res.status(400).json({ message: 'Maximum rider payout must be greater than or equal to the minimum payout.' });
+            }
+            if (deliveryPricing.mode === 'road_km' &&
+                riderPayoutPricing.basePayout + riderPayoutPricing.pricePerKm + riderPayoutPricing.minimumPayout <= 0) {
+                return res.status(400).json({ message: 'Configure a rider base payout, distance rate, or minimum payout before enabling road pricing.' });
+            }
+        }
+
+        if (req.body?.freeDeliveryCampaign) {
+            const rawCampaign = req.body.freeDeliveryCampaign;
+            if (!Number.isFinite(Number(rawCampaign.minimumOrderAmount)) || Number(rawCampaign.minimumOrderAmount) < 0) {
+                return res.status(400).json({ message: 'Free delivery minimum order amount must be a valid non-negative number.' });
+            }
+            for (const field of ['startsAt', 'endsAt']) {
+                if (rawCampaign[field] && !Number.isFinite(new Date(rawCampaign[field]).getTime())) {
+                    return res.status(400).json({ message: `Free delivery ${field} must be a valid date.` });
+                }
+            }
+            if (freeDeliveryCampaign.startsAt && freeDeliveryCampaign.endsAt &&
+                new Date(freeDeliveryCampaign.startsAt) > new Date(freeDeliveryCampaign.endsAt)) {
+                return res.status(400).json({ message: 'Free delivery campaign end date must be after its start date.' });
+            }
+            const idList = [...freeDeliveryCampaign.vendorIds, ...freeDeliveryCampaign.productIds];
+            if (idList.some((id) => !/^[a-f0-9]{24}$/i.test(id))) {
+                return res.status(400).json({ message: 'Selected vendor and product IDs must be valid.' });
+            }
+            if (freeDeliveryCampaign.maximumDistanceKm != null && freeDeliveryCampaign.maximumDistanceKm <= 0) {
+                return res.status(400).json({ message: 'Free delivery maximum distance must be greater than zero.' });
+            }
+        }
 
         const currentFallbackRatePerKm = existingSettings
             ? Number(existingSettings.fallbackRatePerKm || 0)
@@ -2809,7 +2900,10 @@ router.put('/delivery-fee-settings', protect, authorizeAdmin, async (req, res) =
         const isUnchanged =
             currentFallbackRatePerKm === parsedFallbackRatePerKm &&
             currentMinimumDeliveryFee === parsedMinimumDeliveryFee &&
-            JSON.stringify(currentZones) === JSON.stringify(normalizedZones);
+            JSON.stringify(currentZones) === JSON.stringify(normalizedZones) &&
+            JSON.stringify(currentSettings.deliveryPricing) === JSON.stringify(deliveryPricing) &&
+            JSON.stringify(currentSettings.riderPayoutPricing) === JSON.stringify(riderPayoutPricing) &&
+            JSON.stringify(currentSettings.freeDeliveryCampaign) === JSON.stringify(freeDeliveryCampaign);
 
         if (isUnchanged) {
             const settings = await getDeliveryFeeSettings();
@@ -2825,6 +2919,9 @@ router.put('/delivery-fee-settings', protect, authorizeAdmin, async (req, res) =
                     fallbackRatePerKm: parsedFallbackRatePerKm,
                     minimumDeliveryFee: parsedMinimumDeliveryFee,
                     deliveryFeeZones: normalizedZones,
+                    deliveryPricing,
+                    riderPayoutPricing,
+                    freeDeliveryCampaign,
                     updatedBy: req.user._id,
                 },
                 $push: {
@@ -2835,6 +2932,19 @@ router.put('/delivery-fee-settings', protect, authorizeAdmin, async (req, res) =
                         changedBy: req.user._id,
                         changedAt: new Date(),
                         source: 'admin_update',
+                    },
+                    deliverySettingsHistory: {
+                        $each: [{
+                            oldValue: {
+                                deliveryPricing: currentSettings.deliveryPricing,
+                                riderPayoutPricing: currentSettings.riderPayoutPricing,
+                                freeDeliveryCampaign: currentSettings.freeDeliveryCampaign,
+                            },
+                            newValue: { deliveryPricing, riderPayoutPricing, freeDeliveryCampaign },
+                            changedBy: req.user._id,
+                            changedAt: new Date(),
+                        }],
+                        $slice: -100,
                     },
                 },
             },
@@ -2855,6 +2965,93 @@ router.put('/delivery-fee-settings', protect, authorizeAdmin, async (req, res) =
     } catch (error) {
         console.error('Error updating delivery fee settings:', error);
         res.status(500).json({ message: 'Server error updating delivery fee settings.' });
+    }
+});
+
+router.post('/orders/:orderId/delivery-fee-override', protect, authorizeAdmin, async (req, res) => {
+    const { orderId } = req.params;
+    const finalFee = Number(req.body?.finalFee);
+    const reason = String(req.body?.reason || '').trim().slice(0, 500);
+    if (!mongoose.Types.ObjectId.isValid(orderId)) {
+        return res.status(400).json({ message: 'A valid order ID is required.' });
+    }
+    if (!Number.isFinite(finalFee) || finalFee < 0 || !reason) {
+        return res.status(400).json({ message: 'A non-negative final delivery fee and reason are required.' });
+    }
+
+    const session = await MainOrder.startSession();
+    session.startTransaction();
+    try {
+        const order = await MainOrder.findById(orderId).session(session);
+        if (!order) {
+            await session.abortTransaction();
+            session.endSession();
+            return res.status(404).json({ message: 'Order not found.' });
+        }
+        if (order.isPaid || order.mainOrderStatus !== 'pending_payment' || order.paymentResult?.tx_ref) {
+            await session.abortTransaction();
+            session.endSession();
+            return res.status(409).json({
+                message: 'Delivery overrides are only allowed before payment is initiated. This order’s payment amount is locked.',
+            });
+        }
+
+        const shipments = await Shipment.find({ _id: { $in: order.shipments } }).session(session);
+        const deliveryShipments = shipments.filter((shipment) => shipment.fulfillmentMethod !== 'pickup');
+        if (!deliveryShipments.length) {
+            await session.abortTransaction();
+            session.endSession();
+            return res.status(409).json({ message: 'This order has no delivery fee to override.' });
+        }
+        const previousFee = Number(order.totalShippingPrice || 0);
+        const calculatedFee = Number(
+            order.deliveryFeeCalculation?.deliveryFee ?? order.originalShippingPrice ?? previousFee,
+        );
+        const difference = Number((finalFee - previousFee).toFixed(2));
+        const recipients = deliveryShipments;
+        const baseWeights = recipients.map((shipment) => Number(shipment.shippingPrice || 0));
+        const weightTotal = baseWeights.reduce((sum, value) => sum + value, 0);
+        let allocated = 0;
+        for (let index = 0; index < recipients.length; index += 1) {
+            const share = weightTotal > 0
+                ? (index === recipients.length - 1
+                    ? finalFee - allocated
+                    : Number((finalFee * baseWeights[index] / weightTotal).toFixed(2)))
+                : (index === 0 ? finalFee : 0);
+            allocated += share;
+            recipients[index].shippingPrice = Number(share.toFixed(2));
+            await recipients[index].save({ session });
+        }
+
+        order.totalShippingPrice = Number(finalFee.toFixed(2));
+        order.totalPrice = Number((Number(order.totalPrice || 0) + difference).toFixed(2));
+        order.deliveryFeeOverrideHistory.push({
+            calculatedFee,
+            previousFinalFee: previousFee,
+            finalFee: Number(finalFee.toFixed(2)),
+            adjustment: difference,
+            reason,
+            admin: req.user._id,
+            changedAt: new Date(),
+        });
+        await order.save({ session });
+        await session.commitTransaction();
+        session.endSession();
+        return res.status(200).json({
+            message: 'Delivery fee override saved.',
+            orderId: order._id,
+            calculatedFee,
+            previousFinalFee: previousFee,
+            finalFee: order.totalShippingPrice,
+            adjustment: difference,
+            reason,
+            changedAt: order.deliveryFeeOverrideHistory.at(-1)?.changedAt,
+        });
+    } catch (error) {
+        await session.abortTransaction();
+        session.endSession();
+        console.error('Delivery fee override failed:', error.message);
+        return res.status(500).json({ message: 'Unable to save delivery fee override.' });
     }
 });
 
@@ -3316,11 +3513,29 @@ router.put('/riders/assign-order', protect, authorizeAdmin, async (req, res) => 
             return res.status(400).json({ message: 'Rider already has the maximum active deliveries.' });
         }
 
-        const readyShipments = await Shipment.find({
-            mainOrder: orderId,
-            shipmentStatus: 'ready_for_pickup',
-            isClaimed: false,
-        }).session(session);
+        const orderForReadiness = await MainOrder.findById(orderId).session(session);
+        if (!orderForReadiness) {
+            await session.abortTransaction();
+            session.endSession();
+            return res.status(404).json({ message: 'Order not found.' });
+        }
+
+        const allShipments = orderShipmentsByReference(
+            orderForReadiness,
+            await Shipment.find({ mainOrder: orderId }).session(session),
+        );
+        const readiness = evaluateDispatchReadiness(allShipments);
+        if (readiness.isMultiVendor && !readiness.readyForDispatch) {
+            await session.abortTransaction();
+            session.endSession();
+            return res.status(409).json({
+                message: 'Order is not ready for consolidated pickup.',
+            });
+        }
+
+        const readyShipments = readiness.requiredShipments.filter(
+            (shipment) => shipment.shipmentStatus === 'ready_for_pickup' && !shipment.isClaimed,
+        );
 
         if (readyShipments.length === 0) {
             await session.abortTransaction();
@@ -3345,6 +3560,8 @@ router.put('/riders/assign-order', protect, authorizeAdmin, async (req, res) => 
                     assignedRider: riderId,
                     assignedAt: Date.now(),
                     shipmentStatus: 'ready_for_pickup',
+                    readyForDispatch: readiness.readyForDispatch,
+                    pickupSequence: buildPickupSequence(allShipments),
                 },
             },
             { new: true, session },

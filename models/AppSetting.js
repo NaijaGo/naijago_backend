@@ -114,6 +114,44 @@ const DeliveryFeeHistorySchema = new mongoose.Schema(
   },
 );
 
+const DeliverySettingsHistorySchema = new mongoose.Schema({
+  changedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+  changedAt: { type: Date, default: Date.now },
+  oldValue: { type: mongoose.Schema.Types.Mixed, default: {} },
+  newValue: { type: mongoose.Schema.Types.Mixed, default: {} },
+}, { _id: false });
+
+const DeliveryPricingSchema = new mongoose.Schema({
+  mode: { type: String, enum: ['zone', 'road_km'], default: 'zone' },
+  baseFee: { type: Number, min: 0, default: 0 },
+  pricePerKm: { type: Number, min: 0, default: 0 },
+  minimumFee: { type: Number, min: 0, default: 0 },
+  maximumFee: { type: Number, min: 0, default: null },
+  maximumDistanceKm: { type: Number, min: 0, default: null },
+  routeProfile: { type: String, enum: ['driving'], default: 'driving' },
+}, { _id: false });
+
+const RiderPayoutPricingSchema = new mongoose.Schema({
+  basePayout: { type: Number, min: 0, default: 0 },
+  pricePerKm: { type: Number, min: 0, default: 0 },
+  minimumPayout: { type: Number, min: 0, default: 0 },
+  maximumPayout: { type: Number, min: 0, default: null },
+  multiVendorAdjustment: { type: Number, min: 0, default: 0 },
+}, { _id: false });
+
+const FreeDeliveryCampaignSchema = new mongoose.Schema({
+  enabled: { type: Boolean, default: false },
+  minimumOrderAmount: { type: Number, min: 0, default: 0 },
+  maximumDistanceKm: { type: Number, min: 0, default: null },
+  customerEligibility: { type: String, enum: ['everyone', 'first_order'], default: 'everyone' },
+  vendorIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
+  productIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Product' }],
+  areas: [{ type: String, trim: true }],
+  promoCode: { type: String, trim: true, uppercase: true, default: '' },
+  startsAt: { type: Date, default: null },
+  endsAt: { type: Date, default: null },
+}, { _id: false });
+
 const PharmacySubscriptionPlanSchema = new mongoose.Schema(
   {
     planType: {
@@ -212,6 +250,22 @@ const AppSettingSchema = new mongoose.Schema(
     },
     deliveryFeeHistory: {
       type: [DeliveryFeeHistorySchema],
+      default: [],
+    },
+    deliveryPricing: {
+      type: DeliveryPricingSchema,
+      default: () => ({}),
+    },
+    riderPayoutPricing: {
+      type: RiderPayoutPricingSchema,
+      default: () => ({}),
+    },
+    freeDeliveryCampaign: {
+      type: FreeDeliveryCampaignSchema,
+      default: () => ({}),
+    },
+    deliverySettingsHistory: {
+      type: [DeliverySettingsHistorySchema],
       default: [],
     },
     pharmacySubscriptionPlans: {

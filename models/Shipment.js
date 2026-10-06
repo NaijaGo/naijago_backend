@@ -105,6 +105,8 @@ const ShipmentSchema = new mongoose.Schema({
     originalShippingPrice: { type: Number, default: 0.0 },
     subscriptionDeliveryDiscount: { type: Number, default: 0.0 },
     subscriptionFreeDeliveryApplied: { type: Boolean, default: false },
+    freeDeliveryCampaignDiscount: { type: Number, min: 0, default: 0 },
+    freeDeliveryCampaignApplied: { type: Boolean, default: false },
 
     // --- RIDER & LOGISTICS UPDATES ---
     rider: { 

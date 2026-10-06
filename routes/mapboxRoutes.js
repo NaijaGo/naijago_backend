@@ -1,19 +1,13 @@
 const express = require('express');
-const axios = require('axios');
 const { protect } = require('../middleware/authMiddleware');
+const { getDrivingRoute } = require('../services/mapboxDirectionsService');
 
 const router = express.Router();
 
 const allowedProfiles = new Set(['driving', 'driving-traffic', 'walking', 'cycling']);
 
 const getMapboxPublicToken = () =>
-  process.env.MAPBOX_PUBLIC_TOKEN || process.env.MAPBOX_ACCESS_TOKEN || '';
-
-const getMapboxDirectionsToken = () =>
-  process.env.MAPBOX_SECRET_TOKEN ||
-  process.env.MAPBOX_ACCESS_TOKEN ||
-  process.env.MAPBOX_PUBLIC_TOKEN ||
-  '';
+  process.env.MAPBOX_PUBLIC_TOKEN || '';
 
 const readCoordinate = (value) => {
   const parsed = Number(value);
@@ -41,14 +35,6 @@ router.get('/config', protect, (req, res) => {
 });
 
 router.get('/directions', protect, async (req, res) => {
-  const token = getMapboxDirectionsToken();
-  if (!token) {
-    return res.status(503).json({
-      success: false,
-      message: 'Mapbox is not configured on the backend.',
-    });
-  }
-
   const originLat = readCoordinate(req.query.originLat);
   const originLng = readCoordinate(req.query.originLng);
   const destinationLat = readCoordinate(req.query.destinationLat);
@@ -71,55 +57,30 @@ router.get('/directions', protect, async (req, res) => {
   }
 
   try {
-    const coordinates = `${originLng},${originLat};${destinationLng},${destinationLat}`;
-    const { data } = await axios.get(
-      `https://api.mapbox.com/directions/v5/mapbox/${profile}/${coordinates}`,
-      {
-        params: {
-          access_token: token,
-          geometries: 'geojson',
-          overview: 'full',
-          steps: true,
-        },
-        timeout: 10000,
-      }
-    );
-
-    const route = Array.isArray(data.routes) ? data.routes[0] : null;
-    const mapboxCoordinates = route?.geometry?.coordinates || [];
-    const points = mapboxCoordinates
-      .filter((point) => Array.isArray(point) && point.length >= 2)
-      .map(([lng, lat]) => [lat, lng]);
-    const steps = (route?.legs || []).flatMap((leg, legIndex) =>
-      (leg?.steps || [])
-        .map((step) => ({
-          instruction: step?.maneuver?.instruction || '',
-          roadName: step?.name || '',
-          distanceMeters: step?.distance || 0,
-          durationSeconds: step?.duration || 0,
-          maneuverType: step?.maneuver?.type || '',
-          modifier: step?.maneuver?.modifier || '',
-          legIndex,
-        }))
-        .filter((step) => step.instruction)
+    const route = await getDrivingRoute(
+      [
+        { latitude: originLat, longitude: originLng },
+        { latitude: destinationLat, longitude: destinationLng },
+      ],
+      { profile, overview: 'full', steps: true },
     );
 
     res.json({
       success: true,
       profile,
-      points,
-      steps,
-      distanceMeters: route?.distance || 0,
-      durationSeconds: route?.duration || 0,
+      points: route.points,
+      steps: route.steps,
+      distanceMeters: route.distanceMeters,
+      durationSeconds: route.durationSeconds,
     });
   } catch (error) {
-    console.error('Mapbox directions error:', error.response?.data || error.message);
-    res.status(error.response?.status || 502).json({
+    console.error('Mapbox directions error:', error.code || error.message);
+    res.status(error.statusCode || error.response?.status || 502).json({
       success: false,
       message: 'Unable to fetch directions from Mapbox.',
-      details: error.response?.data?.message,
     });
   }
 });
 
+router.getMapboxPublicToken = getMapboxPublicToken;
 module.exports = router;
