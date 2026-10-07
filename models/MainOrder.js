@@ -1,5 +1,6 @@
 // models/MainOrder.js 
 const mongoose = require('mongoose');
+const OrderScheduleSchema = require('./OrderSchedule');
 
 const PickupSequenceStopSchema = new mongoose.Schema({
     sequence: { type: Number, required: true, min: 1 },
@@ -23,6 +24,20 @@ const DeliveryFeeOverrideSchema = new mongoose.Schema({
 }, { _id: false });
 
 const MainOrderSchema = new mongoose.Schema({
+    // Optional snapshots only: old/immediate orders receive no scheduling defaults.
+    schedule: { type: OrderScheduleSchema, default: undefined },
+    fulfillmentHold: {
+        type: new mongoose.Schema({
+            active: { type: Boolean, default: true },
+            code: { type: String, required: true },
+            reason: { type: String, required: true, maxlength: 500 },
+            state: { type: String, enum: ['needs_attention', 'resolved'], default: 'needs_attention' },
+            history: [{ _id: false, action: String, reason: String,
+                actor: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, at: Date,
+                verifiedPaymentReference: String }],
+        }, { _id: false }),
+        default: undefined,
+    },
     user: {
         type: mongoose.Schema.Types.ObjectId,
         ref: 'User',

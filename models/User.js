@@ -456,6 +456,7 @@ const UserSchema = new mongoose.Schema({
           'general',
           'admin_message',
           'order_update',
+          'recurring_order_update',
           'delivery_payout',
           'new_order',           // ← ADDED THIS LINE
           'order_shipped',       // ← ADDED THIS LINE (optional but good to have)
@@ -488,6 +489,7 @@ const UserSchema = new mongoose.Schema({
           'Transaction',
           'User',
           'MainOrder',
+          'RecurringPlan',
           'Shipment'            // ← ADDED THIS LINE
         ],
         sparse: true,

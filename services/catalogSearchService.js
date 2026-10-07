@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const Product = require('../models/Product');
+const ProductOffer = require('../models/ProductOffer');
 const User = require('../models/User');
 const { buildEffectivePriceExpression, escapeRegex } = require('../utils/productFilters');
 
@@ -122,20 +123,23 @@ function buildSort(sort) {
   }
 }
 
-async function findMatchingVendorIds(query, UserModel) {
+async function findMatchingVendors(query, UserModel) {
   if (!query) return [];
   const terms = [...new Set(String(query).toLowerCase().split(/[^\p{L}\p{N}]+/u)
     .filter((term) => term.length >= 2 && !SEARCH_STOP_WORDS.has(term)))];
   if (!terms.length) return [];
-  const fieldQueries = ['businessName', 'firstName', 'lastName'].flatMap((field) =>
+  const fieldQueries = ['businessName', 'firstName', 'lastName', 'businessLocation.formattedAddress'].flatMap((field) =>
     terms.map((term) => ({ [field]: { $regex: escapeRegex(term), $options: 'i' } })),
   );
   const vendors = await UserModel.find({
     isVendor: true,
     vendorStatus: 'approved',
     $or: fieldQueries,
-  }).select('_id').limit(100).lean();
-  return vendors.map((vendor) => vendor._id);
+  }).select('_id businessName businessLogoUrl businessLocation').sort({ businessName: 1, _id: 1 }).limit(100).lean();
+  return vendors;
+}
+async function findMatchingVendorIds(query, UserModel) {
+  return (await findMatchingVendors(query, UserModel)).map(vendor => vendor._id);
 }
 
 async function searchCatalog(input, {
@@ -146,7 +150,12 @@ async function searchCatalog(input, {
   const { query, page, limit, category, productType, vendor, minPrice, maxPrice, minRating, inStock, sort } = input;
   if (!query && !vendor) return { products: [], total: 0, page, limit, hasMore: false };
 
-  const and = [{ isActive: true }];
+  const publicFilter = { isActive: true, productStatus: { $nin: ['draft', 'disabled'] }, moderationStatus: { $nin: ['pending', 'rejected'] } };
+  const and = [publicFilter];
+  const matchingVendors = !vendor && query ? await findMatchingVendors(query, UserModel) : [];
+  const matchingVendorIds = matchingVendors.map(row => row._id);
+  const vendorObjectId = vendor ? new mongoose.Types.ObjectId(vendor) : null;
+  const offerSellerIds = vendorObjectId ? [vendorObjectId] : matchingVendorIds;
   if (query) {
     const terms = [...new Set(query.toLowerCase().split(/[^\p{L}\p{N}]+/u)
       .filter((term) => term.length >= 2 && !SEARCH_STOP_WORDS.has(term)))];
@@ -155,12 +164,12 @@ async function searchCatalog(input, {
       SEARCHABLE_PRODUCT_FIELDS.map((field) => ({ [field]: { $regex: pattern, $options: 'i' } })),
     );
     if (!vendor) {
-      const matchingVendorIds = await findMatchingVendorIds(query, UserModel);
       if (matchingVendorIds.length) searchOr.push({ vendor: { $in: matchingVendorIds } }, { sellerId: { $in: matchingVendorIds } });
+      if (matchingVendorIds.length) searchOr.push({ 'matchingVendorOffers.0': { $exists: true } });
     }
     and.push({ $or: searchOr });
   }
-  if (vendor) and.push({ $or: [{ vendor }, { sellerId: vendor }] });
+  if (vendor) and.push({ $or: [{ vendor: vendorObjectId }, { sellerId: vendorObjectId }, { 'matchingVendorOffers.0': { $exists: true } }] });
   const categoryFilter = buildCategoryFilter(category);
   if (categoryFilter) and.push(categoryFilter);
   const typeFilter = buildCategoryFilter(productType);
@@ -173,7 +182,26 @@ async function searchCatalog(input, {
 
   const filter = { $and: and };
   const skip = (page - 1) * limit;
-  const [products, total] = await Promise.all([
+  let products, total;
+  if (offerSellerIds.length) {
+    const [result] = await ProductModel.aggregate([
+      { $match: publicFilter },
+      { $lookup: { from: ProductOffer.collection.name, let: { productId: '$_id' }, pipeline: [
+        { $match: { $expr: { $eq: ['$product', '$$productId'] }, sellerType: 'vendor', sellerId: { $in: offerSellerIds }, status: 'active' } },
+        { $sort: { isPrimary: -1, price: 1, _id: 1 } }, { $limit: 1 },
+      ], as: 'matchingVendorOffers' } },
+      { $set: {
+        price: { $ifNull: [{ $arrayElemAt: ['$matchingVendorOffers.price', 0] }, '$price'] },
+        discountPrice: { $cond: [{ $gt: [{ $size: '$matchingVendorOffers' }, 0] }, { $ifNull: [{ $arrayElemAt: ['$matchingVendorOffers.discountPrice', 0] }, null] }, '$discountPrice'] },
+        stockQuantity: { $ifNull: [{ $arrayElemAt: ['$matchingVendorOffers.stockQuantity', 0] }, '$stockQuantity'] },
+      } },
+      { $match: filter },
+      { $facet: { products: [{ $sort: buildSort(sort) }, { $skip: skip }, { $limit: limit }], count: [{ $count: 'total' }] } },
+    ]);
+    products = await ProductModel.populate(result?.products || [], { path: 'vendor', select: 'businessName businessLocation phoneNumber businessLogoUrl businessWhatsAppNumber businessSupportPhone deliveryRadiusKm prepTimeMinutes isTemporarilyClosed temporaryClosureReason operatingHours' });
+    total = result?.count?.[0]?.total || 0;
+  } else {
+    [products, total] = await Promise.all([
     ProductModel.find(filter)
       .populate('vendor', 'businessName businessLocation phoneNumber businessLogoUrl businessWhatsAppNumber businessSupportPhone deliveryRadiusKm prepTimeMinutes isTemporarilyClosed temporaryClosureReason operatingHours')
       .sort(buildSort(sort))
@@ -181,14 +209,31 @@ async function searchCatalog(input, {
       .limit(limit)
       .lean(),
     ProductModel.countDocuments(filter),
-  ]);
-  const enrichedProducts = await attachOffers(products);
+    ]);
+  }
+  const enrichedProducts = (await attachOffers(products)).map(product => {
+    const match = product.matchingVendorOffers?.[0];
+    const result = { ...product };
+    delete result.matchingVendorOffers;
+    if (!match) return result;
+    const selected = (product.offers || []).find(offer => String(offer._id) === String(match._id));
+    if (!selected) return result;
+    return { ...result, selectedOffer: selected, sellerType: selected.sellerType,
+      sellerId: selected.sellerId?._id || selected.sellerId,
+      sellerName: selected.sellerId?.businessName || 'Vendor', vendor: selected.sellerId,
+      price: selected.price, discountPrice: selected.discountPrice ?? null,
+      effectivePrice: selected.discountPrice ?? selected.price, stockQuantity: selected.stockQuantity };
+  });
   return {
     products: enrichedProducts,
+    vendors: matchingVendors.slice(skip, skip + limit).map(row => ({
+      id: String(row._id), name: row.businessName || 'Vendor',
+      logoUrl: row.businessLogoUrl || null, address: row.businessLocation?.formattedAddress || '',
+    })),
     total,
     page,
     limit,
-    hasMore: skip + products.length < total,
+    hasMore: skip + products.length < total || skip + limit < matchingVendors.length,
   };
 }
 

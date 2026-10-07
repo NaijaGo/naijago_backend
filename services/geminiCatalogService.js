@@ -162,7 +162,7 @@ function extractGroundedSources(data) {
   return [...sources.values()].slice(0, 6);
 }
 
-async function generateGroundedSearchFallback({ query }) {
+async function generateGroundedSearchFallback({ query, timeoutMs = 20000 }) {
   const apiKey = requireApiKey();
   const safeQuery = String(query || '').trim().slice(0, 160);
   if (!safeQuery) return { answer: '', sources: [] };
@@ -175,7 +175,7 @@ async function generateGroundedSearchFallback({ query }) {
       tools: [{ googleSearch: {} }],
       generationConfig: { temperature: 0.1, maxOutputTokens: 320 },
     },
-    { headers: { 'x-goog-api-key': apiKey, 'Content-Type': 'application/json' }, timeout: 20000 },
+    { headers: { 'x-goog-api-key': apiKey, 'Content-Type': 'application/json' }, timeout: Number.isFinite(timeoutMs) ? Math.min(Math.max(timeoutMs, 1000), 20000) : 20000 },
     { attempts: 1 },
   );
 

@@ -32,7 +32,9 @@ const productOfferSchema = new mongoose.Schema({
   sku: { type: String, trim: true, uppercase: true },
   price: { type: Number, required: true, min: 0 },
   discountPrice: { type: Number, default: null, min: 0 },
-  stockQuantity: { type: Number, required: true, min: 0, default: 0 },
+  stockQuantity: { type: Number, required: true, min: 0, default: 0, validate: Number.isSafeInteger },
+  reservedStockQuantity: { type: Number, min: 0, default: 0, validate: Number.isSafeInteger },
+  inventoryRevision: { type: Number, min: 0, default: 0, validate: Number.isSafeInteger },
   status: {
     type: String,
     enum: ['active', 'out_of_stock', 'disabled', 'draft'],
@@ -51,6 +53,13 @@ const productOfferSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 productOfferSchema.pre('validate', function validateOffer(next) {
+  if (![this.stockQuantity, this.reservedStockQuantity ?? 0, this.inventoryRevision ?? 0]
+    .every((value) => Number.isSafeInteger(value) && value >= 0)) {
+    const error = new Error('Inventory quantities and revisions must be nonnegative safe integers.');
+    error.statusCode = 400;
+    error.code = 'INVALID_INVENTORY_QUANTITY';
+    return next(error);
+  }
   if (this.sellerType === 'naijago') this.sellerId = null;
   if (this.sellerType === 'vendor' && !this.sellerId) {
     return next(new Error('Vendor offers require a sellerId.'));
@@ -59,6 +68,21 @@ productOfferSchema.pre('validate', function validateOffer(next) {
     return next(new Error('Discount price must be lower than the regular price.'));
   }
   if (this.stockQuantity <= 0 && this.status === 'active') this.status = 'out_of_stock';
+  if ((this.reservedStockQuantity || 0) > this.stockQuantity) {
+    const error = new Error('Stock cannot be reduced below reserved stock.');
+    error.statusCode = 409;
+    error.code = 'INVENTORY_ADJUSTMENT_CONFLICT';
+    return next(error);
+  }
+  next();
+});
+productOfferSchema.pre('save', function guardInventoryWrites(next) {
+  if (!this.isNew && ['stockQuantity', 'reservedStockQuantity', 'inventoryRevision'].some((field) => this.isModified(field))) {
+    const error = new Error('Inventory changes require the central inventory service.');
+    error.statusCode = 409;
+    error.code = 'INVENTORY_SERVICE_REQUIRED';
+    return next(error);
+  }
   next();
 });
 

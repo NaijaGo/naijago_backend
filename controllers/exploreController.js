@@ -13,11 +13,9 @@ const ExploreLike = require('../models/ExploreLike');
 const ExploreComment = require('../models/ExploreComment');
 
 const MAX_VIDEO_BYTES = 90 * 1024 * 1024;
-const MAX_VIDEO_SECONDS = 90;
 const MAX_CAPTION_LENGTH = 500;
 const MAX_COMMENT_LENGTH = 1000;
-const VIDEO_MIMES = new Set(['video/mp4', 'video/quicktime', 'video/webm']);
-const VIDEO_EXTENSIONS = new Set(['.mp4', '.mov', '.webm']);
+const VIDEO_EXTENSIONS = new Set(['.mp4', '.mov', '.webm', '.m4v', '.3gp', '.3g2', '.avi', '.mkv', '.mpg', '.mpeg', '.wmv', '.flv']);
 const userPublicFields = 'firstName lastName businessName businessLogoUrl isVendor';
 const productPublicFields = 'name price imageUrls sellerType sellerId vendor isActive productStatus moderationStatus';
 
@@ -63,8 +61,10 @@ const videoUpload = multer({
   limits: { fileSize: MAX_VIDEO_BYTES, files: 1 },
   fileFilter: (_req, file, callback) => {
     const extension = path.extname(file.originalname).toLowerCase();
-    if (!VIDEO_MIMES.has(file.mimetype) || !VIDEO_EXTENSIONS.has(extension)) {
-      const error = httpError(400, 'Upload an MP4, MOV, or WebM video.');
+    // Mobile multipart uploads commonly use a generic MIME. The actual
+    // container signature and Cloudinary video tracks are checked after upload.
+    if (!VIDEO_EXTENSIONS.has(extension) || !(file.mimetype.startsWith('video/') || file.mimetype === 'application/octet-stream')) {
+      const error = httpError(400, 'Choose a supported video file such as MP4, MOV, M4V, WebM, 3GP, AVI or MKV.');
       return callback(error);
     }
     callback(null, true);
@@ -72,18 +72,26 @@ const videoUpload = multer({
 });
 function parseVideo(req, res, next) {
   videoUpload.single('video')(req, res, (error) => {
-    if (error?.code === 'LIMIT_FILE_SIZE') error.statusCode = 413;
+    if (error?.code === 'LIMIT_FILE_SIZE') {
+      error.statusCode = 413;
+      error.message = 'This video exceeds the 90 MB upload limit. Compress it before uploading.';
+    }
     else if (error && !error.statusCode) error.statusCode = 400;
     next(error);
   });
 }
 
-async function validateVideoSignature(filePath, mime) {
+async function validateVideoSignature(filePath) {
   const handle = await fs.open(filePath, 'r');
   try {
     const buffer = Buffer.alloc(16);
     const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
-    if (mime === 'video/webm') return bytesRead >= 4 && buffer.subarray(0, 4).equals(Buffer.from([0x1a, 0x45, 0xdf, 0xa3]));
+    const extension = path.extname(filePath).toLowerCase();
+    if (['.webm', '.mkv'].includes(extension)) return bytesRead >= 4 && buffer.subarray(0, 4).equals(Buffer.from([0x1a, 0x45, 0xdf, 0xa3]));
+    if (extension === '.avi') return bytesRead >= 12 && buffer.toString('ascii', 0, 4) === 'RIFF' && buffer.toString('ascii', 8, 12) === 'AVI ';
+    if (extension === '.flv') return bytesRead >= 3 && buffer.toString('ascii', 0, 3) === 'FLV';
+    if (extension === '.wmv') return bytesRead >= 16 && buffer.equals(Buffer.from([0x30, 0x26, 0xb2, 0x75, 0x8e, 0x66, 0xcf, 0x11, 0xa6, 0xd9, 0x00, 0xaa, 0x00, 0x62, 0xce, 0x6c]));
+    if (['.mpg', '.mpeg'].includes(extension)) return bytesRead >= 4 && buffer[0] === 0 && buffer[1] === 0 && buffer[2] === 1 && [0xba, 0xb3].includes(buffer[3]);
     return bytesRead >= 8 && buffer.toString('ascii', 4, 8) === 'ftyp';
   } finally {
     await handle.close();
@@ -166,7 +174,7 @@ const createVideo = asyncHandler(async (req, res) => {
       }
     }
 
-    if (!(await validateVideoSignature(file.path, file.mimetype))) throw httpError(400, 'The uploaded file is not a valid MP4, MOV, or WebM video.');
+    if (!(await validateVideoSignature(file.path))) throw httpError(400, 'The file is not a valid supported video.');
     const cloudinaryConfig = cloudinary.config();
     if (!cloudinaryConfig.cloud_name || !cloudinaryConfig.api_key || !cloudinaryConfig.api_secret) throw httpError(503, 'Video storage is not configured.');
 
@@ -174,16 +182,17 @@ const createVideo = asyncHandler(async (req, res) => {
       uploaded = await cloudinary.uploader.upload(file.path, {
         folder: `explore/videos/${req.explorePublisher._id}`,
         resource_type: 'video',
+        format: 'mp4',
+        transformation: [{ video_codec: 'h264', audio_codec: 'aac' }],
+        timeout: 120000,
         overwrite: false,
         use_filename: false,
       });
     } catch (_) {
       throw httpError(502, 'Video upload failed. Please try again.');
     }
-    if (Number.isFinite(uploaded.duration) && uploaded.duration > MAX_VIDEO_SECONDS) {
-      await cloudinary.uploader.destroy(uploaded.public_id, { resource_type: 'video' });
-      uploaded = null;
-      throw httpError(400, `Videos must be ${MAX_VIDEO_SECONDS} seconds or shorter.`);
+    if (!uploaded.secure_url || !Number.isFinite(uploaded.duration) || uploaded.duration <= 0 || !Number.isFinite(uploaded.width) || uploaded.width <= 0 || !Number.isFinite(uploaded.height) || uploaded.height <= 0) {
+      throw httpError(400, 'The file must contain a playable video track. Audio-only or damaged files cannot be published.');
     }
 
     const productVendorId = product?.sellerType === 'vendor' ? (product.sellerId || product.vendor) : null;
@@ -238,13 +247,20 @@ const getFeed = asyncHandler(async (req, res) => {
 });
 
 const getMyVideos = asyncHandler(async (req, res) => {
-  const videos = await ExploreVideo.find({ creator: req.user._id, status: { $ne: 'deleted' } })
-    .sort({ createdAt: -1, _id: -1 }).limit(50)
-    .populate('creator', userPublicFields).populate('vendor', userPublicFields)
-    .populate({ path: 'product', select: 'name price imageUrls' }).lean();
+  const page = Number(req.query.page || 1), limit = Number(req.query.limit || 50);
+  if (!Number.isSafeInteger(page) || page < 1 || page > 1000 || !Number.isSafeInteger(limit) || limit < 1 || limit > 50) {
+    throw httpError(400, 'Invalid video pagination.');
+  }
+  const filter = { creator: req.user._id, status: { $ne: 'deleted' }, deletedAt: null };
+  const [videos, total] = await Promise.all([
+    ExploreVideo.find(filter).sort({ createdAt: -1, _id: -1 }).skip((page - 1) * limit).limit(limit)
+      .populate('creator', userPublicFields).populate('vendor', userPublicFields)
+      .populate({ path: 'product', select: 'name price imageUrls' }).lean(),
+    ExploreVideo.countDocuments(filter),
+  ]);
   const likedIds = videos.length ? await ExploreLike.find({ user: req.user._id, video: { $in: videos.map((video) => video._id) } }).distinct('video') : [];
   const liked = new Set(likedIds.map(String));
-  res.json({ items: videos.map((video) => publicVideo(video, liked.has(String(video._id)))) });
+  res.json({ items: videos.map((video) => ({ ...publicVideo(video, liked.has(String(video._id))), status: video.status, moderationStatus: video.moderationStatus })), page, limit, total, hasMore: page * limit < total });
 });
 
 const likeVideo = asyncHandler(async (req, res) => {

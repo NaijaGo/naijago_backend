@@ -8,6 +8,7 @@ const { protect } = require('../middleware/authMiddleware'); // Import 'protect'
 const fs = require('fs'); // For file system operations (saving images)
 const path = require('path'); // For path manipulation
 const Product = require('../models/Product');
+const inventory = require('../services/inventoryService');
 const Review = require('../models/Review');
 const DisputeRequest = require('../models/DisputeRequest');
 const ReturnRequest = require('../models/ReturnRequest');
@@ -845,7 +846,18 @@ router.delete('/delete-account', protect, async (req, res) => {
         // If the user is a vendor, delete all their products
         if (user.isVendor) {
             console.log(`Deleting all products for vendor: ${userId}`);
-            await Product.deleteMany({ vendor: userId });
+            const inventorySession = await Product.startSession();
+            try {
+                await inventorySession.withTransaction(async () => {
+                    const products = await Product.find({ vendor: userId }).select('_id').session(inventorySession);
+                    const ids = products.map((product) => product._id);
+                    await inventory.assertNoHolds(ids, inventorySession);
+                    await Product.updateMany({ _id: { $in: ids } }, { $inc: { inventoryRevision: 1 } }, { session: inventorySession });
+                    await Product.deleteMany({ _id: { $in: ids } }, { session: inventorySession });
+                });
+            } finally {
+                await inventorySession.endSession();
+            }
         }
 
         // Delete all reviews submitted by this user
@@ -867,7 +879,8 @@ router.delete('/delete-account', protect, async (req, res) => {
         
     } catch (error) {
         console.error('Error during account deletion:', error);
-        res.status(500).json({ message: 'Server error during account deletion.' });
+        res.status(error.statusCode || 500).json({ code: error.code,
+            message: error.statusCode ? error.message : 'Server error during account deletion.' });
     }
 });
 

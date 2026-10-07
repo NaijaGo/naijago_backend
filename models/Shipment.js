@@ -142,10 +142,14 @@ const ShipmentSchema = new mongoose.Schema({
             'delivered',
             'returned',
             'cancelled',
+            'rejected',
         ],
         default: 'processing',
     },
     acceptedAt: { type: Date },
+    // Optional future scheduling snapshots; no defaults for existing shipments.
+    preparationDeadline: { type: Date, default: undefined },
+    scheduledReadyAt: { type: Date, default: undefined },
     rejectedAt: { type: Date },
     rejectionReason: { type: String, trim: true, maxlength: 300 },
 

@@ -8,6 +8,7 @@ const MainOrder = require('../models/MainOrder');
 const Shipment = require('../models/Shipment');
 const Product = require('../models/Product');
 const ProductOffer = require('../models/ProductOffer');
+const inventory = require('../services/inventoryService');
 const AppSetting = require('../models/AppSetting');
 const User = require('../models/User');
 const Rider = require('../models/Rider');
@@ -17,6 +18,7 @@ const axios = require("axios");
 const notificationService = require('../services/notificationService');
 const { grantReferralRewardForVerifiedUser } = require('../services/referralService');
 const { getDeliveryFeeSettings, buildDeliveryFeeQuote } = require('../services/deliveryFeeService');
+const { assertImmediateOrderRequest, vendorFulfillmentEligibility } = require('../services/scheduledDeliveryService');
 const { calculateConsolidatedDelivery, getRoadRoute } = require('../services/deliveryRoutingService');
 const { evaluateFreeDeliveryCampaign } = require('../services/freeDeliveryCampaignService');
 const { notifyVendorOfPaidShipment } = require('../services/vendorOrderNotificationService');
@@ -342,30 +344,19 @@ async function consumeSubscriptionDeliveryIfNeeded({ buyer, mainOrder, session }
     return buyer;
 }
 
-async function decrementPaidItemInventory({ item, session }) {
-    const quantity = Math.max(1, Number(item.quantity || 1));
-    const product = await Product.findOneAndUpdate(
-        { _id: item.product, stockQuantity: { $gte: quantity } },
-        { $inc: { salesCount: quantity, stockQuantity: -quantity } },
-        { new: true, session, runValidators: true },
-    );
-    if (!product) {
-        const error = new Error(`Insufficient stock for ${item.name || 'a product'}.`);
+async function decrementPaidItemInventory({ item, orderId, shipmentId, session }) {
+    if (!item._id) {
+        const error = new Error('Order inventory identity requires reconciliation.');
         error.statusCode = 409;
         throw error;
     }
-    if (item.offer) {
-        const offer = await ProductOffer.findOneAndUpdate(
-            { _id: item.offer, stockQuantity: { $gte: quantity } },
-            { $inc: { stockQuantity: -quantity } },
-            { new: true, session, runValidators: true },
-        );
-        if (!offer) {
-            const error = new Error(`The selected offer for ${item.name || 'a product'} is out of stock.`);
-            error.statusCode = 409;
-            throw error;
-        }
-    }
+    return inventory.immediateSale({
+        allocations: [{ product: item.product, offer: item.offer, quantity: Number(item.quantity),
+            variantId: item.variantId, selectedSize: item.selectedSize }],
+        order: orderId,
+        businessKey: `sale:${orderId}:${shipmentId}:${item._id}`,
+        session,
+    });
 }
 
 async function notifyPaidOrderVendors({ app, order, paymentMethod }) {
@@ -404,7 +395,7 @@ async function settleVerifiedPayment({ order, buyer, verifiedTx, app, session, m
         shipment.shipmentStatus = 'processing';
         await shipment.save({ session });
         for (const item of shipment.items) {
-            await decrementPaidItemInventory({ item, session });
+            await decrementPaidItemInventory({ item, orderId: order._id, shipmentId: shipment._id, session });
         }
         if (!deferVendorNotifications) {
             await notifyVendorOfPaidShipment({ app, order, shipment, paymentMethod: provider === 'squad' ? 'Squad' : 'Flutterwave', session });
@@ -1148,7 +1139,10 @@ router.post('/delivery-quote', protect, deliveryQuoteLimiter, async (req, res) =
     }
 });
 
-router.post('/summary', protect, deliveryQuoteLimiter, async (req, res) => {
+const calculateOrderSummary = async (req, res) => {
+    try { await assertImmediateOrderRequest(req.body); } catch (error) {
+        return res.status(error.statusCode || 500).json({ code: error.code, message: error.statusCode ? error.message : 'Unable to validate scheduling.' });
+    }
     const {
         cartItems,
         shippingAddress,
@@ -1235,7 +1229,7 @@ router.post('/summary', protect, deliveryQuoteLimiter, async (req, res) => {
                 });
             }
             const unitPrice = Number(selectedOffer?.discountPrice ?? selectedOffer?.price ?? product.discountPrice ?? product.price);
-            const availableStock = Number(selectedOffer?.stockQuantity ?? product.stockQuantity);
+            const availableStock = inventory.getAvailableQuantity(selectedOffer || product);
             if (availableStock < Number(item.quantity || 1)) {
                 return res.status(400).json({ message: `Insufficient stock for ${product.name}. Available: ${availableStock}` });
             }
@@ -1554,14 +1548,18 @@ router.post('/summary', protect, deliveryQuoteLimiter, async (req, res) => {
             message: error.statusCode ? error.message : 'Unable to calculate order summary right now.',
         });
     }
-});
+};
+router.post('/summary', protect, deliveryQuoteLimiter, calculateOrderSummary);
 
 // ## Order Creation Route
 
 // @desc    Create new MainOrder and associated Shipment documents
 // @route   POST /api/orders
 // @access  Private
-router.post('/', protect, async (req, res) => {
+const createMainOrder = async (req, res) => {
+    try { await assertImmediateOrderRequest(req.body); } catch (error) {
+        return res.status(error.statusCode || 500).json({ code: error.code, message: error.statusCode ? error.message : 'Unable to validate scheduling.' });
+    }
     // ⚠️ We now receive the entire calculated summary from Flutter.
     const { 
         shippingAddress, 
@@ -1684,7 +1682,7 @@ router.post('/', protect, async (req, res) => {
                     : await ProductOffer.findOne({ product: product._id, isPrimary: true, status: 'active' })
                         .populate('sellerId', 'businessName businessLocation phoneNumber businessSupportPhone pickupEnabled pickupSettings')
                         .session(session);
-                const availableStock = Number(selectedOffer?.stockQuantity ?? product.stockQuantity);
+                const availableStock = inventory.getAvailableQuantity(selectedOffer || product);
                 if (availableStock < item.quantity) {
                     await session.abortTransaction();
                     session.endSession();
@@ -1961,6 +1959,11 @@ router.post('/', protect, async (req, res) => {
             recalculatedShippingPrice +
             Number(taxPrice || 0)
         ).toFixed(2));
+        // This context is attached only by the authenticated planned-order handler,
+        // never read from a client body. Ordinary checkout follows its existing path.
+        if (req.plannedOrderContext && Math.round(authoritativeTotalPrice * 100) !== req.plannedOrderContext.approvedTotalKobo) {
+            throw Object.assign(new Error('Prices changed. Review the current total before paying.'), { code: 'PLANNED_ORDER_ERROR', statusCode: 409 });
+        }
         
         // --- Step 2: Create the MainOrder document (The Receipt) ---
         const mainOrder = new MainOrder({ // Use MainOrder model
@@ -2102,6 +2105,9 @@ router.post('/', protect, async (req, res) => {
         createdMainOrder.readyForDispatch = evaluateDispatchReadiness(createdShipments).readyForDispatch;
         await createdMainOrder.save({ session });
 
+        if (req.plannedOrderContext) {
+            await req.plannedOrderContext.finalize({ session, order: createdMainOrder });
+        }
         await session.commitTransaction();
         session.endSession();
 
@@ -2143,6 +2149,9 @@ router.post('/', protect, async (req, res) => {
         await session.abortTransaction();
         session.endSession();
         console.error('Error creating multi-vendor order:', error.code || error.message);
+        if (error.code === 'PLANNED_ORDER_ERROR') {
+            return res.status(error.statusCode || 409).json({ message: error.message });
+        }
         if (String(error.code || '').startsWith('DELIVERY_') ||
             String(error.code || '').startsWith('ROUTING_') ||
             String(error.code || '').startsWith('MAPBOX_')) {
@@ -2152,7 +2161,8 @@ router.post('/', protect, async (req, res) => {
         }
         res.status(500).json({ message: 'Unable to create this order right now. Please try again.' });
     }
-});
+};
+router.post('/', protect, createMainOrder);
 
 // ---
 
@@ -2242,7 +2252,7 @@ router.get('/vendor', protect, authorizeRoles('vendor', 'admin'), async (req, re
         const shipments = await Shipment.find({ vendor: req.user.id })
             .populate({
                 path: 'mainOrder',
-                select: 'shippingAddress userLocation totalPrice totalShippingPrice paymentMethod createdAt rider mainOrderStatus pickupOTP riderPayoutAmount riderPayoutBreakdown payoutDetails',
+                select: 'shippingAddress userLocation totalPrice totalShippingPrice paymentMethod createdAt rider mainOrderStatus pickupOTP riderPayoutAmount riderPayoutBreakdown payoutDetails isPaid schedule.mode fulfillmentHold.active paymentResult.fulfillmentStatus',
                 populate: [
                     {
                         path: 'user',
@@ -2265,7 +2275,10 @@ router.get('/vendor', protect, authorizeRoles('vendor', 'admin'), async (req, re
             console.log('First item in first shipment:', JSON.stringify(shipments[0].items[0], null, 2));
         }
         
-        res.json(shipments);
+        res.json(shipments.map((shipment) => ({
+            ...shipment.toObject(),
+            fulfillmentEligibility: vendorFulfillmentEligibility(shipment.mainOrder),
+        })));
     } catch (error) {
         console.error('Error fetching vendor orders:', error);
         res.status(500).json({ message: 'Server Error' });
@@ -2541,7 +2554,7 @@ router.put('/:id/pay/wallet', protect, async (req, res) => {
             await shipment.save({ session });
 
             for (const item of shipment.items) {
-                await decrementPaidItemInventory({ item, session });
+                await decrementPaidItemInventory({ item, orderId: mainOrder._id, shipmentId: shipment._id, session });
             }
             await notifyVendorOfPaidShipment({ app: req.app, order: mainOrder, shipment, paymentMethod: 'Wallet', session });
         }
@@ -3921,6 +3934,8 @@ async function processPendingSquadPayments(app) {
 router.processPendingFlutterwavePayments = processPendingFlutterwavePayments;
 router.processPendingSquadPayments = processPendingSquadPayments;
 router.paymentMatchesOrder = paymentMatchesOrder;
+router.calculateOrderSummary = calculateOrderSummary;
+router.createMainOrder = createMainOrder;
 
 
 

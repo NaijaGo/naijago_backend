@@ -33,7 +33,11 @@ const productSchema = mongoose.Schema(
       type: Number,
       required: true,
       default: 0,
+      min: 0,
+      validate: Number.isSafeInteger,
     },
+    reservedStockQuantity: { type: Number, min: 0, default: 0, validate: Number.isSafeInteger },
+    inventoryRevision: { type: Number, min: 0, default: 0, validate: Number.isSafeInteger },
     variants: [{
       sku: { type: String, trim: true, uppercase: true },
       name: { type: String, trim: true },
@@ -283,6 +287,13 @@ productSchema.set('toJSON', { virtuals: true });
 productSchema.set('toObject', { virtuals: true });
 
 productSchema.pre('validate', function normalizeSeller(next) {
+  if (![this.stockQuantity, this.reservedStockQuantity ?? 0, this.inventoryRevision ?? 0]
+    .every((value) => Number.isSafeInteger(value) && value >= 0)) {
+    const error = new Error('Inventory quantities and revisions must be nonnegative safe integers.');
+    error.statusCode = 400;
+    error.code = 'INVALID_INVENTORY_QUANTITY';
+    return next(error);
+  }
   if (this.vendor && !this.sellerId) this.sellerId = this.vendor;
   if (this.sellerId && !this.vendor) this.vendor = this.sellerId;
   if (this.sellerId || this.vendor) this.sellerType = 'vendor';
@@ -304,10 +315,26 @@ productSchema.pre('validate', function normalizeSeller(next) {
     return next(new Error('AI-assisted products require human verification and confirmed image rights before activation.'));
   }
   if (this.productStatus === 'out_of_stock') this.stockQuantity = 0;
+  if ((this.reservedStockQuantity || 0) > this.stockQuantity) {
+    const error = new Error('Stock cannot be reduced below reserved stock.');
+    error.statusCode = 409;
+    error.code = 'INVENTORY_ADJUSTMENT_CONFLICT';
+    return next(error);
+  }
   if (this.stockQuantity <= 0 && this.productStatus === 'active') {
     this.productStatus = 'out_of_stock';
   }
   this.isActive = this.productStatus === 'active' && this.moderationStatus === 'approved';
+  next();
+});
+
+productSchema.pre('save', function guardInventoryWrites(next) {
+  if (!this.isNew && ['stockQuantity', 'reservedStockQuantity', 'inventoryRevision'].some((field) => this.isModified(field))) {
+    const error = new Error('Inventory changes require the central inventory service.');
+    error.statusCode = 409;
+    error.code = 'INVENTORY_SERVICE_REQUIRED';
+    return next(error);
+  }
   next();
 });
 

@@ -4,6 +4,8 @@ const express = require('express');
 const router = express.Router();
 const Product = require('../models/Product');
 const ProductOffer = require('../models/ProductOffer');
+const inventory = require('../services/inventoryService');
+const crypto = require('crypto');
 const Shipment = require('../models/Shipment');
 const User = require('../models/User');
 const AppSetting = require('../models/AppSetting');
@@ -90,7 +92,9 @@ const resolveCostLowVendor = async () => {
             isVendor: true,
             vendorStatus: 'approved',
         }).select(`_id firstName lastName ${vendorPopulateFields}`).lean();
-        if (vendor) return vendor;
+        // An explicit binding must never fall back to a different shop when
+        // its selected vendor is unavailable or no longer approved.
+        return vendor || null;
     }
 
     const vendor = await User.findOne({
@@ -697,6 +701,20 @@ router.patch(
                 await session.abortTransaction();
                 return res.status(404).json({ message: 'Product not found.' });
             }
+            await inventory.assertNoHolds([product._id], session);
+            const previousRevision = product.inventoryRevision ?? 0;
+            let targetOffer = await ProductOffer.findOne({ product: product._id,
+                sellerType: nextSellerType, sellerId: nextSellerId }).session(session);
+            if (!targetOffer) {
+                targetOffer = await inventory.initializeOffer({ product: product._id, session,
+                    values: { sellerType: nextSellerType, sellerId: nextSellerId,
+                        price: Number(req.body.price ?? product.price),
+                        discountPrice: req.body.discountPrice ?? product.discountPrice,
+                        status: req.body.productStatus || product.productStatus,
+                        createdBy: req.user._id } });
+                product.inventoryRevision = previousRevision + 1;
+                product.unmarkModified('inventoryRevision');
+            }
 
             await ProductOffer.updateMany(
                 { product: product._id, isPrimary: true },
@@ -709,7 +727,6 @@ router.patch(
                     $set: {
                         price: Number(req.body.price ?? product.price),
                         discountPrice: req.body.discountPrice ?? product.discountPrice,
-                        stockQuantity: Number(req.body.stockQuantity ?? product.stockQuantity),
                         status: req.body.productStatus || product.productStatus,
                         fulfilmentLocation: req.body.fulfilmentLocation || product.productLocation,
                         isPrimary: true,
@@ -733,7 +750,23 @@ router.patch(
             if (req.body.discountPrice !== undefined) product.discountPrice = req.body.discountPrice;
             if (req.body.stockQuantity !== undefined) product.stockQuantity = Number(req.body.stockQuantity);
             if (req.body.productStatus !== undefined) product.productStatus = req.body.productStatus;
+            await product.validate();
+            if (req.body.stockQuantity !== undefined || product.isModified('stockQuantity')) {
+                if (req.body.inventoryRevision !== undefined && Number(req.body.inventoryRevision) !== previousRevision) {
+                    const error = new Error('Inventory changed. Refresh before adjusting stock.');
+                    error.statusCode = 409;
+                    throw error;
+                }
+                await inventory.adjustStock({ product: product._id, offer: targetOffer._id,
+                    stockQuantity: product.stockQuantity, expectedRevision: product.inventoryRevision ?? 0,
+                    expectedOfferRevision: targetOffer.inventoryRevision ?? 0,
+                    businessKey: `adjust:${product._id}:${crypto.randomUUID()}`, session });
+                product.unmarkModified('stockQuantity');
+            }
             await product.save({ session });
+            const inventorySnapshot = await Product.findById(product._id)
+                .select('stockQuantity reservedStockQuantity inventoryRevision').session(session).lean();
+            Object.assign(product, inventorySnapshot);
 
             await session.commitTransaction();
             await product.populate('vendor', vendorPopulateFields);
@@ -741,7 +774,8 @@ router.patch(
         } catch (error) {
             await session.abortTransaction().catch(() => {});
             console.error('Product seller update failed:', error);
-            return res.status(500).json({ message: error.message || 'Unable to update product seller.' });
+            return res.status(error.statusCode || 500).json({ code: error.code,
+                message: error.statusCode ? error.message : 'Unable to update product seller.' });
         } finally {
             session.endSession();
         }
@@ -807,8 +841,10 @@ router.put(
             size_data // NEW: Size data from Flutter
         } = req.body;
 
+        const inventorySession = await Product.startSession();
         try {
             let product = await Product.findById(req.params.id);
+            const originalInventoryRevision = product?.inventoryRevision ?? 0;
 
             if (!product) {
                 return res.status(404).json({ message: 'Product not found.' });
@@ -996,27 +1032,35 @@ router.put(
                 product.requiresPharmacistApproval = false;
             }
 
-            const updatedProduct = await product.save();
-            await ProductOffer.findOneAndUpdate(
-                {
-                    product: updatedProduct._id,
-                    sellerType: updatedProduct.sellerType,
-                    sellerId: updatedProduct.sellerId || null,
-                },
-                {
-                    $set: {
-                        sku: updatedProduct.sku || undefined,
-                        price: updatedProduct.price,
-                        discountPrice: updatedProduct.discountPrice,
-                        stockQuantity: updatedProduct.stockQuantity,
-                        status: updatedProduct.productStatus,
-                        fulfilmentLocation: updatedProduct.productLocation,
-                        updatedBy: req.user._id,
-                    },
-                    $setOnInsert: { isPrimary: true, createdBy: req.user._id },
-                },
-                { upsert: true, new: true, runValidators: true },
-            );
+            inventorySession.startTransaction();
+            await product.validate(); // Preserve status normalization before adjusting stock.
+            const offerQuery = { product: product._id, sellerType: product.sellerType, sellerId: product.sellerId || null };
+            let existingOffer = await ProductOffer.findOne(offerQuery).session(inventorySession);
+            if (stockQuantity !== undefined || product.isModified('stockQuantity')) {
+                await inventory.adjustStock({ product: product._id, offer: existingOffer?._id,
+                    stockQuantity: product.stockQuantity,
+                    expectedRevision: req.body.inventoryRevision === undefined ? originalInventoryRevision : Number(req.body.inventoryRevision),
+                    expectedOfferRevision: existingOffer?.inventoryRevision ?? 0,
+                    businessKey: `adjust:${product._id}:${crypto.randomUUID()}`, session: inventorySession });
+                product.unmarkModified('stockQuantity');
+            }
+            const updatedProduct = await product.save({ session: inventorySession });
+            const offerValues = { ...offerQuery, sku: updatedProduct.sku || undefined,
+                price: updatedProduct.price, discountPrice: updatedProduct.discountPrice,
+                status: updatedProduct.productStatus, fulfilmentLocation: updatedProduct.productLocation,
+                updatedBy: req.user._id };
+            if (existingOffer) {
+                // Metadata-only edits never copy a previously read stock balance.
+                await ProductOffer.updateOne({ _id: existingOffer._id }, { $set: offerValues },
+                    { session: inventorySession, runValidators: true });
+            } else {
+                await inventory.initializeOffer({ product: product._id,
+                    values: { ...offerValues, isPrimary: true, createdBy: req.user._id }, session: inventorySession });
+            }
+            const inventorySnapshot = await Product.findById(product._id)
+                .select('stockQuantity reservedStockQuantity inventoryRevision').session(inventorySession).lean();
+            Object.assign(updatedProduct, inventorySnapshot);
+            await inventorySession.commitTransaction();
             await updatedProduct.populate('vendor', vendorPopulateFields);
 
             res.status(200).json({
@@ -1024,8 +1068,12 @@ router.put(
                 product: updatedProduct,
             });
         } catch (error) {
+            if (inventorySession.inTransaction()) await inventorySession.abortTransaction();
             console.error('Error updating product:', error);
-            res.status(500).json({ message: 'Server error updating product.' });
+            res.status(error.statusCode || 500).json({ code: error.code,
+                message: error.statusCode ? error.message : 'Server error updating product.' });
+        } finally {
+            await inventorySession.endSession();
         }
     }
 );
@@ -1211,11 +1259,11 @@ router.get('/search', async (req, res) => {
       externalSources: [],
       externalLabel: 'External information — not a NaijaGo listing.',
     };
-    if (result.products.length === 0 && /[\p{L}\p{N}]{2,}/u.test(searchInput.query)
+    if (result.total === 0 && !(result.vendors || []).length && /[\p{L}\p{N}]{2,}/u.test(searchInput.query)
         && searchInput.allowSmartMatching
         && searchInput.page === 1 && mayUseExternalSearchFallback(req)) {
       try {
-        const external = await generateGroundedSearchFallback({ query: searchInput.query });
+        const external = await generateGroundedSearchFallback({ query: searchInput.query, timeoutMs: 8000 });
         if (external.answer && external.sources.length) {
           response.externalAnswer = external.answer;
           response.externalSources = external.sources;
@@ -1586,13 +1634,16 @@ router.patch('/:id/archive', protect, async (req, res) => {
         });
     } catch (error) {
         console.error('Error archiving product:', error);
-        res.status(500).json({ message: 'Server error archiving product.' });
+        res.status(error.statusCode || 500).json({ code: error.code,
+            message: error.statusCode ? error.message : 'Server error archiving product.' });
     }
 });
 
 router.delete('/:id', protect, async (req, res) => {
+    const session = await Product.startSession();
+    session.startTransaction();
     try {
-        const product = await Product.findById(req.params.id);
+        const product = await Product.findById(req.params.id).session(session);
 
         if (!product) {
             return res.status(404).json({ message: 'Product not found.' });
@@ -1607,7 +1658,7 @@ router.delete('/:id', protect, async (req, res) => {
             });
         }
 
-        const hasOrders = await Shipment.exists({ 'items.product': product._id });
+        const hasOrders = await Shipment.exists({ 'items.product': product._id }).session(session);
         if (hasOrders) {
             return res.status(409).json({
                 code: 'PRODUCT_HAS_ORDERS',
@@ -1615,13 +1666,21 @@ router.delete('/:id', protect, async (req, res) => {
             });
         }
 
-        await ProductOffer.deleteMany({ product: product._id });
-        await product.deleteOne();
+        await inventory.assertNoHolds([product._id], session);
+        await Product.updateOne({ _id: product._id }, { $inc: { inventoryRevision: 1 } }, { session });
+        await ProductOffer.deleteMany({ product: product._id }, { session });
+        await product.deleteOne({ session });
+        await session.commitTransaction();
 
         res.status(200).json({ message: 'Product deleted successfully.' });
     } catch (error) {
         console.error('Error deleting product:', error);
-        res.status(500).json({ message: 'Server error deleting product.' });
+        if (session.inTransaction()) await session.abortTransaction();
+        res.status(error.statusCode || 500).json({ code: error.code,
+            message: error.statusCode ? error.message : 'Server error deleting product.' });
+    } finally {
+        if (session.inTransaction()) await session.abortTransaction();
+        await session.endSession();
     }
 });
 

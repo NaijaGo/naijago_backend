@@ -1091,6 +1091,48 @@ router.get('/catalog-ai/config', protect, authorizeAdmin, (req, res) => {
 
 const NAIJAGO_CATALOG_SETTINGS_KEY = 'naijago_catalog';
 
+// Bind the featured storefront to an existing approved vendor account.
+// This does not create a vendor, move products, or change commission settings.
+router.get('/cost-low/settings', protect, authorizeAdmin, async (req, res) => {
+    try {
+        const settings = await AppSetting.findOne({ key: 'cost_low_store' })
+            .select('costLowStore.vendorId').lean();
+        const vendorId = settings?.costLowStore?.vendorId || null;
+        const vendor = vendorId
+            ? await User.findById(vendorId).select('_id businessName isVendor vendorStatus').lean()
+            : null;
+        res.json({
+            vendorId,
+            vendor,
+            configured: Boolean(vendor?.isVendor && vendor.vendorStatus === 'approved'),
+        });
+    } catch (_error) {
+        res.status(500).json({ message: 'Unable to load Low Cost World settings.' });
+    }
+});
+
+router.put('/cost-low/settings', protect, authorizeAdmin, async (req, res) => {
+    try {
+        const vendorId = req.body.vendorId;
+        if (typeof vendorId !== 'string' || !/^[a-f\d]{24}$/i.test(vendorId)) {
+            return res.status(400).json({ message: 'Select an approved vendor account.' });
+        }
+        const vendor = await User.findOne({ _id: vendorId, isVendor: true, vendorStatus: 'approved' })
+            .select('_id businessName vendorStatus').lean();
+        if (!vendor) {
+            return res.status(400).json({ message: 'The selected account must be an approved vendor.' });
+        }
+        await AppSetting.findOneAndUpdate(
+            { key: 'cost_low_store' },
+            { $set: { 'costLowStore.vendorId': vendor._id, updatedBy: req.user._id } },
+            { upsert: true, new: true, setDefaultsOnInsert: true, runValidators: true },
+        );
+        res.json({ message: 'Low Cost World linked to the selected vendor.', vendorId: vendor._id, vendor, configured: true });
+    } catch (_error) {
+        res.status(500).json({ message: 'Unable to save Low Cost World settings.' });
+    }
+});
+
 router.get('/catalog/settings', protect, authorizeAdmin, async (req, res) => {
     try {
         const settings = await AppSetting.findOne({ key: NAIJAGO_CATALOG_SETTINGS_KEY }).select('naijagoWarehouse').lean();
@@ -1215,7 +1257,8 @@ router.put('/product-moderation/:productId', protect, authorizeAdmin, async (req
         });
     } catch (error) {
         console.error('Error updating product moderation status:', error);
-        res.status(500).json({ message: 'Failed to update product moderation status.' });
+        res.status(error.statusCode || 500).json({ code: error.code,
+            message: error.statusCode ? error.message : 'Failed to update product moderation status.' });
     }
 });
 

@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { DEFAULTS: SCHEDULING_DEFAULTS } = require('../config/scheduledDelivery');
 
 const ReferralRewardHistorySchema = new mongoose.Schema(
   {
@@ -214,6 +215,15 @@ const PharmacySubscriptionHistorySchema = new mongoose.Schema(
 
 const AppSettingSchema = new mongoose.Schema(
   {
+    scheduledDelivery: {
+      type: new mongoose.Schema({
+        scheduledDeliveryEnabled: { type: Boolean, default: SCHEDULING_DEFAULTS.scheduledDeliveryEnabled },
+        checkoutReservationMinutes: { type: Number, default: SCHEDULING_DEFAULTS.checkoutReservationMinutes,
+          min: 1, max: 60, validate: Number.isSafeInteger },
+        defaultTimeZone: { type: String, enum: [SCHEDULING_DEFAULTS.defaultTimeZone], default: SCHEDULING_DEFAULTS.defaultTimeZone },
+      }, { _id: false }),
+      default: undefined,
+    },
     key: {
       type: String,
       required: true,
