@@ -97,7 +97,7 @@ const resolveCostLowVendor = async () => {
         isVendor: true,
         vendorStatus: 'approved',
         businessName: {
-            $regex: /^(low[\s_-]*cost(?:[\s_-]+world)?|cost[\s_-]*low)$/i,
+            $regex: /^(low[\s_-]*cost(?:[\s_-]*world)?|cost[\s_-]*low)$/i,
         },
     }).select(`_id firstName lastName ${vendorPopulateFields}`).lean();
 
