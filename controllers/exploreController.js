@@ -164,7 +164,7 @@ const createVideo = asyncHandler(async (req, res) => {
     if (productId) {
       if (!validId(productId)) throw httpError(400, 'Invalid product ID.');
       product = await Product.findOne({ _id: productId, isActive: true, productStatus: 'active', moderationStatus: 'approved' })
-        .select('_id sellerType sellerId vendor isActive productStatus moderationStatus');
+        .select('_id name price imageUrls sellerType sellerId vendor isActive productStatus moderationStatus');
       if (!product) throw httpError(404, 'Active approved product not found.');
       if (req.explorePublisherType === 'vendor' && product.sellerType === 'vendor' && String(product.sellerId || product.vendor) !== String(req.explorePublisher._id)) {
         throw httpError(403, 'Approved vendors can only link their own products.');
@@ -173,6 +173,11 @@ const createVideo = asyncHandler(async (req, res) => {
         throw httpError(403, 'Approved vendors can only link their own products.');
       }
     }
+
+    const productVendorId = product?.sellerType === 'vendor' ? (product.sellerId || product.vendor) : null;
+    const responseVendor = req.explorePublisherType === 'vendor'
+      ? req.explorePublisher
+      : productVendorId ? await User.findById(productVendorId).select(userPublicFields) : null;
 
     if (!(await validateVideoSignature(file.path))) throw httpError(400, 'The file is not a valid supported video.');
     const cloudinaryConfig = cloudinary.config();
@@ -195,7 +200,6 @@ const createVideo = asyncHandler(async (req, res) => {
       throw httpError(400, 'The file must contain a playable video track. Audio-only or damaged files cannot be published.');
     }
 
-    const productVendorId = product?.sellerType === 'vendor' ? (product.sellerId || product.vendor) : null;
     savedVideo = await ExploreVideo.create({
       creator: req.explorePublisher._id,
       creatorType: req.explorePublisherType,
@@ -210,12 +214,14 @@ const createVideo = asyncHandler(async (req, res) => {
       moderationStatus: 'approved',
     });
 
-    await savedVideo.populate([
-      { path: 'creator', select: userPublicFields },
-      { path: 'vendor', select: userPublicFields },
-      { path: 'product', select: 'name price imageUrls' },
-    ]);
-    res.status(201).json({ video: publicVideo(savedVideo) });
+    // Build the acknowledgement from records loaded before saving. A failed
+    // post-save populate must not report a published video as an upload failure.
+    res.status(201).json({ video: publicVideo({
+      ...savedVideo.toObject(),
+      creator: req.explorePublisher,
+      vendor: responseVendor,
+      product,
+    }) });
   } catch (error) {
     if (uploaded?.public_id && !savedVideo) {
       try { await cloudinary.uploader.destroy(uploaded.public_id, { resource_type: 'video' }); } catch (_) { console.error('Explore upload cleanup failed.'); }

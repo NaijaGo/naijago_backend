@@ -175,7 +175,8 @@ async function searchCatalog(input, {
   const typeFilter = buildCategoryFilter(productType);
   if (typeFilter) and.push(typeFilter);
 
-  const effectivePriceExpression = buildEffectivePriceExpression(minPrice, maxPrice);
+  // Parsed null bounds mean no filter; preserve an explicitly requested zero.
+  const effectivePriceExpression = buildEffectivePriceExpression(minPrice ?? undefined, maxPrice ?? undefined);
   if (effectivePriceExpression) and.push({ $expr: effectivePriceExpression });
   if (minRating > 0) and.push({ averageRating: { $gte: minRating } });
   if (inStock) and.push({ stockQuantity: { $gt: 0 } });

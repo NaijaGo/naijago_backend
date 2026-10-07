@@ -324,6 +324,15 @@ const AppSettingSchema = new mongoose.Schema(
         default: 5700,
       },
     },
+    operationsMonitor: {
+      type: new mongoose.Schema({
+        visitorTrackingEnabled: { type: Boolean, default: false },
+        updatesEnabled: { type: Boolean, default: false },
+        pushEnabled: { type: Boolean, default: false },
+        intervalMinutes: { type: Number, default: 60, min: 15, max: 1440 },
+      }, { _id: false }),
+      default: undefined,
+    },
   },
   {
     timestamps: true,

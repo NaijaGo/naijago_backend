@@ -9,6 +9,7 @@ const AnalyticsEventSchema = new mongoose.Schema(
         'restaurant_card_click',
         'food_order_created',
         'pharmacy_consultation_start',
+        'visitor_page_view',
       ],
       required: true,
       index: true,
@@ -53,8 +54,14 @@ const AnalyticsEventSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.Mixed,
       default: {},
     },
+    dedupeKey: { type: String },
+    expiresAt: { type: Date },
   },
   { timestamps: true },
 );
+
+AnalyticsEventSchema.index({ dedupeKey: 1 }, { unique: true, sparse: true });
+AnalyticsEventSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+AnalyticsEventSchema.index({ eventType: 1, createdAt: -1 });
 
 module.exports = mongoose.model('AnalyticsEvent', AnalyticsEventSchema);

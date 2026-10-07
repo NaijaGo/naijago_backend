@@ -20,6 +20,7 @@ const { initializeDeliveryFeeSettings } = require('./services/deliveryFeeService
 const { initializePharmacySubscriptionSettings } = require('./services/pharmacySubscriptionService');
 const { startScheduledNotificationRunner } = require('./services/scheduledNotificationRunner');
 const { startPlannedOrderRunner } = require('./services/plannedOrderRunner');
+const { startOperationsMonitor } = require('./services/operationsMonitorService');
 const {
   releaseExpiredRiderAssignments,
   notifyRiderAssignmentOffer,
@@ -93,6 +94,7 @@ app.use('/api/riders', require('./routes/riderRoutes')); // KEEP THIS!
 app.use('/api/mapbox', require('./routes/mapboxRoutes'));
 app.use('/api/uploads', require('./routes/uploadsRoutes'));
 app.use('/api/analytics', require('./routes/analyticsRoutes'));
+app.use('/api/admin/operations-monitor', require('./routes/operationsMonitorRoutes'));
 app.use('/api/food-readiness-campaigns', require('./routes/foodReadinessCampaignRoutes'));
 
 // Add this near your other route middleware
@@ -2211,6 +2213,7 @@ const startServer = async () => {
       console.log(colors.yellow('⏰ In-process scheduled notification runner disabled; use worker:scheduled-notifications.'));
     }
     startPlannedOrderRunner();
+    startOperationsMonitor(app);
     if (process.env.DISABLE_PAYMENT_RECOVERY_RUNNER !== 'true') {
       const runPaymentRecovery = () => {
         orderRoutes.processPendingFlutterwavePayments(app).catch((error) => {

@@ -21,7 +21,7 @@ const CATEGORY_RULES = [
 
 const MUTATION_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 const EXCLUDED_PATHS = [
-  '/api/analytics/track',
+  '/api/analytics/',
   '/api/riders/location',
   '/api/riders/notifications/mark-read',
   '/api/auth/notifications/mark-read',
