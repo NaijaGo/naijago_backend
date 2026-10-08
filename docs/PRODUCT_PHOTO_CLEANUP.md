@@ -72,6 +72,21 @@ key/mode configuration and the worker command, never secret values.
 
 ## Diagnosing a batch that is not processing
 
+Run this from Render Shell on the backend after the diagnostic commit is deployed:
+
+```sh
+npm run diagnose:image-refinements -- --database-read-only --probe
+```
+
+This only reads collection/index metadata and topology; it does not create indexes,
+write records, run transactions, queue work or publish images. The provider probe
+requires `PHOTOROOM_SANDBOX=true`, forces a sandbox key, and processes one synthetic
+test image. It uses sandbox allowance but never a real product photo or live credits.
+The JSON output contains missing variable names and safe status codes, not keys,
+connection strings, raw provider errors or image bytes. It is safe to share that
+output. A provider PASS does not verify Cloudinary, product quality, worker liveness
+or publication; those still need separate verification.
+
 - HTTP 404: the running backend does not expose the Image Studio route.
 - HTTP 401: the route requires an authenticated Admin session; it does not show
   that processing is configured or that a worker is running.

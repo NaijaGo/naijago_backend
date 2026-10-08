@@ -3,7 +3,7 @@ const Refinement = require('../models/ImageRefinement');
 const Product = require('../models/Product');
 const Job = require('../models/BackgroundJob');
 const Usage = require('../models/AiUsageBucket');
-const { createFeatureReadiness } = require('./adminFeatureReadiness');
+const { createFeatureReadiness, inspectFeatureReadiness } = require('./adminFeatureReadiness');
 const { createBackgroundJobService } = require('./backgroundJobService');
 const { createImageRefinementAdapter } = require('./imageRefinementAdapter');
 const { createImageRefinementService } = require('./imageRefinementService');
@@ -12,5 +12,6 @@ const images = createImageRefinementAdapter({ http: require('axios'), cloudinary
 const queue = createBackgroundJobService({ Job, allowedTypes: ['image.refine', 'image.publish'] });
 const service = createImageRefinementService({ Refinement, Product, Job, Usage, queue, images, connection: mongoose.connection });
 const ready = createFeatureReadiness({ models: [Refinement, Job, Usage] });
+const inspectReadiness = () => inspectFeatureReadiness({ models: [Refinement, Job, Usage] });
 const handlers = () => createImageRefinementWorkers({ Refinement, Product, service, images });
-module.exports = { service, ready, handlers };
+module.exports = { service, ready, inspectReadiness, handlers };

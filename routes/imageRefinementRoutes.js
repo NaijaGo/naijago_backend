@@ -2,7 +2,7 @@ const express = require('express');
 const { rateLimit } = require('express-rate-limit');
 const { protect, authorizeRoles } = require('../middleware/authMiddleware');
 const { RefinementError, id } = require('../utils/imageRefinementPolicy');
-function createImageRefinementRouter({ service, ready = async () => true, authenticate = protect, admin = authorizeRoles('admin') }) {
+function createImageRefinementRouter({ service, ready = async () => true, inspectReadiness, authenticate = protect, admin = authorizeRoles('admin') }) {
     const router = express.Router();
     const wrap = (work) => async (req, res) => {
         try { await work(req, res); }
@@ -15,9 +15,16 @@ function createImageRefinementRouter({ service, ready = async () => true, authen
         message: { message: 'Please wait before checking image reviews again.' } }));
     router.get('/config', wrap(async (_req, res) => {
         let databaseReady = false;
-        if (service.enabled()) { try { databaseReady = await ready(); } catch (_) {} }
+        let databaseChecks = [];
+        if (service.enabled()) {
+            try {
+                if (inspectReadiness) {
+                    const report = await inspectReadiness(); databaseReady = report.ready; databaseChecks = report.checks;
+                } else databaseReady = await ready();
+            } catch (_) {}
+        }
         res.json({ ...service.configuration(), enabled: service.enabled(), processingEnabled: service.processingEnabled() && databaseReady, databaseReady,
-            workerStatus: 'not_verified' });
+            databaseChecks, workerStatus: 'not_verified' });
     }));
     router.use(async (_req, res, next) => {
         try { if (service.enabled() && await ready()) return next(); } catch (_) {}
