@@ -11,6 +11,7 @@ const Shipment = require('../models/Shipment');
 const Product = require('../models/Product');
 const ProductOffer = require('../models/ProductOffer');
 const inventory = require('../services/inventoryService');
+const { inventorySaleBusinessKey } = require('../utils/orderInventoryIdentity');
 const { loadDealContext, resolveProductPrice } = require('../services/productPriceService');
 const AppSetting = require('../models/AppSetting');
 const User = require('../models/User');
@@ -340,17 +341,13 @@ async function consumeSubscriptionDeliveryIfNeeded({ buyer, mainOrder, session }
     return buyer;
 }
 
-async function decrementPaidItemInventory({ item, orderId, shipmentId, session }) {
-    if (!item._id) {
-        const error = new Error('Order inventory identity requires reconciliation.');
-        error.statusCode = 409;
-        throw error;
-    }
+async function decrementPaidItemInventory({ item, orderId, shipmentId, itemIndex, session }) {
+    const businessKey = inventorySaleBusinessKey({ item, orderId, shipmentId, itemIndex });
     return inventory.immediateSale({
         allocations: [{ product: item.product, offer: item.offer, quantity: Number(item.quantity),
             variantId: item.variantId, selectedSize: item.selectedSize }],
         order: orderId,
-        businessKey: `sale:${orderId}:${shipmentId}:${item._id}`,
+        businessKey,
         session,
     });
 }
@@ -390,8 +387,8 @@ async function settleVerifiedPayment({ order, buyer, verifiedTx, app, session, m
     for (const shipment of shipments) {
         shipment.shipmentStatus = 'processing';
         await shipment.save({ session });
-        for (const item of shipment.items) {
-            await decrementPaidItemInventory({ item, orderId: order._id, shipmentId: shipment._id, session });
+        for (const [itemIndex, item] of shipment.items.entries()) {
+            await decrementPaidItemInventory({ item, orderId: order._id, shipmentId: shipment._id, itemIndex, session });
         }
         if (!deferVendorNotifications) {
             await notifyVendorOfPaidShipment({ app, order, shipment, paymentMethod: provider === 'squad' ? 'Squad' : 'Flutterwave', session });
@@ -2576,8 +2573,8 @@ router.put('/:id/pay/wallet', protect, async (req, res) => {
             shipment.shipmentStatus = 'processing';
             await shipment.save({ session });
 
-            for (const item of shipment.items) {
-                await decrementPaidItemInventory({ item, orderId: mainOrder._id, shipmentId: shipment._id, session });
+            for (const [itemIndex, item] of shipment.items.entries()) {
+                await decrementPaidItemInventory({ item, orderId: mainOrder._id, shipmentId: shipment._id, itemIndex, session });
             }
             await notifyVendorOfPaidShipment({ app: req.app, order: mainOrder, shipment, paymentMethod: 'Wallet', session });
         }
@@ -2899,6 +2896,7 @@ router.put('/:id/pay', protect, async (req, res) => {
             stack: error.stack,
             providerError: error.response?.data || null
         });
+        if (error.code === 'SQUAD_RATE_LIMITED') res.set('Retry-After', String(error.retryAfterSeconds));
         res.status(error.statusCode || 500).json({
             message: error.statusCode ? error.message : 'Unable to confirm payment right now.'
         });
@@ -3945,6 +3943,7 @@ async function processPendingSquadPayments(app) {
         }
       } catch (error) {
         console.error(`[SQUAD PAYMENT RECOVERY] Failed for order ${candidate._id}:`, error.message);
+        if (error.code === 'SQUAD_RATE_LIMITED') break;
       } finally {
         session.endSession();
       }

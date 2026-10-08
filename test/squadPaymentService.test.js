@@ -2,6 +2,69 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { initiateSquadPayment, verifySquadPayment } = require('../services/squadPaymentService');
 
+async function withVerificationKey(work) {
+  const previous = process.env.SQUAD_SECRET_KEY;
+  process.env.SQUAD_SECRET_KEY = 'sandbox_sk_local_verification_fixture';
+  try { await work(); }
+  finally { if (previous === undefined) delete process.env.SQUAD_SECRET_KEY; else process.env.SQUAD_SECRET_KEY = previous; }
+}
+
+test('concurrent same-reference verification shares one request and never initiates payment', async () => withVerificationKey(async () => {
+  let calls = 0, release;
+  const client = { get: async () => {
+    calls++;
+    await new Promise(resolve => { release = resolve; });
+    return { data: { data: [{ transaction_ref: 'NGS_same', transaction_status: 'Success' }] } };
+  }, post: () => { throw new Error('Verification must not initiate a charge'); } };
+  const first = verifySquadPayment({ transactionRef: 'NGS_same', httpClient: client });
+  const second = verifySquadPayment({ transactionRef: 'NGS_same', httpClient: client });
+  assert.equal(calls, 1);
+  release();
+  const results = await Promise.all([first, second]);
+  assert.equal(results[0].data.transaction_ref, 'NGS_same');
+  assert.deepEqual(results[0], results[1]);
+}));
+
+test('429 respects Retry-After across references and verification resumes after cooldown', async t => withVerificationKey(async () => {
+  let instant = Date.now(), calls = 0;
+  t.mock.method(Date, 'now', () => instant);
+  const client = { get: async () => {
+    calls++;
+    if (calls === 1) throw Object.assign(new Error('Provider details must not reach the client'), { response: { status: 429, headers: { 'retry-after': '120' } } });
+    return { data: { data: [{ transaction_ref: 'NGS_second', transaction_status: 'Success' }] } };
+  } };
+  await assert.rejects(verifySquadPayment({ transactionRef: 'NGS_first', httpClient: client }), error =>
+    error.code === 'SQUAD_RATE_LIMITED' && error.statusCode === 503 && error.retryAfterSeconds === 120 && /Do not pay again/.test(error.message));
+  instant += 1000;
+  await assert.rejects(verifySquadPayment({ transactionRef: 'NGS_second', httpClient: client }), { code: 'SQUAD_RATE_LIMITED' });
+  assert.equal(calls, 1);
+  instant += 120000;
+  assert.equal((await verifySquadPayment({ transactionRef: 'NGS_second', httpClient: client })).data.transaction_ref, 'NGS_second');
+  assert.equal(calls, 2);
+}));
+
+test('429 without Retry-After waits at least a minute; failed verification is not cached as paid', async t => withVerificationKey(async () => {
+  let instant = Date.now(), calls = 0;
+  t.mock.method(Date, 'now', () => instant);
+  const client = { get: async () => {
+    calls++;
+    if (calls === 1) throw Object.assign(new Error('rate limit'), { response: { status: 429 } });
+    return { data: { data: [] } };
+  } };
+  await assert.rejects(verifySquadPayment({ transactionRef: 'NGS_pending', httpClient: client }), error => error.retryAfterSeconds === 60);
+  instant += 60001;
+  assert.equal((await verifySquadPayment({ transactionRef: 'NGS_pending', httpClient: client })).success, false);
+  assert.equal((await verifySquadPayment({ transactionRef: 'NGS_pending', httpClient: client })).success, false);
+  assert.equal(calls, 3);
+}));
+
+test('invalid reference fails before calling Squad', async () => withVerificationKey(async () => {
+  const client = { get: () => { throw new Error('Must not call provider'); } };
+  for (const reference of ['', null, ' '.repeat(3), 'x'.repeat(201)]) {
+    await assert.rejects(verifySquadPayment({ transactionRef: reference, httpClient: client }), /valid transaction reference/);
+  }
+}));
+
 test('initiates hosted Squad checkout in kobo with server-owned metadata', async () => {
   const previous = {
     key: process.env.SQUAD_SECRET_KEY,
