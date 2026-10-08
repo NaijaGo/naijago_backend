@@ -463,6 +463,11 @@ const UserSchema = new mongoose.Schema({
           'recurring_order_update',
           'delivery_payout',
           'new_order',           // ← ADDED THIS LINE
+          'new_pickup_order',
+          'pickup_accepted',
+          'pickup_preparing',
+          'pickup_ready',
+          'pickup_completed',
           'order_shipped',       // ← ADDED THIS LINE (optional but good to have)
           'order_delivered'      // ← ADDED THIS LINE (optional but good to have)
         ],

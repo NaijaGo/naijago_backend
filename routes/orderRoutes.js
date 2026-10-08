@@ -2552,21 +2552,6 @@ router.put('/:id/pay/wallet', protect, async (req, res) => {
             email_address: buyer.email,
         };
 
-        // Buyer notification (already existing)
-        try {
-            await notificationService.sendToUser(req.user.id.toString(), {
-                title: 'Payment Successful!',
-                message: `Your payment of ₦${orderTotal.toFixed(2)} was successful. Order #${mainOrder._id}`,
-                data: {
-                    type: 'payment_success',
-                    orderId: mainOrder._id,
-                    amount: orderTotal
-                }
-            });
-        } catch (notifError) {
-            console.error('Payment notification failed:', notifError);
-        }
-
         // 6. Process shipments
         const shipments = await Shipment.find({ mainOrder: mainOrder._id }).session(session);
         for (const shipment of shipments) {
@@ -2576,12 +2561,28 @@ router.put('/:id/pay/wallet', protect, async (req, res) => {
             for (const [itemIndex, item] of shipment.items.entries()) {
                 await decrementPaidItemInventory({ item, orderId: mainOrder._id, shipmentId: shipment._id, itemIndex, session });
             }
-            await notifyVendorOfPaidShipment({ app: req.app, order: mainOrder, shipment, paymentMethod: 'Wallet', session });
         }
        
         const updatedOrder = await mainOrder.save({ session });
         await session.commitTransaction();
         session.endSession();
+
+        // External notification providers must not hold the wallet transaction
+        // open or announce payment before the debit and inventory commit.
+        try {
+            await notificationService.sendToUser(req.user.id.toString(), {
+                title: 'Payment Successful!',
+                message: `Your payment of ₦${orderTotal.toFixed(2)} was successful. Order #${mainOrder._id}`,
+                data: { type: 'payment_success', orderId: mainOrder._id, amount: orderTotal }
+            });
+        } catch (notifError) {
+            console.error('Wallet payment notification failed:', notifError.message);
+        }
+        try {
+            await notifyPaidOrderVendors({ app: req.app, order: mainOrder, paymentMethod: 'Wallet' });
+        } catch (notifError) {
+            console.error('Wallet vendor notifications failed:', notifError.message);
+        }
 
         try {
             await grantReferralRewardForVerifiedUser(req.user.id);

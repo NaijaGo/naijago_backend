@@ -17,7 +17,9 @@ const METRICS = Object.freeze({
   guestSessions: 'Anonymous guest sessions in this period',
   pageViews: 'Consented page views in this period',
 });
-const query = (operation) => operation.maxTimeMS(10000);
+const query = (operation) => typeof operation.maxTimeMS === 'function'
+  ? operation.maxTimeMS(10000)
+  : operation.option({ maxTimeMS: 10000 });
 
 async function getSettings() {
   const setting = await query(AppSetting.findOne({ key: 'operations_monitor' }).select('operationsMonitor').lean());
