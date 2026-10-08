@@ -7,6 +7,7 @@
     "catalog:migrate": "node scripts/migrateCatalogSellers.js",
     "start": "nodemon server.js",
     "worker:scheduled-notifications": "node workers/scheduledNotificationWorker.js",
+    "worker:image-refinements": "node workers/imageRefinementWorker.js",
     "worker:scheduled-delivery": "node workers/scheduledDeliveryWorker.js"
   },
   "keywords": [],

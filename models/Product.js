@@ -350,6 +350,15 @@ productSchema.index({ moderationStatus: 1, createdAt: -1 });
 productSchema.index({ salesCount: -1, createdAt: -1 });
 productSchema.index({ name: 'text', description: 'text', brand: 'text', category: 'text', subcategory: 'text', searchTags: 'text', restaurantName: 'text' });
 
+// Explicit Admin image batches only; ordinary product saves do not queue work.
+productSchema.add({
+  refinementScanPending: { type: Boolean, select: false },
+  refinementScanAfter: { type: Date, select: false },
+  refinementScanProfile: { type: String, enum: ['standard', 'relight'], select: false },
+  refinementRequestedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', select: false },
+  refinementScanCode: { type: String, select: false },
+});
+require('../services/imageRefinementProductGuard').imageRefinementProductGuard(productSchema);
 const Product = mongoose.model('Product', productSchema);
 
 module.exports = Product;

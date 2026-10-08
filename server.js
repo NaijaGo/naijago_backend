@@ -98,6 +98,7 @@ app.use('/api/mapbox', require('./routes/mapboxRoutes'));
 app.use('/api/uploads', require('./routes/uploadsRoutes'));
 app.use('/api/analytics', require('./routes/analyticsRoutes'));
 app.use('/api/admin/operations-monitor', require('./routes/operationsMonitorRoutes'));
+app.use('/api/image-refinements', require('./routes/imageRefinementRoutes'));
 app.use('/api/food-readiness-campaigns', require('./routes/foodReadinessCampaignRoutes'));
 
 // Add this near your other route middleware
