@@ -16,7 +16,8 @@ function createImageRefinementRouter({ service, ready = async () => true, authen
     router.get('/config', wrap(async (_req, res) => {
         let databaseReady = false;
         if (service.enabled()) { try { databaseReady = await ready(); } catch (_) {} }
-        res.json({ enabled: service.enabled(), processingEnabled: service.processingEnabled() && databaseReady, databaseReady });
+        res.json({ ...service.configuration(), enabled: service.enabled(), processingEnabled: service.processingEnabled() && databaseReady, databaseReady,
+            workerStatus: 'not_verified' });
     }));
     router.use(async (_req, res, next) => {
         try { if (service.enabled() && await ready()) return next(); } catch (_) {}

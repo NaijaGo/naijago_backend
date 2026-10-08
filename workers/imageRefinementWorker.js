@@ -8,7 +8,12 @@ async function main() {
   const { createBackgroundJobService, createJobRunner } = require('../services/backgroundJobService');
   const Job = require('../models/BackgroundJob');
   const runtime = require('../services/imageRefinementRuntime');
-  if (!runtime.service.processingEnabled()) throw new Error('Image provider/storage configuration or a finite budget is missing.');
+  if (!runtime.service.processingEnabled()) {
+    const config = runtime.service.configuration();
+    console.error('Image Studio configuration is incomplete:', config.missingConfiguration.join(', '),
+      config.keyModeMismatch ? 'Sandbox key requires sandbox mode.' : '');
+    throw new Error('Image provider/storage configuration or a finite budget is missing.');
+  }
   await mongoose.connect(process.env.MONGO_URI, { autoIndex: false, autoCreate: false, serverSelectionTimeoutMS: 10000 });
   try {
     const topology = await mongoose.connection.db.admin().command({ hello: 1 });

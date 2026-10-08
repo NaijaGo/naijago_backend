@@ -3,8 +3,21 @@ const { positiveLimit } = require('../utils/featureBudget');
 
 function createImageRefinementService({ Refinement, Product, Job, Usage, queue, connection, images, env = process.env, now = () => new Date() }) {
     const enabled = () => env.IMAGE_REFINEMENT_ENABLED === 'true' && env.BACKGROUND_JOBS_ENABLED === 'true';
-    const processingEnabled = () => enabled() && Boolean(env.PHOTOROOM_API_KEY && env.CLOUDINARY_CLOUD_NAME && env.CLOUDINARY_API_KEY && env.CLOUDINARY_API_SECRET) &&
-        positiveLimit(env.PHOTOROOM_DAILY_LIMIT, 1000) > 0 && positiveLimit(env.PHOTOROOM_VENDOR_DAILY_LIMIT || 20, 500) > 0;
+    function configuration() {
+        const missingConfiguration = ['PHOTOROOM_API_KEY', 'CLOUDINARY_CLOUD_NAME', 'CLOUDINARY_API_KEY', 'CLOUDINARY_API_SECRET']
+            .filter(name => !String(env[name] || '').trim());
+        if (env.IMAGE_REFINEMENT_ENABLED !== 'true') missingConfiguration.push('IMAGE_REFINEMENT_ENABLED');
+        if (env.BACKGROUND_JOBS_ENABLED !== 'true') missingConfiguration.push('BACKGROUND_JOBS_ENABLED');
+        if (!positiveLimit(env.PHOTOROOM_DAILY_LIMIT, 1000)) missingConfiguration.push('PHOTOROOM_DAILY_LIMIT');
+        if (!positiveLimit(env.PHOTOROOM_VENDOR_DAILY_LIMIT || 20, 500)) missingConfiguration.push('PHOTOROOM_VENDOR_DAILY_LIMIT');
+        const sandbox = env.PHOTOROOM_SANDBOX !== 'false';
+        const keyModeMismatch = !sandbox && String(env.PHOTOROOM_API_KEY || '').startsWith('sandbox_');
+        return { missingConfiguration, sandbox, keyModeMismatch, workerCommand: 'npm run worker:image-refinements' };
+    }
+    const processingEnabled = () => {
+        const config = configuration();
+        return !config.missingConfiguration.length && !config.keyModeMismatch;
+    };
     const owner = (product) => String(product.sellerId || product.vendor || '');
     const applicable = (product, row) => product && owner(product) === String(row.owner || '') && sourceImages(product).includes(row.sourceUrl);
     async function transaction(work) {
@@ -222,6 +235,6 @@ function createImageRefinementService({ Refinement, Product, Job, Usage, queue, 
             } });
         }
     }
-    return { enabled, processingEnabled, applicable, previewBatch, requestBatch, stage, review, get, list, completePublication, schedule };
+    return { enabled, configuration, processingEnabled, applicable, previewBatch, requestBatch, stage, review, get, list, completePublication, schedule };
 }
 module.exports = { createImageRefinementService };

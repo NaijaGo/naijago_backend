@@ -67,6 +67,25 @@ performed as part of committing this code.
 is disabled until provider/storage configuration, budgets and required indexes
 are ready. This endpoint does not establish that a worker is running or prove
 provider connectivity. No collections/indexes are automatically provisioned.
+It also reports missing environment-variable names, sandbox mode, incompatible
+key/mode configuration and the worker command, never secret values.
+
+## Diagnosing a batch that is not processing
+
+- HTTP 404: the running backend does not expose the Image Studio route.
+- HTTP 401: the route requires an authenticated Admin session; it does not show
+  that processing is configured or that a worker is running.
+- Disabled: use the missing-setting names shown by Image Studio. The web service
+  and dedicated worker each need the relevant configuration.
+- Indexes not ready: request a reviewed index rollout; restarting the web service
+  does not create the indexes.
+- Stays queued: inspect the dedicated Render worker logs and confirm it runs
+  `npm run worker:image-refinements`. Do not repeatedly queue the same batch.
+- Uncertain: an interrupted provider attempt might have consumed allowance. Use
+  explicit review/regeneration controls; do not assume a free retry.
+- Pending review: processing succeeded but the original customer image remains
+  unchanged until a permitted live candidate is approved and published. Sandbox
+  candidates remain private and cannot be published.
 
 Before production activation, verify against a dedicated transaction-capable
 test database and provider sandbox: preservation, queue deduplication, daily
