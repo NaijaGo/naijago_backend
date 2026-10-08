@@ -10,6 +10,7 @@ test('normalizes a Geoapify Nigerian address suggestion', () => {
   }), {
     id: 'abc', label: 'Adetokunbo Ademola Crescent, Wuse 2, Abuja, Nigeria',
     address: 'Adetokunbo Ademola Crescent', city: 'Abuja', state: 'Federal Capital Territory',
+    street: '', area: '', landmark: '',
     postalCode: '904101', country: 'Nigeria', latitude: 9.0765, longitude: 7.3986,
   });
 });

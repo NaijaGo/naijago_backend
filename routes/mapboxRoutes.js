@@ -1,6 +1,7 @@
 const express = require('express');
 const { protect } = require('../middleware/authMiddleware');
 const { getDrivingRoute } = require('../services/mapboxDirectionsService');
+const { parseCoordinate } = require('../utils/addressCoordinates');
 
 const router = express.Router();
 
@@ -10,8 +11,7 @@ const getMapboxPublicToken = () =>
   process.env.MAPBOX_PUBLIC_TOKEN || '';
 
 const readCoordinate = (value) => {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : null;
+  return parseCoordinate(value) ?? null;
 };
 
 const validLatitude = (value) => value !== null && value >= -90 && value <= 90;

@@ -41,7 +41,7 @@ test('rejects missing, non-finite, negative, and non-numeric leg distances', () 
 
 test('rejects invalid total distances and material total-to-leg mismatches', () => {
   for (const value of [undefined, null, NaN, Infinity, -1, '3000']) {
-    assert.throws(() => validateDirectionsRoute(route(value), 3), {
+    assert.throws(() => validateDirectionsRoute({ ...route(), distance: value }, 3), {
       code: 'INVALID_ROUTING_RESPONSE', statusCode: 502,
     });
   }
@@ -70,4 +70,48 @@ test('routing token uses only server-side token variables', () => {
       else process.env[key] = value;
     }
   }
+});
+
+test('directions endpoint rejects missing or malformed coordinates before routing', async () => {
+  const fs = require('node:fs');
+  const vm = require('node:vm');
+  const handlers = {};
+  let calls = 0;
+  let received;
+  const router = { get(path, ...middleware) { handlers[path] = middleware.at(-1); } };
+  const dependencies = {
+    express: { Router: () => router },
+    '../middleware/authMiddleware': { protect: () => {} },
+    '../utils/addressCoordinates': require('../utils/addressCoordinates'),
+    '../services/mapboxDirectionsService': {
+      getDrivingRoute: async (coordinates) => {
+        calls++;
+        received = coordinates;
+        return { points: [], steps: [], distanceMeters: 1000, durationSeconds: 120 };
+      },
+    },
+  };
+  vm.runInNewContext(fs.readFileSync(require.resolve('../routes/mapboxRoutes'), 'utf8'), {
+    require: name => dependencies[name], module: { exports: {} }, process: { env: {} }, console,
+  });
+  const response = () => ({
+    statusCode: 200,
+    status(value) { this.statusCode = value; return this; },
+    json(value) { this.body = value; return this; },
+  });
+  const valid = { originLat: '9.08', originLng: '7.46', destinationLat: '9.1', destinationLng: '7.5' };
+  for (const field of Object.keys(valid)) {
+    for (const invalid of [undefined, null, '', ' ', 'NaN', 'Infinity', false, [], ['9'], {}]) {
+      const res = response();
+      await handlers['/directions']({ query: { ...valid, [field]: invalid } }, res);
+      assert.equal(res.statusCode, 400, `${field}: ${String(invalid)}`);
+    }
+  }
+  assert.equal(calls, 0);
+  const res = response();
+  await handlers['/directions']({ query: { ...valid, originLat: '0' } }, res);
+  assert.equal(res.statusCode, 200);
+  assert.equal(calls, 1);
+  assert.equal(received[0].latitude, 0, 'A valid individual zero axis is preserved');
+  assert.equal(received[0].longitude, 7.46);
 });

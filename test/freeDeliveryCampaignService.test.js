@@ -32,7 +32,7 @@ test('free delivery campaign does not qualify below minimum, over distance, or w
     campaign,
     userId: 'customer-1',
     shippingAddress: { city: 'Abuja' },
-    deliveryShipments: [],
+    deliveryShipments: [{ sellerId: 'vendor-1', items: [{ product: 'product-1' }] }],
     now: new Date('2026-10-06T12:00:00Z'),
   };
   assert.equal((await evaluateFreeDeliveryCampaign({ ...base, orderSubtotal: 9999, routeDistanceKm: 8, promoCode: 'FREESHIP' })).eligible, false);
@@ -48,7 +48,7 @@ test('free delivery campaign respects its start and end timestamps', async () =>
     orderSubtotal: 12000,
     routeDistanceKm: 8,
     shippingAddress: { city: 'Abuja' },
-    deliveryShipments: [],
+    deliveryShipments: [{ sellerId: 'vendor-1', items: [{ product: 'product-1' }] }],
     promoCode: 'FREESHIP',
     now: new Date('2026-10-06T12:00:00Z'),
   });

@@ -25,6 +25,14 @@ function createProductModel(records) {
       return chain;
     },
     countDocuments: async () => records.length,
+    async aggregate(stages) {
+      lastFilter = stages.find((stage) => stage.$match?.$and).$match;
+      const facet = stages.find((stage) => stage.$facet).$facet;
+      const skip = facet.products.find((stage) => stage.$skip !== undefined).$skip;
+      const limit = facet.products.find((stage) => stage.$limit !== undefined).$limit;
+      return [{ products: records.slice(skip, skip + limit), count: [{ total: records.length }] }];
+    },
+    populate: async (rows) => rows,
   };
 }
 
@@ -32,6 +40,7 @@ const EmptyUserModel = {
   find() {
     return {
       select() { return this; },
+      sort() { return this; },
       limit() { return this; },
       lean: async () => [],
     };
@@ -45,7 +54,7 @@ test('product search terms and regex punctuation are escaped and do not throw', 
       const input = parseCatalogSearchRequest({ q: query });
       const result = await searchCatalog(input, { ProductModel: products, UserModel: EmptyUserModel });
       assert.deepEqual(result, {
-        products: [], total: 0, page: 1, limit: 30, hasMore: false,
+        products: [], vendors: [], total: 0, page: 1, limit: 30, hasMore: false,
       });
       const expression = products.lastFilter.$and[1].$or[0].name.$regex;
       assert.doesNotThrow(() => new RegExp(expression, 'i'));
@@ -91,6 +100,7 @@ test('vendor-name search is constrained to approved vendors in the existing user
       vendorFilter = filter;
       return {
         select() { return this; },
+        sort(value) { assert.deepEqual(value, { businessName: 1, _id: 1 }); return this; },
         limit() { return this; },
         lean: async () => [{ _id: '507f1f77bcf86cd799439011' }],
       };

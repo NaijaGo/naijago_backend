@@ -11,6 +11,7 @@ const ShipmentItemSchema = new mongoose.Schema({
     image: { type: String, required: true },
     quantity: { type: Number, required: true, min: 1 },
     price: { type: Number, required: true, min: 0 }, // Price at time of order
+    dealSnapshot: { type: require('./DealPriceSnapshot'), default: undefined },
     offer: { type: mongoose.Schema.Types.ObjectId, ref: 'ProductOffer', default: null },
     variantId: { type: mongoose.Schema.Types.ObjectId, default: null },
     sku: { type: String, trim: true, default: '' },

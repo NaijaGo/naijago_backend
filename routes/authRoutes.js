@@ -1,3 +1,4 @@
+const { normalizeCheckoutAddress } = require('../utils/checkoutLocation');
 const express = require('express');
 const User = require('../models/User');
 const jwt = require('jsonwebtoken');
@@ -1434,8 +1435,9 @@ router.post('/addresses', protect, async (req, res) => {
     const coordinates = validateCoordinates(latitude, longitude);
     if (coordinates.error) return res.status(400).json({ message: coordinates.error });
 
-    if (!address || !city || !postalCode || !country) {
-        return res.status(400).json({ message: 'All address fields are required.' });
+    const addressDetails = normalizeCheckoutAddress(req.body);
+    if (!addressDetails.address || !addressDetails.city || !addressDetails.country) {
+        return res.status(400).json({ message: 'Complete the address, city, and country.' });
     }
 
     try {
@@ -1455,10 +1457,7 @@ router.post('/addresses', protect, async (req, res) => {
         }
 
         user.deliveryAddresses.push({
-            address,
-            city,
-            postalCode,
-            country,
+            ...addressDetails,
             phoneNumber: typeof phoneNumber === 'string' ? phoneNumber.trim() : undefined,
             latitude: coordinates.latitude,
             longitude: coordinates.longitude,
@@ -1502,7 +1501,10 @@ router.put('/addresses/:index', protect, async (req, res) => {
         const targetAddress = user.deliveryAddresses[addressIndex];
         targetAddress.address = address || targetAddress.address;
         targetAddress.city = city || targetAddress.city;
-        targetAddress.postalCode = postalCode || targetAddress.postalCode;
+        if (postalCode !== undefined) targetAddress.postalCode = typeof postalCode === 'string' ? postalCode.trim() : '';
+        for (const field of ['street', 'area', 'landmark', 'state']) {
+            if (req.body[field] !== undefined) targetAddress[field] = normalizeCheckoutAddress(req.body)[field];
+        }
         targetAddress.country = country || targetAddress.country;
         if (phoneNumber !== undefined) {
             targetAddress.phoneNumber =

@@ -146,6 +146,7 @@ async function searchCatalog(input, {
   ProductModel = Product,
   UserModel = User,
   attachOffers = async (items) => items,
+  priceProducts = async (items) => items,
 } = {}) {
   const { query, page, limit, category, productType, vendor, minPrice, maxPrice, minRating, inStock, sort } = input;
   if (!query && !vendor) return { products: [], total: 0, page, limit, hasMore: false };
@@ -226,7 +227,7 @@ async function searchCatalog(input, {
       effectivePrice: selected.discountPrice ?? selected.price, stockQuantity: selected.stockQuantity };
   });
   return {
-    products: enrichedProducts,
+    products: await priceProducts(enrichedProducts),
     vendors: matchingVendors.slice(skip, skip + limit).map(row => ({
       id: String(row._id), name: row.businessName || 'Vendor',
       logoUrl: row.businessLogoUrl || null, address: row.businessLocation?.formattedAddress || '',

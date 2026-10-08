@@ -1,3 +1,5 @@
+const { validateCheckoutLocation, normalizeCheckoutAddress } = require('../utils/checkoutLocation');
+const { validateCoordinates } = require('../utils/addressCoordinates');
 // routes/orderRoutes.js
 const express = require('express');
 const crypto = require('crypto');
@@ -9,6 +11,7 @@ const Shipment = require('../models/Shipment');
 const Product = require('../models/Product');
 const ProductOffer = require('../models/ProductOffer');
 const inventory = require('../services/inventoryService');
+const { loadDealContext, resolveProductPrice } = require('../services/productPriceService');
 const AppSetting = require('../models/AppSetting');
 const User = require('../models/User');
 const Rider = require('../models/Rider');
@@ -53,14 +56,7 @@ const buildSquadTxRef = (orderId) =>
     `NGS_${orderId}_${crypto.randomBytes(12).toString('hex')}`;
 
 const hasValidCoordinates = (location) => {
-    if (location?.latitude === null || location?.latitude === undefined || location?.latitude === '' ||
-        location?.longitude === null || location?.longitude === undefined || location?.longitude === '') {
-        return false;
-    }
-    const latitude = Number(location?.latitude);
-    const longitude = Number(location?.longitude);
-    return Number.isFinite(latitude) && latitude >= -90 && latitude <= 90 &&
-        Number.isFinite(longitude) && longitude >= -180 && longitude <= 180;
+    return !validateCoordinates(location?.latitude, location?.longitude, { required: true }).error;
 };
 
 const resolvePickupLocation = ({ offerLocation, sellerLocation, productLocation }) => {
@@ -908,6 +904,7 @@ function buildOrderItemFromProduct(item, product) {
         image: product.imageUrls?.[0],
         quantity: item.quantity,
         price: authoritativePrice,
+        dealSnapshot: item.dealSnapshot || undefined,
         selectedSize: item.selectedSize || null,
         category: product.category || 'Uncategorized',
         productSnapshot: {
@@ -1003,6 +1000,7 @@ router.post('/delivery-quote', protect, deliveryQuoteLimiter, async (req, res) =
     try {
         const sellerStops = new Map();
         let orderSubtotal = 0;
+        const dealContext = req.plannedOrderContext ? null : await loadDealContext(cartItems.map(item => item?.product));
         for (const item of cartItems) {
             if (!item?.product || !Number.isFinite(Number(item.quantity)) || Number(item.quantity) <= 0) {
                 return res.status(400).json({ message: 'Each cart item must contain a valid product and quantity.' });
@@ -1052,7 +1050,8 @@ router.post('/delivery-quote', protect, deliveryQuoteLimiter, async (req, res) =
                 return res.status(400).json({ message: 'Choose one fulfilment method for each vendor.' });
             }
             stop.items.push({ product: product._id });
-            orderSubtotal += Number(selectedOffer?.discountPrice ?? selectedOffer?.price ?? product.discountPrice ?? product.price ?? 0) * Number(item.quantity);
+            const itemPricing = resolveProductPrice(product, selectedOffer, dealContext);
+            orderSubtotal += itemPricing.finalPrice * Number(item.quantity);
         }
 
         const shipmentSummaries = [...sellerStops.values()];
@@ -1151,6 +1150,9 @@ const calculateOrderSummary = async (req, res) => {
         promoCode = '',
     } = req.body;
 
+    const locationError = validateCheckoutLocation(shippingAddress, userLocation);
+    if (locationError) return res.status(400).json({ message: locationError });
+
     if (!cartItems || cartItems.length === 0) {
         return res.status(400).json({ message: 'No items in cart for summary calculation' });
     }
@@ -1162,6 +1164,7 @@ const calculateOrderSummary = async (req, res) => {
         const sellerCartMap = new Map();
         let totalSubtotal = 0;
         let totalPlatformFees = 0;
+        const dealContext = req.plannedOrderContext ? null : await loadDealContext(cartItems.map(item => item?.product));
         const deliveryFeeSettings = await getDeliveryFeeSettings();
         const costLowConfig = await getCostLowCommissionConfig();
         let matchedDeliveryZone = null;
@@ -1201,12 +1204,12 @@ const calculateOrderSummary = async (req, res) => {
             const sellerName = sellerType === 'naijago'
                 ? 'NaijaGo'
                 : selectedOffer?.sellerId?.businessName || product.vendor?.businessName || 'Vendor';
-            const sellerLocation = selectedOffer?.fulfilmentLocation?.latitude
-                ? selectedOffer.fulfilmentLocation
-                : sellerType === 'vendor'
-                    ? selectedOffer?.sellerId?.businessLocation || product.vendor?.businessLocation
-                    : product.productLocation;
-            if (!sellerLocation?.latitude || !sellerLocation?.longitude) {
+            const sellerLocation = resolvePickupLocation({
+                offerLocation: selectedOffer?.fulfilmentLocation,
+                sellerLocation: sellerType === 'vendor' ? selectedOffer?.sellerId?.businessLocation || product.vendor?.businessLocation : null,
+                productLocation: product.productLocation,
+            });
+            if (!sellerLocation) {
                 return res.status(400).json({
                     message: `A fulfilment location must be configured for ${product.name}.`,
                 });
@@ -1228,7 +1231,8 @@ const calculateOrderSummary = async (req, res) => {
                     message: `${sellerName} does not currently offer customer pickup.`,
                 });
             }
-            const unitPrice = Number(selectedOffer?.discountPrice ?? selectedOffer?.price ?? product.discountPrice ?? product.price);
+            const itemPricing = resolveProductPrice(product, selectedOffer, dealContext);
+            const unitPrice = itemPricing.finalPrice;
             const availableStock = inventory.getAvailableQuantity(selectedOffer || product);
             if (availableStock < Number(item.quantity || 1)) {
                 return res.status(400).json({ message: `Insufficient stock for ${product.name}. Available: ${availableStock}` });
@@ -1321,6 +1325,7 @@ const calculateOrderSummary = async (req, res) => {
                     ...item,
                     offer: selectedOffer?._id || null,
                     authoritativePrice: unitPrice,
+                    dealSnapshot: itemPricing.dealSnapshot,
                 }, product),
                 commissionRate,
                 commissionType: commission.commissionType,
@@ -1577,6 +1582,9 @@ const createMainOrder = async (req, res) => {
         subscriptionPlanId,
     } = req.body;
 
+    const locationError = validateCheckoutLocation(shippingAddress, userLocation);
+    if (locationError) return res.status(400).json({ message: locationError });
+
     const session = await mongoose.startSession();
     session.startTransaction();
 
@@ -1604,6 +1612,10 @@ const createMainOrder = async (req, res) => {
         let deliveryCalculation = null;
         let appliedFreeDeliveryCampaign = { eligible: false, reason: '' };
 
+        const dealContext = req.plannedOrderContext ? null : await loadDealContext(
+            shipmentSummaries.flatMap(summary => Array.isArray(summary.items) ? summary.items.map(item => item?.product) : []),
+            { session },
+        );
         for (const summary of shipmentSummaries) {
         let summarySubtotal = 0;
         let summaryPlatformFee = 0;
@@ -1712,7 +1724,7 @@ const createMainOrder = async (req, res) => {
                         });
                     }
 
-                    if (userLocation?.latitude && userLocation?.longitude && product.vendor?.businessLocation) {
+                    if (hasValidCoordinates(userLocation) && hasValidCoordinates(product.vendor?.businessLocation)) {
                         const distance = calculateDistance(
                             userLocation.latitude,
                             userLocation.longitude,
@@ -1744,7 +1756,6 @@ const createMainOrder = async (req, res) => {
                         message: 'Each shipment must contain products from the same fulfilment location.',
                     });
                 }
-                summarySellerName = pickupVendor.businessName || 'Vendor';
                 summarySellerKey = itemSellerKey;
                 summarySellerType = itemSellerType;
                 summarySellerId = itemSellerId;
@@ -1777,13 +1788,14 @@ const createMainOrder = async (req, res) => {
                         message: `A valid fulfilment location must be configured for ${product.name}.`,
                     });
                 }
-                summarySellerName = sellerRecord?.businessName ||
+                summarySellerName = pickupVendor?.businessName || sellerRecord?.businessName ||
                     product.vendor?.businessName ||
                     (itemSellerType === 'naijago' ? 'NaijaGo' : 'Vendor');
                 if (!summaryVendorLocation) summaryVendorLocation = authoritativePickupLocation;
 
                 const safeQuantity = Math.max(1, Number(item.quantity || 1));
-                const authoritativePrice = Number(selectedOffer?.discountPrice ?? selectedOffer?.price ?? product.discountPrice ?? product.price ?? 0);
+                const itemPricing = resolveProductPrice(product, selectedOffer, dealContext);
+                const authoritativePrice = itemPricing.finalPrice;
                 const itemSubtotal = authoritativePrice * safeQuantity;
                 const commission = calculateItemCommission({
                     sellerType: summarySellerType,
@@ -1803,6 +1815,7 @@ const createMainOrder = async (req, res) => {
                     quantity: safeQuantity,
                     offer: selectedOffer?._id || null,
                     authoritativePrice,
+                    dealSnapshot: itemPricing.dealSnapshot,
                 }, product), {
                     commissionRate,
                     commissionType: commission.commissionType,
@@ -1813,10 +1826,8 @@ const createMainOrder = async (req, res) => {
 
             const distanceKm =
                 fulfillmentMethod === 'delivery' &&
-                userLocation?.latitude &&
-                userLocation?.longitude &&
-                summaryVendorLocation?.latitude &&
-                summaryVendorLocation?.longitude
+                hasValidCoordinates(userLocation) &&
+                hasValidCoordinates(summaryVendorLocation)
                     ? calculateDistance(
                         summaryVendorLocation.latitude,
                         summaryVendorLocation.longitude,
@@ -1965,10 +1976,18 @@ const createMainOrder = async (req, res) => {
             throw Object.assign(new Error('Prices changed. Review the current total before paying.'), { code: 'PLANNED_ORDER_ERROR', statusCode: 409 });
         }
         
+        // Do not persist a timed Deal that expired during routing/calculation.
+        if (shipmentSummaries.some(summary => (summary.items || []).some(item =>
+            item.dealSnapshot && new Date(item.dealSnapshot.endAt) <= new Date()))) {
+            throw Object.assign(new Error('A Deal expired. Refresh your checkout total before ordering.'), { statusCode: 409, code: 'DEAL_EXPIRED' });
+        }
         // --- Step 2: Create the MainOrder document (The Receipt) ---
         const mainOrder = new MainOrder({ // Use MainOrder model
             user: req.user._id,
-            shippingAddress,
+            shippingAddress: {
+                ...normalizeCheckoutAddress(shippingAddress),
+                ...(typeof shippingAddress.phoneNumber === 'string' ? { phoneNumber: shippingAddress.phoneNumber.trim() } : {}),
+            },
             userLocation,
             totalSubtotal: parseFloat(recalculatedSubtotal.toFixed(2)),
             totalPlatformFees: parseFloat(recalculatedPlatformFees.toFixed(2)),
@@ -2047,6 +2066,7 @@ const createMainOrder = async (req, res) => {
                     image: item.image,
                     quantity: item.quantity,
                     price: item.price,
+                    dealSnapshot: item.dealSnapshot || undefined,
                     selectedSize: item.selectedSize || null,
                     category: item.category, // Store category
                     productSnapshot: item.productSnapshot || {},
@@ -2149,6 +2169,9 @@ const createMainOrder = async (req, res) => {
         await session.abortTransaction();
         session.endSession();
         console.error('Error creating multi-vendor order:', error.code || error.message);
+        if (String(error.code || '').startsWith('DEAL_')) {
+            return res.status(error.statusCode || 503).json({ code: error.code, message: error.message });
+        }
         if (error.code === 'PLANNED_ORDER_ERROR') {
             return res.status(error.statusCode || 409).json({ message: error.message });
         }

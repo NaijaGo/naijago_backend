@@ -270,6 +270,7 @@ const getMyVideos = asyncHandler(async (req, res) => {
 });
 
 const likeVideo = asyncHandler(async (req, res) => {
+  if (!validId(req.params.videoId)) throw httpError(400, 'Invalid video ID.');
   try {
     await runTransaction(async (session) => {
       await visibleVideo(req.params.videoId, session);
@@ -289,6 +290,7 @@ const likeVideo = asyncHandler(async (req, res) => {
 });
 
 const unlikeVideo = asyncHandler(async (req, res) => {
+  if (!validId(req.params.videoId)) throw httpError(400, 'Invalid video ID.');
   await runTransaction(async (session) => {
     await visibleVideo(req.params.videoId, session);
     const deleted = await ExploreLike.findOneAndDelete({ video: req.params.videoId, user: req.user._id }, { session });
@@ -322,6 +324,7 @@ const getComments = asyncHandler(async (req, res) => {
 });
 
 const addComment = asyncHandler(async (req, res) => {
+  if (!validId(req.params.videoId)) throw httpError(400, 'Invalid video ID.');
   const text = typeof req.body?.text === 'string' ? req.body.text.trim() : '';
   if (!text) throw httpError(400, 'Comment text is required.');
   if (text.length > MAX_COMMENT_LENGTH) throw httpError(400, `Comments must be ${MAX_COMMENT_LENGTH} characters or fewer.`);
@@ -342,6 +345,7 @@ const addComment = asyncHandler(async (req, res) => {
 });
 
 const deleteComment = asyncHandler(async (req, res) => {
+  if (!validId(req.params.videoId)) throw httpError(400, 'Invalid video ID.');
   if (!validId(req.params.commentId)) throw httpError(400, 'Invalid comment ID.');
   await runTransaction(async (session) => {
     const video = await visibleVideo(req.params.videoId, session);

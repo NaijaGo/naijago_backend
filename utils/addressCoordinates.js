@@ -1,5 +1,5 @@
 const parseCoordinate = (value) => {
-  if (value === undefined || value === null || value === '') return undefined;
+  if (value === undefined || value === null || (typeof value !== 'number' && typeof value !== 'string') || (typeof value === 'string' && !value.trim())) return undefined;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : undefined;
 };
@@ -23,6 +23,7 @@ const validateCoordinates = (latitudeValue, longitudeValue, { required = false }
   if (longitude === undefined || longitude < -180 || longitude > 180) {
     return { error: 'Enter a valid longitude.' };
   }
+  if (latitude === 0 && longitude === 0) return { error: 'Please select a valid delivery location.' };
   return { latitude, longitude };
 };
 

@@ -82,3 +82,14 @@ test('Explore routes require authentication on reads and writes and protect publ
   assert.match(routes, /router\.delete\('\/:videoId\/like', protect/);
   assert.match(routes, /router\.post\('\/:videoId\/comments', protect/);
 });
+
+test('malformed Explore writes reject before opening a MongoDB session', async t => {
+ const mongoose=require('mongoose');const original=mongoose.startSession;let calls=0;
+ mongoose.startSession=async()=>{calls++;throw new Error('A malformed request must not open a session');};
+ t.after(()=>{mongoose.startSession=original;});
+ for(const handler of ['likeVideo','unlikeVideo','addComment','deleteComment']) {
+  const req={params:{videoId:'invalid',commentId:'507f1f77bcf86cd799439011'},user:{_id:'customer'},body:{text:'Valid comment'}};
+  let failure;await explore[handler](req,responseRecorder(),error=>{failure=error;});assert.equal(failure?.statusCode,400,handler);
+ }
+ assert.equal(calls,0);
+});

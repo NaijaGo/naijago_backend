@@ -5,6 +5,7 @@ const router = express.Router();
 const Product = require('../models/Product');
 const ProductOffer = require('../models/ProductOffer');
 const inventory = require('../services/inventoryService');
+const { decorateProductPrices } = require('../services/productPriceService');
 const crypto = require('crypto');
 const Shipment = require('../models/Shipment');
 const User = require('../models/User');
@@ -24,6 +25,10 @@ const {
 } = require('../services/catalogSearchService');
 const { generateGroundedSearchFallback } = require('../services/geminiCatalogService');
 const externalSearchUsage = new Map();
+const shoppingAssistant = require('../services/shoppingAssistantService');
+const { rateLimit } = require('express-rate-limit');
+const shoppingAssistantLimiter = rateLimit({ windowMs: 60000, limit: 6, standardHeaders: 'draft-8', legacyHeaders: false,
+    message: { message: 'Too many shopping requests. Please wait a minute and try again.' } });
 const EXTERNAL_SEARCH_WINDOW_MS = 60 * 1000;
 const EXTERNAL_SEARCH_MAX_PER_IP = 6;
 
@@ -290,7 +295,8 @@ const attachPrimaryOffers = async (products) => {
             stockQuantity: selectedOffer?.stockQuantity ?? product.stockQuantity,
         };
     });
-    return Array.isArray(products) ? enriched : enriched[0];
+    const priced = await decorateProductPrices(enriched);
+    return Array.isArray(products) ? priced : priced[0];
 };
 
 const escapeRegex = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -1132,7 +1138,7 @@ router.get('/newarrivals', async (req, res) => {
             .filter(p => !isRestaurantCategory(p.category))
             .slice(0, 10);
         
-        res.status(200).json(newArrivalsProducts);
+        res.status(200).json(await attachPrimaryOffers(newArrivalsProducts));
     } catch (error) {
         console.error('Error fetching new arrival products:', error);
         res.status(500).json({ message: 'Server error fetching new arrival products.' });
@@ -1150,7 +1156,7 @@ router.get('/flashsales', async (req, res) => {
             .populate('vendor', vendorPopulateFields)
             .lean();
         
-        res.status(200).json(flashSalesProducts);
+        res.status(200).json(await attachPrimaryOffers(flashSalesProducts));
     } catch (error) {
         console.error('Error fetching flash sale products:', error);
         res.status(500).json({ message: 'Server error fetching flash sale products.' });
@@ -1233,7 +1239,7 @@ router.get('/vendor/:vendorId', async (req, res) => {
         if (products.length === 0) {
             return res.status(404).json({ message: 'No products found for this vendor.' });
         }
-        res.status(200).json(products);
+        res.status(200).json(await attachPrimaryOffers(products));
     } catch (error) {
         console.error('Error fetching products by vendor:', error);
         if (error.name === 'CastError') {
@@ -1249,10 +1255,16 @@ router.get('/vendor/:vendorId', async (req, res) => {
  * @access  Public
  * @query   ?q=search term
  */
+router.post('/shopping-assistant', shoppingAssistantLimiter, async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  try { res.json(await shoppingAssistant.suggest(req.body, { attachOffers: attachPrimaryOffers })); }
+  catch (error) { const status = error.statusCode || 500; res.status(status).json({ message: status < 500 || status === 503 ? error.message : 'Shopping suggestions are temporarily unavailable. Please try again.' }); }
+});
+
 router.get('/search', async (req, res) => {
   try {
     const searchInput = parseCatalogSearchRequest(req.query);
-    const result = await searchCatalog(searchInput, { attachOffers: attachPrimaryOffers });
+    const result = await searchCatalog(searchInput, { attachOffers: attachPrimaryOffers, priceProducts: decorateProductPrices });
     const response = {
       ...result,
       externalAnswer: '',
@@ -1366,7 +1378,7 @@ router.get('/restaurants', async (req, res) => {
             } else if (sort === 'price_high') {
                 products.sort((a, b) => (b.price || 0) - (a.price || 0));
             }
-            return res.status(200).json(products.slice(0, limit));
+            return res.status(200).json(await attachPrimaryOffers(products.slice(0, limit)));
         }
 
         const withDistances = products.map((product) => {
@@ -1402,7 +1414,7 @@ router.get('/restaurants', async (req, res) => {
             })
             .map((entry) => entry.product);
 
-        res.status(200).json((nearby.length > 0 ? nearby : products).slice(0, limit));
+        res.status(200).json(await attachPrimaryOffers((nearby.length > 0 ? nearby : products).slice(0, limit)));
     } catch (error) {
         console.error('Error fetching restaurant products:', error);
         res.status(500).json({ message: 'Server error fetching restaurant products.' });

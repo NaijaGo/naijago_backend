@@ -89,6 +89,10 @@ const MainOrderSchema = new mongoose.Schema({
     // User's delivery details
     shippingAddress: {
         address: { type: String, required: true },
+        street: { type: String, default: '' },
+        area: { type: String, default: '' },
+        landmark: { type: String, default: '' },
+        state: { type: String, default: '' },
         city: { type: String, required: true },
         postalCode: { type: String, default: '' },
         country: { type: String, required: true },

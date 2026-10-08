@@ -91,11 +91,11 @@ router.get('/reverse', protect, autocompleteLimiter, async (req, res) => {
   const latitude = Number(req.query.lat);
   const longitude = Number(req.query.lng);
   if (!Number.isFinite(latitude) || latitude < -90 || latitude > 90
-      || !Number.isFinite(longitude) || longitude < -180 || longitude > 180) {
+      || !Number.isFinite(longitude) || longitude < -180 || longitude > 180 || (latitude === 0 && longitude === 0)) {
     return res.status(400).json({ message: 'Valid latitude and longitude are required.' });
   }
 
-  const cacheKey = `${latitude.toFixed(5)},${longitude.toFixed(5)}`;
+  const cacheKey = `${latitude},${longitude}`;
   const cached = reverseCache.get(cacheKey);
   if (cached && Date.now() - cached.createdAt <= SUGGESTION_CACHE_TTL_MS) {
     return res.json({ address: cached.address, cached: true });
@@ -116,20 +116,24 @@ router.get('/reverse', protect, autocompleteLimiter, async (req, res) => {
 
     const addressLine = clean(result.address_line1)
       || [clean(result.housenumber), clean(result.street)].filter(Boolean).join(' ')
-      || clean(result.suburb)
-      || clean(result.formatted);
+      || clean(result.suburb);
     const city = clean(result.city) || clean(result.town) || clean(result.village)
-      || clean(result.suburb) || clean(result.county) || clean(result.state);
+      || clean(result.county);
     if (!addressLine && !city) {
       return res.status(404).json({ message: 'No address was found for these coordinates.' });
     }
     const address = {
-      addressLine: addressLine || city,
+      address: addressLine,
+      addressLine,
+      street: clean(result.street),
+      area: clean(result.suburb) || clean(result.district),
+      landmark: '',
+      state: clean(result.state),
       city,
       postalCode: clean(result.postcode),
-      country: clean(result.country) || 'Nigeria',
+      country: clean(result.country),
       formattedAddress: clean(result.formatted)
-        || [addressLine || city, city, clean(result.postcode), clean(result.country) || 'Nigeria']
+        || [addressLine || city, city, clean(result.postcode), clean(result.country)]
           .filter(Boolean).join(', '),
       latitude,
       longitude,
