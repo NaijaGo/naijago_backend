@@ -7,7 +7,9 @@ const notificationService = require('../services/notificationService');
 const router = express.Router();
 router.use(protect, authorizeRoles('admin'));
 router.get('/settings', async (req, res) => {
-  try { res.json({ settings: await monitor.getSettings(), pushConfigured: notificationService.hasAudienceConfiguration('admin') }); }
+  try { res.json({ settings: await monitor.getSettings(), pushConfigured: notificationService.hasAudienceConfiguration('admin'),
+    missingPushConfiguration: ['ADMIN_ONESIGNAL_APP_ID', 'ADMIN_ONESIGNAL_REST_API_KEY']
+      .filter(name => !String(process.env[name] || '').trim()) }); }
   catch (_) { res.status(503).json({ message: 'Monitoring settings are temporarily unavailable.' }); }
 });
 router.put('/settings', async (req, res) => {

@@ -1060,6 +1060,9 @@ router.get('/push-config', protect, authorizeAdmin, (req, res) => {
         enabled: Boolean(appId),
         appId,
         externalId: String(req.user._id),
+        serverConfigured: require('../services/notificationService').hasAudienceConfiguration('admin'),
+        missingConfiguration: ['ADMIN_ONESIGNAL_APP_ID', 'ADMIN_ONESIGNAL_REST_API_KEY']
+            .filter(name => !String(process.env[name] || '').trim()),
     });
 });
 
