@@ -127,6 +127,141 @@ test('Image Studio real dedicated MongoDB integration', { skip: !process.env.INV
       assert.equal(current.price, 200); assert.equal(current.stockQuantity, 20);
       stale.markModified('imageUrls'); await assert.rejects(stale.save());
     });
+    async function sourceCandidate(p, source) {
+      env.PHOTOROOM_SANDBOX = 'false';
+      const result = await service.stage({ productId: String(p._id), actor, signal });
+      for (const image of result.images) {
+        assert.equal(image.state, 'recorded');
+        assert.equal(await runner.tick(), true, errors.map(error => error.message).join('; '));
+      }
+      return service.get(String((await Refinement.findOne({ product: p._id, sourceUrl: source }))._id));
+    }
+    async function galleryProduct() {
+      const p = await product(), primary = p.imageUrls[0], side = primary.replace('.png', '_side.png');
+      await Product.updateOne({ _id: p._id }, { $set: { imageUrls: [primary, side], 'images.front': side } });
+      return { p, primary, side };
+    }
+    await t.test('explicit main approval persists its target and atomically promotes a gallery image', async () => {
+      await reset(); const { p, primary, side } = await galleryProduct(), row = await sourceCandidate(p, side);
+      assert.equal(row.canSetAsMain, true);
+      const before = (await Product.findById(p._id)).toObject();
+      const approved = await service.review({ refinementId: row.id, actor, input: { action: 'approve', revision: row.revision,
+        reason: 'Use the checked live image as the main customer photo', identityConfirmed: true, setAsMain: true } });
+      assert.equal(approved.publicationTarget, 'main');
+      assert.equal(approved.history.at(-1).publicationTarget, 'main');
+      assert.deepEqual((await Product.findById(p._id)).toObject(), before, 'Approval alone must not replace product photos');
+      assert.equal((await Refinement.findById(row.id)).publicationTarget, 'main');
+      assert.equal(await runner.tick(), true, errors.map(error => error.message).join('; '));
+      const current = await Product.findById(p._id), review = await service.get(row.id);
+      assert.equal(review.state, 'approved'); assert.equal(review.publicationTarget, 'main');
+      assert.equal(current.imageUrls[0], current.images.main); assert.equal(current.images.front, current.images.main);
+      assert.equal(current.imageUrls[1], primary); assert.equal(current.imageUrls.length, 2);
+      assert.notEqual(current.images.main, primary); assert.notEqual(current.images.main, side);
+      assert.equal(current.price, 200); assert.equal(current.stockQuantity, 20);
+      assert.ok((await Refinement.findById(row.id)).original);
+    });
+    await t.test('ordinary gallery approval keeps the existing main image', async () => {
+      await reset(); const { p, primary, side } = await galleryProduct(), row = await sourceCandidate(p, side);
+      await service.review({ refinementId: row.id, actor, input: { action: 'approve', revision: row.revision,
+        reason: 'Update the gallery only', identityConfirmed: true } });
+      assert.equal(await runner.tick(), true);
+      const current = await Product.findById(p._id);
+      assert.equal(current.imageUrls[0], primary); assert.equal(current.images.main, primary);
+      assert.notEqual(current.imageUrls[1], side); assert.equal(current.imageUrls[1], current.images.front);
+      assert.equal((await Refinement.findById(row.id)).publicationTarget, 'source');
+    });
+    await t.test('main-image option rejects malformed input and sandbox approval', async () => {
+      await reset(); const p = await product(), row = await candidate(p);
+      for (const setAsMain of ['true', 1, null, {}]) {
+        await assert.rejects(service.review({ refinementId: row.id, actor, input: { action: 'approve', revision: row.revision,
+          reason: 'Invalid option fixture', identityConfirmed: true, setAsMain } }), error => error.status === 400);
+      }
+      await assert.rejects(service.review({ refinementId: row.id, actor, input: { action: 'approve', revision: row.revision,
+        reason: 'Sandbox fixture', identityConfirmed: true, setAsMain: true } }), /Sandbox images cannot be published/);
+      assert.equal(await Job.countDocuments({ type: 'image.publish' }), 0);
+      assert.equal((await Refinement.findById(row.id)).state, 'pending_review');
+    });
+    await t.test('already published live gallery image can become main without another provider call or job', async () => {
+      await reset(); const { p, primary, side } = await galleryProduct(), row = await sourceCandidate(p, side);
+      await service.review({ refinementId: row.id, actor, input: { action: 'approve', revision: row.revision,
+        reason: 'Gallery fixture', identityConfirmed: true } });
+      assert.equal(await runner.tick(), true);
+      const reviewed = await service.get(row.id), before = (await Product.findById(p._id)).toObject();
+      assert.equal(reviewed.canSetAsMain, true);
+      const calls = providerCalls, jobs = await Job.countDocuments(), usage = await Usage.find().sort({ _id: 1 }).lean();
+      await assert.rejects(service.review({ refinementId: row.id, actor, input: { action: 'set_main', revision: reviewed.revision,
+        reason: 'Missing confirmation' } }), /Confirm the product/);
+      const promoted = await service.review({ refinementId: row.id, actor, input: { action: 'set_main', revision: reviewed.revision,
+        reason: 'Promote the approved image', identityConfirmed: true } });
+      const current = (await Product.findById(p._id)).toObject();
+      assert.equal(promoted.state, 'approved'); assert.equal(promoted.publicationTarget, 'main'); assert.equal(promoted.canSetAsMain, false);
+      assert.equal(promoted.history.at(-1).action, 'set_main');
+      assert.equal(current.imageUrls[0], before.imageUrls[1]); assert.equal(current.images.main, current.imageUrls[0]);
+      assert.equal(current.imageUrls[1], primary);
+      const unchangedFields = ({ imageUrls, images, __v, updatedAt, ...rest }) => rest;
+      assert.deepEqual(unchangedFields(current), unchangedFields(before));
+      assert.equal(providerCalls, calls); assert.equal(await Job.countDocuments(), jobs);
+      assert.deepEqual(await Usage.find().sort({ _id: 1 }).lean(), usage);
+      await assert.rejects(service.review({ refinementId: row.id, actor, input: { action: 'set_main', revision: reviewed.revision,
+        reason: 'Duplicate request', identityConfirmed: true } }), /review changed/);
+    });
+    await t.test('already published variant-only photo cannot be promoted to main', async () => {
+      await reset(); const p = await product(), variant = p.imageUrls[0].replace('.png', '_variant.png');
+      await Product.updateOne({ _id: p._id }, { $set: { variants: [{ imageUrls: [variant] }] } });
+      const row = await sourceCandidate(p, variant);
+      await service.review({ refinementId: row.id, actor, input: { action: 'approve', revision: row.revision,
+        reason: 'Variant fixture', identityConfirmed: true } });
+      assert.equal(await runner.tick(), true);
+      const reviewed = await service.get(row.id), before = (await Product.findById(p._id)).toObject();
+      assert.equal(reviewed.canSetAsMain, false);
+      await assert.rejects(service.review({ refinementId: row.id, actor, input: { action: 'set_main', revision: reviewed.revision,
+        reason: 'Invalid variant promotion', identityConfirmed: true } }), /variant-only/);
+      assert.deepEqual((await Product.findById(p._id)).toObject(), before);
+    });
+    await t.test('removed or reassigned published image cannot be promoted to main', async () => {
+      for (const reassign of [false, true]) {
+        await reset(); const { p, primary, side } = await galleryProduct(), row = await sourceCandidate(p, side);
+        await service.review({ refinementId: row.id, actor, input: { action: 'approve', revision: row.revision,
+          reason: 'Gallery fixture', identityConfirmed: true } });
+        assert.equal(await runner.tick(), true);
+        const reviewed = await service.get(row.id);
+        await Product.updateOne({ _id: p._id }, { $set: reassign ? { sellerId: new mongoose.Types.ObjectId() }
+          : { imageUrls: [primary], 'images.front': '' } });
+        const before = (await Product.findById(p._id)).toObject();
+        await assert.rejects(service.review({ refinementId: row.id, actor, input: { action: 'set_main', revision: reviewed.revision,
+          reason: 'Stale publication fixture', identityConfirmed: true } }), error => error.status === 409);
+        assert.deepEqual((await Product.findById(p._id)).toObject(), before);
+      }
+    });
+    await t.test('sandbox and unpublished candidates cannot use already-published promotion', async () => {
+      for (const live of [false, true]) {
+        await reset(); const p = await product(), row = await candidate(p, live);
+        const before = (await Product.findById(p._id)).toObject();
+        await assert.rejects(service.review({ refinementId: row.id, actor, input: { action: 'set_main', revision: row.revision,
+          reason: 'Not published fixture', identityConfirmed: true } }), /Only an approved live image/);
+        assert.deepEqual((await Product.findById(p._id)).toObject(), before);
+      }
+    });
+    await t.test('variant-only photo cannot be approved as the main product image', async () => {
+      await reset(); const p = await product(), variant = p.imageUrls[0].replace('.png', '_variant.png');
+      await Product.updateOne({ _id: p._id }, { $set: { variants: [{ name: 'Specific variant', imageUrls: [variant] }] } });
+      const row = await sourceCandidate(p, variant);
+      assert.equal(row.canSetAsMain, false);
+      await assert.rejects(service.review({ refinementId: row.id, actor, input: { action: 'approve', revision: row.revision,
+        reason: 'Invalid variant promotion', identityConfirmed: true, setAsMain: true } }), /variant-only/);
+      assert.equal(await Job.countDocuments({ type: 'image.publish' }), 0);
+    });
+    await t.test('main publication revalidates image scope if product photos change after approval', async () => {
+      await reset(); const { p, primary, side } = await galleryProduct(), row = await sourceCandidate(p, side);
+      await service.review({ refinementId: row.id, actor, input: { action: 'approve', revision: row.revision,
+        reason: 'Main photo fixture', identityConfirmed: true, setAsMain: true } });
+      await Product.updateOne({ _id: p._id }, { $set: { imageUrls: [primary], 'images.front': '', variants: [{ imageUrls: [side] }] } });
+      const before = (await Product.findById(p._id)).toObject();
+      assert.equal(await runner.tick(), false);
+      assert.match(errors.at(-1).message, /variant-only/);
+      assert.deepEqual((await Product.findById(p._id)).toObject(), before);
+      assert.equal((await Refinement.findById(row.id)).state, 'publishing');
+    });
     await t.test('source change after review makes publication obsolete', async () => {
       await reset(); const p = await product(), row = await candidate(p, true);
       await service.review({ refinementId: row.id, actor, input: { action: 'approve', revision: row.revision, reason: 'Fixture approved', identityConfirmed: true } });

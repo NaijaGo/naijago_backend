@@ -1,4 +1,4 @@
-const { RefinementError, STATES, id, revision, sourceImages, sourceKey, sourceIdentity, replacement } = require('../utils/imageRefinementPolicy');
+const { RefinementError, STATES, id, revision, sourceImages, sourceKey, sourceIdentity, replacement, canUseAsMain } = require('../utils/imageRefinementPolicy');
 const { positiveLimit } = require('../utils/featureBudget');
 
 function createImageRefinementService({ Refinement, Product, Job, Usage, queue, connection, images, env = process.env, now = () => new Date() }) {
@@ -49,14 +49,19 @@ function createImageRefinementService({ Refinement, Product, Job, Usage, queue, 
     }
     async function serialize(row) {
         let state = row.state;
+        const product = await Product.findById(row.product).select('imageUrls images sellerId vendor').lean();
+        const publishedUrl = row.state === 'approved' && row.published ? images.publicUrl(row, row.published) : null;
+        const mainSource = publishedUrl || row.sourceUrl;
         if (['queued', 'preserving', 'generating', 'publishing'].includes(state)) {
             const job = await Job.findById(row.job).select('state').lean();
             if (!job || ['failed', 'cancelled'].includes(job.state)) state = 'uncertain';
         }
         return { id: String(row._id), productId: String(row.product), productName: row.productName, state, storedState: row.state,
             generation: row.generation, revision: row.revision, profile: row.profile, sandbox: row.sandbox, code: row.code,
+            publicationTarget: row.publicationTarget || 'source', canSetAsMain: Boolean(product && owner(product) === String(row.owner || '') && canUseAsMain(product, mainSource) &&
+                !(publishedUrl && product.imageUrls?.[0] === publishedUrl && product.images?.main === publishedUrl)),
             originalUrl: images.url(row.original), candidateUrl: row.candidate ? images.url(row.candidate) : null,
-            history: row.history.map(({ action, generation, at, reason }) => ({ action, generation, at, reason })),
+            history: row.history.map(({ action, generation, at, reason, publicationTarget }) => ({ action, generation, at, reason, publicationTarget })),
             canRegenerate: processingEnabled() && row.generation < 3 && ['pending_review', 'rejected', 'failed', 'uncertain'].includes(state) && row.state !== 'publishing' };
     }
     async function get(refinementId) {
@@ -154,13 +159,33 @@ function createImageRefinementService({ Refinement, Product, Job, Usage, queue, 
     }
     async function review({ refinementId, actor, input }) {
         id(refinementId); revision(input.revision);
-        if (!['approve', 'reject', 'regenerate', 'retry_publish'].includes(input.action)) throw new RefinementError('Choose an image review action.');
+        if (!['approve', 'reject', 'regenerate', 'retry_publish', 'set_main'].includes(input.action)) throw new RefinementError('Choose an image review action.');
+        if (input.setAsMain !== undefined && (typeof input.setAsMain !== 'boolean' || input.action !== 'approve')) {
+            throw new RefinementError('Choose a valid main-image option when approving the image.');
+        }
         if (typeof input.reason !== 'string' || !input.reason.trim() || input.reason.length > 1000) throw new RefinementError('Add a short review reason.');
         await transaction(async (session) => {
             const row = await Refinement.findById(refinementId).session(session);
             if (!row) throw new RefinementError('Image review not found.', 404);
             if (row.revision !== input.revision) throw new RefinementError('This image review changed. Refresh before acting.', 409);
             const product = await Product.findById(row.product).session(session).lean();
+            // An already-published live image can be promoted without another
+            // provider call. Validate its current published identity, not its old source.
+            if (input.action === 'set_main') {
+                if (row.state !== 'approved' || row.sandbox !== false || !row.published || !product || owner(product) !== String(row.owner || '')) {
+                    throw new RefinementError('Only an approved live image from this product can become its main photo.', 409);
+                }
+                if (input.identityConfirmed !== true) throw new RefinementError('Confirm the product, colour, label, quantity and image rights before approval.');
+                const publishedUrl = images.publicUrl(row, row.published);
+                const change = await Product.updateOne({ _id: product._id, updatedAt: product.updatedAt }, {
+                    $set: replacement(product, publishedUrl, publishedUrl, { setAsMain: true }), $inc: { __v: 1 },
+                }, { session });
+                if (!change.modifiedCount) throw new RefinementError('Product changed during publication. Refresh before continuing.', 409);
+                row.publicationTarget = 'main'; row.revision += 1;
+                row.history.push({ action: 'set_main', generation: row.generation, actor, at: now(), reason: input.reason.trim(), publicationTarget: 'main' });
+                await row.save({ session });
+                return;
+            }
             if (!applicable(product, row)) throw new RefinementError('The product, seller or source image changed. This review is obsolete.', 409);
             const job = row.job ? await Job.findById(row.job).session(session).lean() : null;
             const active = job && ['queued', 'running'].includes(job.state);
@@ -169,6 +194,8 @@ function createImageRefinementService({ Refinement, Product, Job, Usage, queue, 
                 if (row.state !== 'pending_review' || !row.candidate || !row.original) throw new RefinementError('Wait for a complete original and refined image pair.', 409);
                 if (row.sandbox) throw new RefinementError('Sandbox images cannot be published. Generate a new live candidate after configuring the provider.', 409);
                 if (input.identityConfirmed !== true) throw new RefinementError('Confirm the product, colour, label, quantity and image rights before approval.');
+                if (input.setAsMain === true && !canUseAsMain(product, row.sourceUrl)) throw new RefinementError('A variant-only photo cannot become the main product image.', 409);
+                row.publicationTarget = input.setAsMain === true ? 'main' : 'source';
                 row.state = 'publishing';
             } else if (input.action === 'retry_publish') {
                 if (row.state !== 'publishing' || active || row.history.filter((item) => item.action === 'retry_publish').length >= 3) throw new RefinementError('Publication is active or its retry limit was reached.', 409);
@@ -182,11 +209,13 @@ function createImageRefinementService({ Refinement, Product, Job, Usage, queue, 
                 if (!['standard', 'relight'].includes(input.profile || 'standard')) throw new RefinementError('Invalid refinement style.');
                 row.generation += 1; row.profile = input.profile || 'standard'; row.sandbox = env.PHOTOROOM_SANDBOX !== 'false';
                 row.state = 'queued'; row.candidate = undefined; row.code = '';
+                row.publicationTarget = 'source';
                 await allocate(row, actor, session);
             }
             row.revision += 1;
             row.history.push({ action: input.action, generation: input.action === 'regenerate' ? row.generation - 1 : row.generation,
-                actor, at: now(), reason: input.reason.trim(), candidate: prior });
+                actor, at: now(), reason: input.reason.trim(), candidate: prior,
+                ...(input.action === 'approve' ? { publicationTarget: row.publicationTarget } : {}) });
             if (['approve', 'retry_publish'].includes(input.action)) {
                 const nextJob = await queue.enqueue({ type: 'image.publish', dedupeKey: `${row._id}:${row.generation}:${row.revision}`, owner: actor,
                     payload: { refinementId, generation: row.generation }, maxAttempts: 4 }, { session });
@@ -205,13 +234,13 @@ function createImageRefinementService({ Refinement, Product, Job, Usage, queue, 
                 current.state = 'obsolete'; current.code = 'source_changed';
             } else {
                 const change = await Product.updateOne({ _id: product._id, updatedAt: product.updatedAt }, {
-                    $set: replacement(product, current.sourceUrl, images.publicUrl(current, asset)), $inc: { __v: 1 },
+                    $set: replacement(product, current.sourceUrl, images.publicUrl(current, asset), { setAsMain: current.publicationTarget === 'main' }), $inc: { __v: 1 },
                 }, { session });
                 if (!change.modifiedCount) throw new RefinementError('Product changed during publication. Retry safely.', 409);
                 current.state = 'approved'; current.published = asset; current.code = '';
             }
             current.revision += 1;
-            current.history.push({ action: current.state, generation: current.generation, at: now() });
+            current.history.push({ action: current.state, generation: current.generation, at: now(), publicationTarget: current.publicationTarget || 'source' });
             await current.save({ session });
             return { state: current.state };
         });

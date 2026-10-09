@@ -12,10 +12,14 @@ function revision(value) {
     if (!Number.isSafeInteger(value) || value < 0) throw new RefinementError('Refresh the image review before continuing.');
     return value;
 }
-function sourceImages(product) {
+function productImages(product) {
     return [...new Set([...(product.imageUrls || []), ...['main', 'front', 'back', 'rear'].map((key) => product.images?.[key]),
-        ...(product.images?.others || []), ...(product.variants || []).flatMap((variant) => variant.imageUrls || [])].filter(Boolean))];
+        ...(product.images?.others || [])].filter(Boolean))];
 }
+function sourceImages(product) {
+    return [...new Set([...productImages(product), ...(product.variants || []).flatMap((variant) => variant.imageUrls || [])].filter(Boolean))];
+}
+const canUseAsMain = (product, source) => Boolean(product && productImages(product).includes(source));
 function sourceKey(url) { return crypto.createHash('sha256').update(url).digest('hex'); }
 function sourceIdentity(value, cloudName) {
     let url;
@@ -39,8 +43,9 @@ function imageBytes(bytes, mime) {
     if (!valid) throw new RefinementError('The image service returned an invalid image.');
     return bytes;
 }
-function replacement(product, from, to) {
+function replacement(product, from, to, { setAsMain = false } = {}) {
     if (!sourceImages(product).includes(from)) throw new RefinementError('The product image changed. This review is obsolete.', 409);
+    if (setAsMain && !canUseAsMain(product, from)) throw new RefinementError('A variant-only photo cannot become the main product image.', 409);
     const result = {};
     if (product.imageUrls?.includes(from)) result.imageUrls = product.imageUrls.map((url) => url === from ? to : url);
     for (const key of ['main', 'front', 'back', 'rear']) if (product.images?.[key] === from) result[`images.${key}`] = to;
@@ -48,6 +53,12 @@ function replacement(product, from, to) {
     (product.variants || []).forEach((variant, index) => {
         if (variant.imageUrls?.includes(from)) result[`variants.${index}.imageUrls`] = variant.imageUrls.map((url) => url === from ? to : url);
     });
+    if (setAsMain) {
+        const previousMain = product.images?.main;
+        result.imageUrls = [...new Set([to, ...(result.imageUrls || product.imageUrls || []),
+            ...(previousMain && previousMain !== from ? [previousMain] : [])])];
+        result['images.main'] = to;
+    }
     return result;
 }
-module.exports = { RefinementError, STATES, MAX_BYTES, id, revision, sourceImages, sourceKey, sourceIdentity, imageBytes, replacement };
+module.exports = { RefinementError, STATES, MAX_BYTES, id, revision, sourceImages, sourceKey, sourceIdentity, imageBytes, replacement, canUseAsMain };

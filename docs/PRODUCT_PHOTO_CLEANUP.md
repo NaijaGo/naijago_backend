@@ -31,6 +31,28 @@ checkout, price or inventory fields are introduced.
    versioned URL when it next fetches the product; stale cached catalog data may
    need a refresh. Ordinary vendor uploads are not processed automatically.
 
+### Publish as the main customer photo
+
+For an eligible live candidate in **pending review**, Admin can select
+**Use this refined image as the main customer photo** and then choose
+**Approve and set as main photo**. Approval records that intent but does not
+immediately change the product. The Image Studio worker publishes the approved
+candidate and atomically updates both `imageUrls[0]` (used by customer cards) and
+`images.main`. Other gallery photos and the preserved original are retained.
+Without the option, publication continues to replace only the original source's
+image positions. Variant-only photos cannot be promoted to a product's main photo.
+For an already approved live image that remains in the product gallery, Admin
+can instead choose **Set as main customer photo** with an accuracy confirmation
+and reason. This atomically promotes the existing published image and records
+the decision; it does not queue processing or call Photoroom again. Removed,
+reassigned, variant-only and sandbox images are rejected.
+
+Deploy the updated Image Studio worker first, then the backend web service and
+Admin, before using this option. Both backend processes must use this revision;
+an older worker does not understand the stored main-photo publication target.
+No historical image reviews require a migration. Their target defaults to the
+existing source-replacement behavior. Sandbox publication restrictions, retries,
+transaction guards, inventory and pricing are unchanged.
 Start with a representative batch of 10–20 products before processing the full
 catalog. Continue in reviewed batches; there is no automatic bulk approval.
 

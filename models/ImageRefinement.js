@@ -16,10 +16,12 @@ const schema = new mongoose.Schema({
     original: { type: asset, default: undefined },
     candidate: { type: asset, default: undefined },
     published: { type: asset, default: undefined },
+    publicationTarget: { type: String, enum: ['source', 'main'], default: 'source' },
     job: { type: mongoose.Schema.Types.ObjectId, ref: 'BackgroundJob' },
     code: { type: String, default: '' },
     history: [{ action: String, generation: Number, at: { type: Date, default: Date.now },
-        actor: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, reason: { type: String, maxlength: 1000 }, candidate: asset }],
+        actor: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, reason: { type: String, maxlength: 1000 }, candidate: asset,
+        publicationTarget: { type: String, enum: ['source', 'main'] } }],
 }, { timestamps: true, optimisticConcurrency: true });
 schema.index({ product: 1, sourceKey: 1 }, { unique: true });
 schema.index({ state: 1, _id: -1 });
