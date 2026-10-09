@@ -6,6 +6,7 @@ async function main() {
   }
   const mongoose = require('mongoose');
   const { createBackgroundJobService, createJobRunner } = require('../services/backgroundJobService');
+  const { runImageRefinementWorkerCycle } = require('../services/imageRefinementWorkerCycle');
   const Job = require('../models/BackgroundJob');
   const runtime = require('../services/imageRefinementRuntime');
   if (!runtime.service.processingEnabled()) {
@@ -26,10 +27,11 @@ async function main() {
     let active = null, stopping = false, shutdown;
     const tick = () => {
       if (stopping || active) return;
-      active = (async () => {
-        await runtime.service.schedule({ signal: controller.signal });
-        if (!stopping) await runner.tick();
-      })().catch(() => console.warn('Image Studio worker is temporarily unavailable.'))
+      active = runImageRefinementWorkerCycle({
+        schedule: options => runtime.service.schedule(options), runQueued: () => runner.tick(),
+        signal: controller.signal, isStopping: () => stopping,
+        onScheduleError: () => console.warn('Image Studio scheduling is temporarily unavailable; existing queued jobs will still be checked.'),
+      }).catch(() => console.warn('Image Studio worker is temporarily unavailable.'))
         .finally(() => { active = null; });
     };
     const interval = setInterval(tick, 5000);
