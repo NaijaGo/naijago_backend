@@ -58,15 +58,35 @@ An operator must separately review/provision the declared collection indexes:
 - AiUsageBucket: TTL `expiresAt` with `expireAfterSeconds: 0`.
 
 Inspect each model's exact index directions/options during rollout. Uniqueness
-indexes must not be sparse or partial. The API and worker only inspect readiness;
-they do not create these collections/indexes. No production database rollout is
-performed as part of committing this code.
+indexes must not be sparse or partial. Readiness checks and worker startup only
+inspect metadata; collection/index creation requires the explicit setup action
+below. No production database rollout is performed as part of committing code.
 
 ### Explicit Image Studio collection setup
 
 When Admin reports `imagerefinements`, `backgroundjobs` and `aiusagebuckets` as
 `collection_missing`, the database metadata rollout has not been performed.
 Restarting/deploying the web server does not perform it.
+
+After releasing both the backend and Admin setup control, an authenticated Admin
+can initialize these missing collections directly from **Product image studio**:
+
+1. Check the setup explanation and select **I authorize creating the three Image
+   Studio collections and their required indexes**.
+2. Click **Initialize Image Studio** once and wait for the result.
+3. The panel refreshes configuration and reviews. **Refresh setup status** also
+   rechecks configuration after an operator performs setup elsewhere.
+
+This calls Admin-only `POST /api/image-refinements/setup` with the single field
+`confirmation: "CREATE_IMAGE_STUDIO_COLLECTIONS_AND_INDEXES"`. It targets only the
+running backend's database; caller-selected databases or collections are refused.
+The same setup safeguards below apply. The action is rate-limited, requires the
+existing Image Studio/background-job feature gates, and shares simultaneous
+requests in the web process. It does not automatically run during deployment,
+configuration reads, page load or product selection. It does not call providers,
+queue photos or start a Render worker. A successful setup still requires worker
+and provider verification. Metadata operations remain non-transactional; refresh
+setup status after an uncertain response before retrying.
 
 An operator can inspect the exact target and planned metadata changes in the
 backend Render Shell, using the existing secret `MONGO_URI` without printing it:

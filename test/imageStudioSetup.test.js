@@ -1,6 +1,28 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { setup, definitions, argumentsFor } = require('../scripts/setupImageStudioDatabase');
+const { createImageStudioInitializer } = require('../services/imageStudioDatabaseSetup');
+
+test('Admin setup shares concurrent requests and always targets the running connection', async () => {
+  const db = { databaseName: 'dedicated_fixture' }; let calls = 0;
+  const initialize = createImageStudioInitializer({ getDatabase: () => db, provision: async options => {
+    calls++; assert.equal(options.db, db); assert.equal(options.apply, true); assert.equal(options.database, db.databaseName);
+    return { status: 'READY' };
+  } });
+  const first = initialize(); assert.equal(initialize(), first);
+  assert.deepEqual(await first, { status: 'READY' }); assert.equal(calls, 1);
+  await initialize(); assert.equal(calls, 2);
+});
+
+test('Admin setup releases its in-flight guard after failure', async () => {
+  let calls = 0;
+  const initialize = createImageStudioInitializer({ getDatabase: () => ({ databaseName: 'fixture' }), provision: async () => {
+    if (++calls === 1) throw new Error('Local fixture failure');
+    return { status: 'READY' };
+  } });
+  await assert.rejects(initialize(), /Local fixture failure/);
+  assert.equal((await initialize()).status, 'READY');
+});
 
 test('Image Studio setup is read-only by default and apply requires an exact database confirmation', async () => {
   assert.deepEqual(argumentsFor([]), { apply: false, database: undefined });
