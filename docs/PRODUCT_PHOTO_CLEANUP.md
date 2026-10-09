@@ -62,6 +62,43 @@ indexes must not be sparse or partial. The API and worker only inspect readiness
 they do not create these collections/indexes. No production database rollout is
 performed as part of committing this code.
 
+### Explicit Image Studio collection setup
+
+When Admin reports `imagerefinements`, `backgroundjobs` and `aiusagebuckets` as
+`collection_missing`, the database metadata rollout has not been performed.
+Restarting/deploying the web server does not perform it.
+
+An operator can inspect the exact target and planned metadata changes in the
+backend Render Shell, using the existing secret `MONGO_URI` without printing it:
+
+```sh
+node scripts/setupImageStudioDatabase.js
+```
+
+This defaults to read-only and shows the configured database name and the exact
+schema-derived index plan. After reviewing the target and authorizing production
+metadata creation, run (replace the placeholder with that exact database name):
+
+```sh
+node scripts/setupImageStudioDatabase.js --apply --database EXACT_DATABASE_NAME
+```
+
+Apply creates only the three Image Studio collections and their declared indexes;
+it does not seed records, queue images, call providers or touch products/orders.
+It refuses a standalone database, unreadable metadata, conflicting indexes, or
+populated collections missing indexes. It never drops collections/indexes or
+alters existing documents. An existing fully ready setup is a no-op. Database
+DDL is not transactional: a failed run can leave partial metadata; inspect before
+retrying. The usage-bucket TTL index expires usage records according to their
+existing `expiresAt` field. Apply is an explicit production metadata change and
+must be authorized separately from read-only diagnostics.
+
+After setup returns `READY`, provision/start the separate Render background
+worker with `npm run worker:image-refinements`, using the same database and the
+Image Studio variables listed above. Verify its startup logs and perform the
+provider sandbox diagnostic before queueing a small authorized sample. Database
+readiness alone does not prove the worker is running or that Photoroom works.
+
 `GET /api/image-refinements/config` is Admin-only and returns `enabled`,
 `processingEnabled` and `databaseReady` booleans without credentials. Processing
 is disabled until provider/storage configuration, budgets and required indexes
