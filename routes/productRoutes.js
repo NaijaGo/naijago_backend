@@ -15,7 +15,7 @@ const multer = require('multer');
 const cloudinary = require('../utils/cloudinary');
 const path = require('path');
 const {
-    buildHierarchicalCategoryFilter,
+    buildCategoryFilter,
     buildEffectivePriceExpression,
 } = require('../utils/productFilters');
 const {
@@ -241,23 +241,6 @@ const resolveProductLocation = (product) => {
     return product.productLocation?.latitude && product.productLocation?.longitude
         ? product.productLocation
         : product.vendor?.businessLocation;
-};
-
-const buildCategoryFilter = (category) => {
-    const normalized = String(category || '').trim();
-    const parts = normalized.split('>').map((part) => part.trim()).filter(Boolean);
-    if (parts.length < 2) return buildHierarchicalCategoryFilter(normalized);
-    const parent = parts[0];
-    const child = parts.slice(1).join(' > ');
-    return {
-        $or: [
-            buildHierarchicalCategoryFilter(normalized),
-            {
-                category: { $regex: new RegExp(`^${escapeRegex(parent)}$`, 'i') },
-                subcategory: { $regex: new RegExp(`^${escapeRegex(child)}$`, 'i') },
-            },
-        ],
-    };
 };
 
 const attachPrimaryOffers = async (products) => {
@@ -1429,7 +1412,7 @@ router.get('/admin/catalog', protect, authorizeRoles('admin'), async (req, res) 
         const queryText = String(req.query.q || '').trim();
         if (req.query.status && req.query.status !== 'all') filter.productStatus = req.query.status;
         if (req.query.sellerType && req.query.sellerType !== 'all') filter.sellerType = req.query.sellerType;
-        if (req.query.category) Object.assign(filter, buildCategoryFilter(req.query.category));
+        if (req.query.category) filter.$and = [buildCategoryFilter(req.query.category)];
         if (queryText) {
             const value = { $regex: escapeRegex(queryText), $options: 'i' };
             filter.$or = [
@@ -1497,7 +1480,7 @@ router.get('/', async (req, res) => {
     const filter = { isActive: true };
 
     if (category) {
-      Object.assign(filter, buildCategoryFilter(category));
+      filter.$and = [buildCategoryFilter(category)];
     }
     if (subcategory) filter.subcategory = { $regex: `^${escapeRegex(subcategory)}$`, $options: 'i' };
     if (brand) filter.brand = { $regex: `^${escapeRegex(brand)}$`, $options: 'i' };

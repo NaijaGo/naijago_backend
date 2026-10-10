@@ -3,6 +3,7 @@ const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 
 const riderSchema = new mongoose.Schema({
+  googleSubject: { type: String, trim: true },
   // Personal Information
   fullName: { 
     type: String, 
@@ -445,6 +446,8 @@ riderSchema.index({ isAvailable: 1, isActive: 1, status: 1 });
 riderSchema.index({ 'withdrawalHistory.status': 1, 'withdrawalHistory.createdAt': -1 });
 
 // Password Hashing Middleware
+riderSchema.index({ googleSubject: 1 }, { unique: true, partialFilterExpression: { googleSubject: { $type: 'string' } } });
+
 riderSchema.pre('save', async function (next) {
   // Only hash the password if it's modified (or new)
   if (!this.isModified('password')) return next();

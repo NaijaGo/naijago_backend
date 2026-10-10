@@ -12,6 +12,8 @@ const sendVerificationEmail = async (email, token, type, extraData = null) => {
         verificationLink = `${BASE_URL}/api/riders/reset-password-form/${token}`;
     } else if (type === 'password') {
         verificationLink = `${BASE_URL}/api/auth/reset-password-form/${token}`;
+    } else if (type === 'independent_rider') {
+        verificationLink = `${BASE_URL}/api/riders/verify-email/${token}`;
     } else if (type === 'rider') {
         // For company rider verification
         verificationLink = `${BASE_URL}/api/companies/verify-email/${token}`;
@@ -26,6 +28,7 @@ const sendVerificationEmail = async (email, token, type, extraData = null) => {
 
     switch (type) {
         case 'email':
+        case 'independent_rider':
         case 'rider': // Handle both 'email' and 'rider' types with same template
             subject = 'NaijaGo: Verify Your Email Address';
             htmlContent = `

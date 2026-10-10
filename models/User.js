@@ -4,6 +4,7 @@ const bcrypt = require('bcryptjs');
 
 // Define the User Schema
 const UserSchema = new mongoose.Schema({
+  googleSubject: { type: String, trim: true },
   firstName: {
     type: String,
     required: [true, 'First name is required'],
@@ -499,6 +500,7 @@ const UserSchema = new mongoose.Schema({
           'User',
           'MainOrder',
           'RecurringPlan',
+          'ProductRequest',
           'Shipment'            // ← ADDED THIS LINE
         ],
         sparse: true,
@@ -555,6 +557,8 @@ UserSchema.virtual('isPharmacist').get(function() {
     // It returns true if the 'role' field is 'pharmacist', and false otherwise.
     return this.role === 'pharmacist';
 });
+
+UserSchema.index({ googleSubject: 1 }, { unique: true, partialFilterExpression: { googleSubject: { $type: 'string' } } });
 
 UserSchema.pre('save', function(next) {
   if (this.role === 'pharmacist') {

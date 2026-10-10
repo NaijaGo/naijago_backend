@@ -6,6 +6,7 @@ const User = require('../models/User');
 const mongoose = require('mongoose');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
+const { verifyGoogleIdentity, authError, sendGoogleError } = require('../services/googleIdentityService');
 const { sendVerificationEmail } = require('../utils/emailHelper');
 const {
   MAX_ACTIVE_DELIVERIES,
@@ -64,6 +65,16 @@ const pushUserNotification = async ({
  */
 exports.registerRider = async (req, res) => {
   try {
+    let googleIdentity;
+    if (req.body.googleIdToken) {
+      googleIdentity = await verifyGoogleIdentity(req.body.googleIdToken, 'rider');
+      if (req.body.acceptedTerms !== true) throw authError(400, 'TERMS_REQUIRED', 'Please accept the terms and conditions.');
+      req.body.email = googleIdentity.email;
+      req.body.password = crypto.randomBytes(48).toString('hex');
+      if (await Rider.exists({ googleSubject: googleIdentity.sub })) {
+        throw authError(409, 'ACCOUNT_EXISTS', 'Your rider account already exists. Please sign in.');
+      }
+    }
     const {
       fullName,
       email,
@@ -118,6 +129,7 @@ exports.registerRider = async (req, res) => {
     const verificationToken = crypto.randomBytes(32).toString('hex');
 
     const rider = await Rider.create({
+      googleSubject: googleIdentity?.sub,
       fullName,
       email,
       password,
@@ -157,12 +169,12 @@ exports.registerRider = async (req, res) => {
         .digest('hex'),
       emailVerificationExpires: Date.now() + 24 * 60 * 60 * 1000,
       // Auto-verify in development mode for testing
-      isEmailVerified: process.env.NODE_ENV === 'development'
+      isEmailVerified: googleIdentity ? googleIdentity.authoritativeEmail : process.env.NODE_ENV === 'development'
     });
 
     // Send verification email
     try {
-      await sendVerificationEmail(rider.email, verificationToken, 'rider');
+      if (!rider.isEmailVerified) await sendVerificationEmail(rider.email, verificationToken, googleIdentity ? 'independent_rider' : 'rider');
     } catch (emailError) {
       console.error('Failed to send verification email:', emailError);
       // Don't fail registration if email fails
@@ -176,13 +188,16 @@ exports.registerRider = async (req, res) => {
       email: rider.email,
       status: rider.status,
       isEmailVerified: rider.isEmailVerified,
-      token: generateToken(rider._id),
-      message: process.env.NODE_ENV === 'development'
+      ...(googleIdentity ? {} : { token: generateToken(rider._id) }),
+      message: googleIdentity && rider.isEmailVerified
+        ? 'Registration submitted. Please wait for Admin approval.'
+        : process.env.NODE_ENV === 'development'
         ? "Registration successful! Email verification is disabled in development mode."
         : "Registration successful! Please check your email to verify your account."
     });
     
   } catch (error) {
+    if (req.body.googleIdToken) return sendGoogleError(res, error);
     console.error('Rider registration error:', error);
     res.status(500).json({ 
       success: false,
@@ -260,14 +275,14 @@ exports.loginRider = async (req, res) => {
   
   try {
     // Validate input
-    if (!email || !password) {
+    if (!req.googleAuthenticatedRider && (!email || !password)) {
       return res.status(400).json({ 
         success: false,
         message: 'Please provide email and password' 
       });
     }
 
-    const rider = await Rider.findOne({ email }).select('+password');
+    const rider = req.googleAuthenticatedRider || await Rider.findOne({ email }).select('+password');
     
     if (!rider) {
       return res.status(401).json({ 
@@ -277,7 +292,7 @@ exports.loginRider = async (req, res) => {
     }
 
     // Compare password
-    const isPasswordValid = await rider.comparePassword(password);
+    const isPasswordValid = req.googleAuthenticatedRider || await rider.comparePassword(password);
     if (!isPasswordValid) {
       return res.status(401).json({ 
         success: false,

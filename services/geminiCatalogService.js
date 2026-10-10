@@ -131,7 +131,7 @@ const findOutputImage = (data) => {
   return null;
 };
 
-async function generateCatalogImage({ prompt }) {
+async function generateCatalogImage({ prompt, signal, attempts = 2 }) {
   const apiKey = requireApiKey();
   const response = await postGemini(
     `${GEMINI_BASE_URL}/interactions`,
@@ -140,8 +140,8 @@ async function generateCatalogImage({ prompt }) {
       input: `${prompt}\nSquare 1:1 professional ecommerce catalogue image, centered product, neutral light background, accurate proportions, no extra objects, no invented labels or readable brand text. This is an AI-assisted draft and must be checked against the real product before publishing.`,
       response_format: { type: 'image', mime_type: 'image/jpeg', aspect_ratio: '1:1', image_size: '1K' },
     },
-    { headers: { 'x-goog-api-key': apiKey, 'Content-Type': 'application/json' }, timeout: 300000 },
-    { attempts: 2 },
+    { headers: { 'x-goog-api-key': apiKey, 'Content-Type': 'application/json' }, timeout: 300000, ...(signal ? { signal } : {}) },
+    { attempts: attempts === 1 ? 1 : 2 },
   );
   const image = findOutputImage(response.data);
   if (!image) throw new Error('Gemini returned no product image.');

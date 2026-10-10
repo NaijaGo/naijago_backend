@@ -7,6 +7,7 @@
     "catalog:migrate": "node scripts/migrateCatalogSellers.js",
     "start": "nodemon server.js",
     "worker:scheduled-notifications": "node workers/scheduledNotificationWorker.js",
+    "worker:admin-features": "node workers/adminFeatureWorker.js",
     "worker:image-refinements": "node workers/imageRefinementWorker.js",
     "diagnose:image-refinements": "node scripts/diagnoseImageRefinement.js",
     "worker:scheduled-delivery": "node workers/scheduledDeliveryWorker.js"
@@ -30,6 +31,7 @@
     "express": "^5.1.0",
     "express-fileupload": "^1.5.2",
     "express-rate-limit": "^8.2.1",
+    "google-auth-library": "10.9.1",
     "helmet": "^8.1.0",
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^8.16.4",

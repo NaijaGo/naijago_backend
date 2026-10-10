@@ -1,6 +1,10 @@
 // routes/riderRoutes.js
 const express = require('express');
 const router = express.Router();
+const rateLimit = require('express-rate-limit');
+const { googleRiderAuth } = require('../middleware/googleAuthMiddleware');
+const googleRiderLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 30, standardHeaders: 'draft-8', legacyHeaders: false,
+  message: { message: 'Too many sign-in attempts. Please try again later.' } });
 const Rider = require('../models/Rider');
 const { 
   // Authentication
@@ -53,7 +57,7 @@ const { riderProtect } = require('../middleware/riderAuthMiddleware'); // NEW
  * @desc    Register a new rider
  * @access  Public
  */
-router.post('/register', registerRider);
+router.post('/register', (req, res, next) => req.body?.googleIdToken ? googleRiderLimiter(req, res, next) : next(), registerRider);
 
 /**
  * @route   POST /api/riders/login
@@ -61,6 +65,7 @@ router.post('/register', registerRider);
  * @access  Public
  */
 router.post('/login', loginRider);
+router.post('/google', googleRiderLimiter, googleRiderAuth, loginRider);
 
 /**
  * @route   GET /api/riders/verify-email/:token

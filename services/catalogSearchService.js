@@ -2,7 +2,7 @@ const mongoose = require('mongoose');
 const Product = require('../models/Product');
 const ProductOffer = require('../models/ProductOffer');
 const User = require('../models/User');
-const { buildEffectivePriceExpression, escapeRegex } = require('../utils/productFilters');
+const { buildCategoryFilter: buildProductCategoryFilter, buildEffectivePriceExpression, escapeRegex } = require('../utils/productFilters');
 
 const DEFAULT_LIMIT = 30;
 const MAX_LIMIT = 50;
@@ -91,25 +91,7 @@ function parseCatalogSearchRequest(query = {}) {
 
 function buildCategoryFilter(value) {
   const category = String(value || '').trim();
-  if (!category) return null;
-  const escaped = escapeRegex(category);
-  const parts = category.split('>').map((part) => part.trim()).filter(Boolean);
-  if (parts.length > 1) {
-    const parent = escapeRegex(parts[0]);
-    const child = escapeRegex(parts.slice(1).join(' > '));
-    return {
-      $or: [
-        { category: { $regex: `^${escaped}(?:$|\\s*>\\s*)`, $options: 'i' } },
-        { category: { $regex: `^${parent}$`, $options: 'i' }, subcategory: { $regex: `^${child}$`, $options: 'i' } },
-      ],
-    };
-  }
-  return {
-    $or: [
-      { category: { $regex: `^${escaped}(?:$|\\s*>\\s*)`, $options: 'i' } },
-      { subcategory: { $regex: `^${escaped}$`, $options: 'i' } },
-    ],
-  };
+  return category ? buildProductCategoryFilter(category, { includeStandaloneSubcategory: true }) : null;
 }
 
 function buildSort(sort) {

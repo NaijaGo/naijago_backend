@@ -308,9 +308,9 @@ const getComments = asyncHandler(async (req, res) => {
   const page = Math.max(1, Number.parseInt(req.query.page, 10) || 1);
   const limit = Math.min(50, Math.max(1, Number.parseInt(req.query.limit, 10) || 20));
   const [items, total] = await Promise.all([
-    ExploreComment.find({ video: req.params.videoId }).sort({ createdAt: -1, _id: -1 }).skip((page - 1) * limit).limit(limit)
+    ExploreComment.find({ video: req.params.videoId, state: { $ne: 'hidden' } }).sort({ createdAt: -1, _id: -1 }).skip((page - 1) * limit).limit(limit)
       .populate('user', userPublicFields).lean(),
-    ExploreComment.countDocuments({ video: req.params.videoId }),
+    ExploreComment.countDocuments({ video: req.params.videoId, state: { $ne: 'hidden' } }),
   ]);
   res.json({ items: items.map((comment) => ({
     id: String(comment._id),

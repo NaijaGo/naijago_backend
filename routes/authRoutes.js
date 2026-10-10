@@ -578,15 +578,18 @@ router.get('/email/verify/:token', async (req, res) => {
 // });
 
 
-router.post('/login', async (req, res) => {
+const { googleUserAuth } = require('../middleware/googleAuthMiddleware');
+const googleLoginLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 30, standardHeaders: 'draft-8', legacyHeaders: false,
+  message: { message: 'Too many sign-in attempts. Please try again later.' } });
+const loginUser = async (req, res) => {
   const { email, password, deviceFingerprint, oneSignalPlayerId } = req.body;
 
-  if (!email || !password) {
+  if (!req.googleAuthenticatedUser && (!email || !password)) {
     return res.status(400).json({ message: 'Please enter all fields' });
   }
 
   try {
-    const user = await User.findOne({ email });
+    const user = req.googleAuthenticatedUser || await User.findOne({ email });
 
     if (!user) {
       return res.status(400).json({ message: 'Invalid credentials' });
@@ -597,7 +600,7 @@ router.post('/login', async (req, res) => {
     }
 
     // ✅ Always check password first
-    const isMatch = await bcrypt.compare(password, user.password);
+    const isMatch = req.googleAuthenticatedUser || await bcrypt.compare(password, user.password);
     if (!isMatch) {
       return res.status(400).json({ message: 'Invalid credentials' });
     }
@@ -804,7 +807,10 @@ router.post('/login', async (req, res) => {
     console.error('Login error:', error);
     res.status(500).json({ message: 'Server error during login' });
   }
-});
+};
+
+router.post('/login', loginUser);
+router.post('/google', googleLoginLimiter, googleUserAuth(sendVerificationEmail), loginUser);
 
 router.get('/me', protect, async (req, res) => {
     console.log('Backend: /api/auth/me route hit. User ID:', req.user?._id); // DEBUG LOG
