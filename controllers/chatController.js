@@ -1,6 +1,8 @@
 // controllers/chatController.js
 const ChatSession = require('../models/ChatSession');
 const ChatMessage = require('../models/ChatMessage');
+const { persistPharmacyMessage } = require('../services/pharmacyChatMessageService');
+const { claimPharmacySession } = require('../services/pharmacyChatSessionService');
 const User = require('../models/User');
 const {
   getUserPharmacyAccess,
@@ -41,7 +43,7 @@ exports.getSessionMessages = async (req, res) => {
     const isOwner = String(session.user) === requesterId;
     const isAssignedPharmacist = session.pharmacist && String(session.pharmacist) === requesterId;
     const canUsePharmacistTools = isApprovedPharmacistUser(req.user);
-    if (!isOwner && !isAssignedPharmacist && !canUsePharmacistTools) {
+    if (!isOwner && !(isAssignedPharmacist && canUsePharmacistTools) && !(canUsePharmacistTools && !session.pharmacist && session.status === 'open' && hasExplicitPharmacyAccessGrant(session))) {
       return res.status(403).json({ message: 'Not authorized for this chat.' });
     }
 
@@ -50,7 +52,8 @@ exports.getSessionMessages = async (req, res) => {
       senderType: { $ne: 'ai' },
     }).sort({ createdAt: 1 }).lean();
 
-    res.json({ session, messages: messages.map(formatChatMessage) });
+    const pharmacist = session.pharmacist ? await User.findById(session.pharmacist).select('businessName firstName lastName').lean() : null;
+    res.json({ session, actorRole: isOwner ? 'user' : 'pharmacist', pharmacistName: pharmacist?.businessName || [pharmacist?.firstName, pharmacist?.lastName].filter(Boolean).join(' ') || null, messages: messages.map(formatChatMessage) });
   } catch (error) {
     console.error('Chat history load failed:', error);
     res.status(500).json({ message: 'Failed to load chat history.' });
@@ -72,7 +75,7 @@ const notifyPharmacistsForSession = (app, session, textPreview) => {
   if (session.pharmacist) {
     const socketId = onlinePharmacists.get(String(session.pharmacist));
     if (socketId) {
-      io.to(socketId).emit('incoming_chat_request', payload);
+      io.to(socketId).emit('incoming_chat_request', { ...payload, assignedToMe: true });
     }
     sendPharmacistPush({
       pharmacistId: String(session.pharmacist),
@@ -397,69 +400,47 @@ exports.startChat = async (req, res) => {
   }
 };
 
-// Send message (kept for non-socket fallback/legacy, but client should prefer socket)
-// NOTE: This route should ideally be disabled or handle only metadata updates,
-// as the primary messaging logic is in server.js/send_chat_message.
+// Authenticated HTTP sends and socket sends share the same retry identity.
 exports.sendMessage = async (req, res) => {
-  try {
-    const { sessionId } = req.body;
-    const message = String(req.body.message || req.body.text || '').trim();
-    if (!sessionId || !message) {
-      return res.status(400).json({ message: 'sessionId and message are required.' });
-    }
-
-    const session = await ChatSession.findById(sessionId);
-    if (!session) return res.status(404).json({ message: 'Chat not found' });
-
-    const isPharmacist = isApprovedPharmacistUser(req.user);
+  try {
+    const { sessionId, clientMessageId } = req.body;
+    const message = req.body.message ?? req.body.text;
+    if (!sessionId) return res.status(400).json({ message: 'sessionId is required.' });
+    const session = await ChatSession.findById(sessionId);
+    if (!session) return res.status(404).json({ message: 'Chat not found.' });
     const isOwner = String(session.user) === String(req.user._id);
-    const isAssignedPharmacist =
-      session.pharmacist && String(session.pharmacist) === String(req.user._id);
-
+    const isPharmacist = !isOwner && isApprovedPharmacistUser(req.user) &&
+      String(session.pharmacist) === String(req.user._id);
+    if (!isOwner && !isPharmacist) return res.status(403).json({ message: 'Not authorized for this chat.' });
+    if (session.status === 'closed') return res.status(409).json({ message: 'This consultation is closed.' });
     if (!hasExplicitPharmacyAccessGrant(session)) {
-      return res.status(402).json(pharmacyAccessRequiredResponse({
-        hasAccess: false,
-        entitlement: 'pharmacy_chat',
-        planType: 'none',
-        status: 'inactive',
-        expiresAt: null,
-        oneTimeCredits: 0,
-      }));
+      return res.status(402).json(pharmacyAccessRequiredResponse({ hasAccess: false }));
     }
-
-    if (isPharmacist && !isAssignedPharmacist) {
-      return res.status(403).json({
-        message: 'Only the assigned pharmacist can reply to this consultation.',
+    const result = await persistPharmacyMessage({ sessionId: session._id, senderId: req.user._id,
+      senderType: isOwner ? 'user' : 'pharmacist', text: message, clientMessageId });
+    const formatted = formatChatMessage(result.message);
+    if (result.created) {
+      req.app.get('io')?.to(`chat_${sessionId}`).emit('new_message', formatted);
+      if (isOwner) notifyPharmacistsForSession(req.app, session, message);
+      else notifyUserOfPharmacyMessage(req.app, session, message, req.user).catch(() => {
+        console.error('Failed to notify user of pharmacy message.');
       });
     }
+    res.json({ success: true, message: formatted });
+  } catch (error) {
+    if (error.status) return res.status(error.status).json({ message: error.message });
+    console.error('Pharmacy message persistence failed:', error.name);
+    res.status(500).json({ message: 'Message send failed.' });
+  }
+};
 
-    if (!isPharmacist && !isOwner) {
-      return res.status(403).json({ message: 'Not authorized for this chat.' });
-    }
-
-    const chatMessage = await ChatMessage.create({
-      session: sessionId,
-      senderType: isPharmacist ? 'pharmacist' : 'user',
-      sender: req.user._id,
-      message,
-    });
-
-    const formatted = formatChatMessage(chatMessage);
-    req.app.get('io')?.to(`chat_${sessionId}`).emit('new_message', formatted);
-
-    if (!isPharmacist) {
-      notifyPharmacistsForSession(req.app, session, message);
-    } else {
-      notifyUserOfPharmacyMessage(req.app, session, message, req.user).catch((error) => {
-        console.error('Failed to notify user of pharmacy message:', error);
-      });
-    }
-
-    res.json({ success: true, message: formatted });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: 'Message send failed' });
-  }
+exports.getActiveSession = async (req, res) => {
+  try {
+    const session = await ChatSession.findOne({ user: req.user._id, status: { $in: ['open', 'assigned'] },
+      pharmacyAccessGrantedAt: { $ne: null }, pharmacyAccessSource: { $in: ['one_time', 'subscription', 'admin'] } })
+      .sort({ createdAt: -1 }).lean();
+    res.json({ session });
+  } catch (_) { res.status(500).json({ message: 'Unable to load your consultation.' }); }
 };
 
 exports.getPharmacistQueue = async (req, res) => {
@@ -519,7 +500,7 @@ exports.getPharmacistQueue = async (req, res) => {
     const queue = sessions.map((session) =>
       buildQueueItem(session, latestBySession.get(String(session._id))),
     );
-    res.json({ success: true, queue });
+    res.json({ success: true, queue: queue.map((item) => ({ ...item, assignedToMe: item.pharmacist === String(req.user._id) })) });
   } catch (err) {
     console.error('Get pharmacist queue failed:', err);
     res.status(500).json({ message: 'Failed to load consultation queue.' });
@@ -605,8 +586,9 @@ exports.claimSession = async (req, res) => {
       });
     }
 
-    const session = await ChatSession.findById(req.params.sessionId || req.body.sessionId);
+    let session = await ChatSession.findById(req.params.sessionId || req.body.sessionId);
     if (!session) return res.status(404).json({ message: 'Chat session not found.' });
+    if (session.status === 'closed') return res.status(409).json({ message: 'This consultation is closed.' });
     if (!hasExplicitPharmacyAccessGrant(session)) {
       return res.status(402).json({
         message: 'This consultation is waiting for pharmacist chat access before it can be claimed.',
@@ -626,9 +608,8 @@ exports.claimSession = async (req, res) => {
       return res.status(409).json({ message: 'This consultation has already been claimed.' });
     }
 
-    session.pharmacist = req.user._id;
-    session.status = 'assigned';
-    await session.save();
+    session = await claimPharmacySession(session, req.user._id);
+    if (!session) return res.status(409).json({ message: 'This consultation changed. Refresh your inbox.' });
 
     const pharmacistName =
       req.user.businessName ||

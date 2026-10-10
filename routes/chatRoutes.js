@@ -2,6 +2,7 @@
 const express = require('express');
 const {
   claimSession,
+  getActiveSession,
   getOnlinePharmacists,
   getPharmacistQueue,
   getSessionMessages,
@@ -13,6 +14,7 @@ const { protect } = require('../middleware/authMiddleware');
 
 const router = express.Router();
 
+router.get('/active', protect, getActiveSession);
 router.post('/start', protect, startChat);
 router.post('/send', protect, sendMessage);
 router.get('/:sessionId/messages', protect, getSessionMessages);
