@@ -1,6 +1,6 @@
 const express = require('express');
 const { protect, authorizeRoles } = require('../middleware/authMiddleware');
-const { CarouselSlide, VALID_CAROUSEL_PLACEMENTS } = require('../models/CarouselSlide');
+const { CarouselSlide, VALID_CAROUSEL_PLACEMENTS, VALID_CAROUSEL_ACTIONS } = require('../models/CarouselSlide');
 
 const router = express.Router();
 const ADMIN_FIELDS = 'firstName lastName email';
@@ -11,7 +11,6 @@ const sanitizeSlidePayload = (body = {}) => {
   const placement = normalizePlacement(body.placement);
   const parsedSortOrder = Number.parseInt(body.sortOrder, 10);
   const actionType = String(body.actionType || 'none').trim().toLowerCase();
-  const validActionTypes = ['none', 'restaurant', 'pharmacy', 'category', 'product', 'external'];
 
   return {
     placement,
@@ -19,7 +18,7 @@ const sanitizeSlidePayload = (body = {}) => {
     subtitle: String(body.subtitle || '').trim(),
     imageUrl: String(body.imageUrl || '').trim(),
     linkUrl: String(body.linkUrl || '').trim(),
-    actionType: validActionTypes.includes(actionType) ? actionType : 'none',
+    actionType: VALID_CAROUSEL_ACTIONS.includes(actionType) ? actionType : 'none',
     actionValue: String(body.actionValue || '').trim(),
     sortOrder: Number.isFinite(parsedSortOrder) ? parsedSortOrder : 0,
     isActive:

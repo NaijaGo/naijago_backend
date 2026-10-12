@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 
 const VALID_CAROUSEL_PLACEMENTS = ['main', 'promo'];
+const VALID_CAROUSEL_ACTIONS = ['none', 'restaurant', 'pharmacy', 'category', 'product', 'external', 'deals'];
 
 const CarouselSlideSchema = new mongoose.Schema(
   {
@@ -32,7 +33,7 @@ const CarouselSlideSchema = new mongoose.Schema(
     },
     actionType: {
       type: String,
-      enum: ['none', 'restaurant', 'pharmacy', 'category', 'product', 'external'],
+      enum: VALID_CAROUSEL_ACTIONS,
       default: 'none',
     },
     actionValue: {
@@ -72,4 +73,5 @@ const CarouselSlide = mongoose.model('CarouselSlide', CarouselSlideSchema);
 module.exports = {
   CarouselSlide,
   VALID_CAROUSEL_PLACEMENTS,
+  VALID_CAROUSEL_ACTIONS,
 };
