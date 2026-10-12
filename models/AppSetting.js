@@ -345,6 +345,18 @@ const AppSettingSchema = new mongoose.Schema(
         default: 5700,
       },
     },
+    costLowCommissionRevision: { type: Number, min: 0, default: undefined },
+    costLowCommissionHistory: {
+      type: [new mongoose.Schema({
+        vendorId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+        previousKoboPerUnit: { type: Number, min: 0, required: true },
+        newKoboPerUnit: { type: Number, min: 0, required: true },
+        changedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+        changedAt: { type: Date, required: true },
+        reason: { type: String, required: true, maxlength: 500 },
+      }, { _id: false })],
+      default: undefined,
+    },
     operationsMonitor: {
       type: new mongoose.Schema({
         visitorTrackingEnabled: { type: Boolean, default: false },

@@ -50,7 +50,7 @@ function buildPayload(settings) {
                 subcategoryCount: parent.children.length };
         }),
         history: settings?.vendorCommissionHistory || [],
-        scope: 'New vendor order calculations only. Saved orders retain their commission amounts. Admin-owned sales and Cost Low fixed-per-unit commissions are unchanged.',
+        scope: 'New vendor order calculations only. Saved orders retain their commission amounts. Admin-owned sales are unchanged. Low Cost World uses the separate fixed fee per item shown above.',
     };
 }
 function validateChanges(body) {
