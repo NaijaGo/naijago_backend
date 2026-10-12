@@ -1,3 +1,4 @@
+const { buildCategorySelectionFilter } = require('../utils/productFilters');
 const mongoose = require('mongoose');
 const Product = require('../models/Product');
 const ProductOffer = require('../models/ProductOffer');
@@ -74,6 +75,9 @@ function parseCatalogSearchRequest(query = {}) {
     page,
     limit,
     category: typeof query.category === 'string' ? query.category.trim().slice(0, MAX_QUERY_LENGTH) : '',
+    categoryId: query.categoryId,
+    subcategoryId: query.subcategoryId,
+    subcategory: typeof query.subcategory === 'string' ? query.subcategory.trim().slice(0, MAX_QUERY_LENGTH) : '',
     productType: typeof query.productType === 'string' && query.productType !== 'all'
       ? query.productType.trim().slice(0, MAX_QUERY_LENGTH)
       : '',
@@ -153,7 +157,8 @@ async function searchCatalog(input, {
     and.push({ $or: searchOr });
   }
   if (vendor) and.push({ $or: [{ vendor: vendorObjectId }, { sellerId: vendorObjectId }, { 'matchingVendorOffers.0': { $exists: true } }] });
-  const categoryFilter = buildCategoryFilter(category);
+  const categoryFilter = input.categoryId !== undefined || input.subcategoryId !== undefined || input.subcategory
+    ? buildCategorySelectionFilter(input) : buildCategoryFilter(category);
   if (categoryFilter) and.push(categoryFilter);
   const typeFilter = buildCategoryFilter(productType);
   if (typeFilter) and.push(typeFilter);

@@ -1,15 +1,9 @@
 const escapeRegex = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 // Match equivalent storefront labels without rewriting a product's saved category.
-const CATEGORY_PARENT_ALIASES = [
-  ['Cosmetics & Beauty', 'Health & Beauty', 'Supermarket Health & Beauty'],
-  ['Groceries', 'Supermarket'],
-];
-
-const CATEGORY_CHILD_ALIASES = {
-  fashion: [["Men's Fashion", 'Men']],
-  'phones & tablets': [['Mobile Phone Accessories', 'Accessories']],
-};
+const { manifest, resolveIds, resolveLabels, CategoryInputError } = require('../services/catalogTaxonomyService');
+const CATEGORY_PARENT_ALIASES = manifest.parentAliases;
+const CATEGORY_CHILD_ALIASES = manifest.childAliases;
 
 const categoryChildPattern = (parent, children) => {
   const groups = CATEGORY_CHILD_ALIASES[String(parent).toLowerCase()] || [];
@@ -34,9 +28,9 @@ const buildHierarchicalCategoryFilter = (category) => {
   if (!normalized) return {};
   if (normalized.toLowerCase() === 'restaurant') {
     return {
-      category: {
+      $or: [{ category: {
         $regex: /^(restaurant($|\s*>\s*)|.*\b(meal|fast food|local dishes|pastries|drinks|catering)\b.*)/i,
-      },
+      } }, { subcategory: { $regex: /(^restaurant$|\b(meal|fast food|local dishes|pastries|drinks|catering)\b)/i } }],
     };
   }
   return {
@@ -66,6 +60,34 @@ const buildCategoryFilter = (category, { includeStandaloneSubcategory = false } 
   };
 };
 
+// ID browsing must also find products that have never been backfilled.
+function buildCategorySelectionFilter(query = {}) {
+  const hasIds = query.categoryId !== undefined || query.subcategoryId !== undefined;
+  if (!hasIds) {
+    if (!query.category) return query.subcategory
+      ? { subcategory: { $regex: new RegExp('^' + escapeRegex(String(query.subcategory).trim()) + '$', 'i') } } : null;
+    if (!query.subcategory) return buildCategoryFilter(query.category);
+    const parentText = String(query.category).split('>')[0].trim();
+    if (resolveLabels(parentText) && !resolveLabels(query.category, query.subcategory)) throw new CategoryInputError('Category filters conflict.');
+    const path = String(query.category).includes('>') ? query.category : query.category + ' > ' + query.subcategory;
+    return buildCategoryFilter(path);
+  }
+  let { parent, child } = resolveIds(query.categoryId, query.subcategoryId);
+  if (query.category || query.subcategory) {
+    const labels = resolveLabels(query.category || parent.label, query.subcategory);
+    if (!labels || labels.parent.id !== parent.id || (labels.child && child && labels.child.id !== child.id)) throw new CategoryInputError('Category filters conflict.');
+    // A label child can narrow a parent-ID query, but never broaden it.
+    if (labels.child) child = labels.child;
+  }
+  const path = child ? parent.label + ' > ' + child.label : parent.label;
+  const reference = child ? { categoryId: parent.id, subcategoryId: child.id } : { categoryId: parent.id };
+  const labels = buildCategoryFilter(path);
+  // A stale reference must not place an unrelated product in this category.
+  // Every reference match also needs compatible legacy text; label matching
+  // continues to find unreferenced and safely retained legacy products.
+  return { $or: [{ $and: [reference, labels] }, labels] };
+}
+
 const buildPriceFilter = (minPrice, maxPrice) => {
   const minimum = minPrice === undefined || minPrice === '' ? null : Number(minPrice);
   const maximum = maxPrice === undefined || maxPrice === '' ? null : Number(maxPrice);
@@ -92,4 +114,4 @@ const buildEffectivePriceExpression = (minPrice, maxPrice) => {
   return conditions.length === 1 ? conditions[0] : { $and: conditions };
 };
 
-module.exports = { buildCategoryFilter, buildHierarchicalCategoryFilter, buildPriceFilter, buildEffectivePriceExpression, escapeRegex };
+module.exports = { buildCategorySelectionFilter, buildCategoryFilter, buildHierarchicalCategoryFilter, buildPriceFilter, buildEffectivePriceExpression, escapeRegex };

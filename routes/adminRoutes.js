@@ -7,6 +7,9 @@ const Dispute = require('../models/DisputeRequest'); // Import the Dispute model
 const Rider = require('../models/Rider');
 const Product = require('../models/Product');
 const ProductOffer = require('../models/ProductOffer');
+const { assertReferences, resolveLabels } = require('../services/catalogTaxonomyService');
+const { isMedicineProduct, isRestaurantCategory } = require('../utils/categoryPolicy');
+const { isApprovedVendor, isApprovedPharmacistVendor } = require('../utils/productPermissions');
 const cloudinary = require('../utils/cloudinary');
 const MainOrder = require('../models/MainOrder');
 const Shipment = require('../models/Shipment');
@@ -1237,6 +1240,26 @@ router.put('/product-moderation/:productId', protect, authorizeAdmin, async (req
         const product = await Product.findById(req.params.productId);
         if (!product) {
             return res.status(404).json({ message: 'Product not found.' });
+        }
+
+        if (status === 'approved') {
+            // Approval is explicit, but conflicting classification evidence
+            // still needs a deliberate category correction before publication.
+            try { assertReferences(product); } catch (_) {
+                return res.status(400).json({ code: 'CATEGORY_REVIEW_REQUIRED', message: 'Resolve conflicting category references before approving this listing.' });
+            }
+            if (resolveLabels(String(product.category).split('>')[0]) && !resolveLabels(product.category, product.subcategory)) {
+                return res.status(400).json({ code: 'CATEGORY_REVIEW_REQUIRED', message: 'Resolve conflicting category labels before approving this listing.' });
+            }
+            if (isRestaurantCategory(product) && !String(product.restaurantName || '').trim()) {
+                return res.status(400).json({ message: 'Restaurant name is required for food listings.' });
+            }
+            if (product.sellerType === 'vendor' || product.sellerId || product.vendor) {
+                const seller = await User.findById(product.sellerId || product.vendor);
+                if (!isApprovedVendor(seller) || (isMedicineProduct(product) && !isApprovedPharmacistVendor(seller))) {
+                    return res.status(400).json({ message: isMedicineProduct(product) ? 'An approved pharmacist vendor is required.' : 'An approved vendor is required.' });
+                }
+            }
         }
 
         product.moderationStatus = status;

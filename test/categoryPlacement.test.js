@@ -4,8 +4,9 @@ const express = require('express');
 const Product = require('../models/Product');
 const ProductOffer = require('../models/ProductOffer');
 const Shipment = require('../models/Shipment');
-const { buildCategoryFilter, buildHierarchicalCategoryFilter } = require('../utils/productFilters');
+const { buildCategoryFilter, buildHierarchicalCategoryFilter, buildCategorySelectionFilter } = require('../utils/productFilters');
 const catalog = require('../services/catalogSearchService');
+const { resolveLabels } = require('../services/catalogTaxonomyService');
 
 // Fixture-only route checks: no production DB, email, uploads, payments or credentials.
 // Auth behavior is covered separately; this fixture grants a local admin for GET-only checks.
@@ -117,6 +118,19 @@ test('searching shirt in pharmacy cannot replace its category condition', async 
   assert.equal(result.total, '0');
 });
 
+test('stable IDs include unmigrated combined paths and split fields', async t => {
+  const get = await routeFixture(t);
+  const { parent, child } = resolveLabels('Cosmetics & Beauty > Medicine');
+  for (const query of [
+    { categoryId: parent.id, subcategoryId: child.id },
+    { categoryId: parent.id, subcategory: 'Medicine' },
+    { categoryId: parent.id, subcategoryId: child.id, category: 'Health & Beauty', subcategory: 'Medicine' },
+  ]) {
+    const result = await get('', query);
+    assert.deepEqual(result.body.map(row => row._id), ['medicine', 'canonical', 'split']);
+  }
+});
+
 test('matching searches inside pharmacy preserve the selected category', async t => {
   const get = await routeFixture(t);
   const result = await get('', { category: 'Cosmetics & Beauty > Medicine', query: 'fixture' });
@@ -158,4 +172,33 @@ test('legacy combined beauty label matches only its selected beauty branch', () 
   const row = { category: 'Supermarket Health & Beauty > Skin Care & Cosmetics> Others' };
   assert.equal(matches(row, buildCategoryFilter('Cosmetics & Beauty > Skin Care & Cosmetics')), true);
   assert.equal(matches(row, buildCategoryFilter('Cosmetics & Beauty > Medicine')), false);
+});
+
+test('actual separate parent/child browsing includes old combined paths and split storage', async t => {
+  const get = await routeFixture(t);
+  const result = await get('', { category: 'Health & Beauty', subcategory: 'Medicine' });
+  assert.deepEqual(result.body.map(row => row._id), ['medicine', 'canonical', 'split']);
+});
+test('actual ID browsing never includes an unrelated product with stale matching references', async t => {
+  const medicine = resolveLabels('Cosmetics & Beauty', 'Medicine');
+  rows.push({ _id: 'stale-shirt', name: 'shirt', category: 'Fashion', subcategory: 'Footwear',
+    categoryId: medicine.parent.id, subcategoryId: medicine.child.id, isActive: true });
+  t.after(() => rows.pop());
+  const get = await routeFixture(t);
+  const result = await get('', { categoryId: medicine.parent.id, subcategoryId: medicine.child.id });
+  assert.deepEqual(result.body.map(row => row._id), ['medicine', 'canonical', 'split']);
+});
+test('duplicate child identities cannot leak between parents through stale references', () => {
+  const baby = resolveLabels('Baby Products', 'Educational Toys');
+  const toys = resolveLabels('Toys & Games', 'Educational Toys');
+  assert.notEqual(baby.child.id, toys.child.id);
+  const filter = buildCategorySelectionFilter({ categoryId: baby.parent.id, subcategoryId: baby.child.id });
+  assert.equal(matches({ category: 'Toys & Games', subcategory: 'Educational Toys',
+    categoryId: baby.parent.id, subcategoryId: baby.child.id }, filter), false);
+  assert.equal(matches({ category: 'Baby Products', subcategory: 'Educational Toys' }, filter), true);
+});
+test('restaurant filtering evaluates split food evidence without classifying equipment alone as food', () => {
+  const filter = buildCategorySelectionFilter({ category: 'Restaurant' });
+  assert.equal(matches({ category: 'Food & Beverage', subcategory: 'Catering Supplies' }, filter), true);
+  assert.equal(matches({ category: 'Food & Beverage', subcategory: 'Restaurant Equipment' }, filter), false);
 });

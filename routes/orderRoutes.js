@@ -1,3 +1,4 @@
+const { isMedicineProduct, isRestrictedMedicine, isRestaurantCategory: isRestaurantProduct, productPurchaseError } = require('../utils/categoryPolicy');
 const { validateCheckoutLocation, normalizeCheckoutAddress } = require('../utils/checkoutLocation');
 const { validateCoordinates } = require('../utils/addressCoordinates');
 // routes/orderRoutes.js
@@ -793,37 +794,6 @@ function getCommissionRateForCategory(category) {
     return 0.08;
 }
 
-function isMedicineProduct(product = {}) {
-    const category = String(product.category || '').toLowerCase();
-    return category.includes('medicine') ||
-        category.includes('pharmacy') ||
-        category.includes('drug') ||
-        Boolean(product.medicineAccess);
-}
-
-function isRestrictedMedicine(product = {}) {
-    return isMedicineProduct(product) && (
-        product.medicineAccess === 'prescription' ||
-        product.medicineAccess === 'pharmacist_approval' ||
-        product.medicineAccess === 'restricted' ||
-        product.requiresPrescription === true ||
-        product.requiresPharmacistApproval === true
-    );
-}
-
-function isRestaurantProduct(product = {}) {
-    const category = String(product.category || '').toLowerCase();
-    if (category.includes('restaurant equipment')) return false;
-    return category === 'restaurant' ||
-        category.startsWith('restaurant >') ||
-        category.includes('meal') ||
-        category.includes('fast food') ||
-        category.includes('local dishes') ||
-        category.includes('pastries') ||
-        category.includes('drinks') ||
-        category.includes('catering');
-}
-
 function minutesFromTime(value, fallback) {
     const source = typeof value === 'string' && /^\d{2}:\d{2}$/.test(value)
         ? value
@@ -1172,7 +1142,7 @@ const calculateOrderSummary = async (req, res) => {
             const product = await Product.findById(item.product)
                 .populate(
                     'vendor',
-                    'businessName businessLocation phoneNumber businessSupportPhone pickupEnabled pickupSettings',
+                    'businessName businessLocation phoneNumber businessSupportPhone pickupEnabled pickupSettings isVendor vendorStatus role pharmacistStatus operatingHours isTemporarilyClosed temporaryClosureReason deliveryRadiusKm',
                 );
             
             if (!product) {
@@ -1193,9 +1163,12 @@ const calculateOrderSummary = async (req, res) => {
             
             const selectedOffer = item.offer
                 ? await ProductOffer.findOne({ _id: item.offer, product: product._id, status: 'active' })
-                    .populate('sellerId', 'businessName businessLocation phoneNumber businessSupportPhone pickupEnabled pickupSettings')
+                    .populate('sellerId', 'businessName businessLocation phoneNumber businessSupportPhone pickupEnabled pickupSettings isVendor vendorStatus role pharmacistStatus operatingHours isTemporarilyClosed temporaryClosureReason deliveryRadiusKm')
                 : await ProductOffer.findOne({ product: product._id, isPrimary: true, status: 'active' })
-                    .populate('sellerId', 'businessName businessLocation phoneNumber businessSupportPhone pickupEnabled pickupSettings');
+                    .populate('sellerId', 'businessName businessLocation phoneNumber businessSupportPhone pickupEnabled pickupSettings isVendor vendorStatus role pharmacistStatus operatingHours isTemporarilyClosed temporaryClosureReason deliveryRadiusKm');
+            const purchaseError = productPurchaseError(product, selectedOffer?.sellerType === 'naijago' ? null : selectedOffer?.sellerId || product.vendor,
+                selectedOffer?.sellerType || (product.vendor ? 'vendor' : product.sellerType));
+            if (purchaseError) return res.status(400).json({ code: 'PRODUCT_NOT_AVAILABLE', message: purchaseError });
             const sellerType = selectedOffer?.sellerType || (product.vendor ? 'vendor' : product.sellerType || 'naijago');
             const sellerId = selectedOffer?.sellerId?._id || selectedOffer?.sellerId || product.sellerId || product.vendor?._id || null;
             const sellerName = sellerType === 'naijago'
@@ -1215,6 +1188,12 @@ const calculateOrderSummary = async (req, res) => {
             const sellerVendor = sellerType === 'vendor'
                 ? selectedOffer?.sellerId || product.vendor
                 : null;
+            if (isRestaurantProduct(product)) {
+                const vendorHours = isWithinVendorOperatingHours(sellerVendor || {});
+                if (!vendorHours.open) return res.status(400).json({
+                    message: `${sellerName} is not accepting orders now. ${vendorHours.reason}`,
+                });
+            }
             const requestedSelection =
                 fulfillmentSelections[sellerKey] ||
                 fulfillmentSelections[String(sellerId || '')] ||
@@ -1677,7 +1656,7 @@ const createMainOrder = async (req, res) => {
 
             for (const item of summary.items) {
                 const product = await Product.findById(item.product)
-                    .populate('vendor', 'businessName businessLocation operatingHours isTemporarilyClosed temporaryClosureReason deliveryRadiusKm prepTimeMinutes')
+                    .populate('vendor', 'businessName businessLocation operatingHours isTemporarilyClosed temporaryClosureReason deliveryRadiusKm prepTimeMinutes isVendor vendorStatus role pharmacistStatus')
                     .session(session);
                 if (!product) {
                     await session.abortTransaction();
@@ -1686,11 +1665,17 @@ const createMainOrder = async (req, res) => {
                 }
                 const selectedOffer = item.offer
                     ? await ProductOffer.findOne({ _id: item.offer, product: product._id, status: 'active' })
-                        .populate('sellerId', 'businessName businessLocation phoneNumber businessSupportPhone pickupEnabled pickupSettings')
+                        .populate('sellerId', 'businessName businessLocation phoneNumber businessSupportPhone pickupEnabled pickupSettings isVendor vendorStatus role pharmacistStatus operatingHours isTemporarilyClosed temporaryClosureReason deliveryRadiusKm')
                         .session(session)
                     : await ProductOffer.findOne({ product: product._id, isPrimary: true, status: 'active' })
-                        .populate('sellerId', 'businessName businessLocation phoneNumber businessSupportPhone pickupEnabled pickupSettings')
+                        .populate('sellerId', 'businessName businessLocation phoneNumber businessSupportPhone pickupEnabled pickupSettings isVendor vendorStatus role pharmacistStatus operatingHours isTemporarilyClosed temporaryClosureReason deliveryRadiusKm')
                         .session(session);
+                const purchaseError = productPurchaseError(product, selectedOffer?.sellerType === 'naijago' ? null : selectedOffer?.sellerId || product.vendor,
+                    selectedOffer?.sellerType || (product.vendor ? 'vendor' : product.sellerType));
+                if (purchaseError) {
+                    await session.abortTransaction(); session.endSession();
+                    return res.status(400).json({ code: 'PRODUCT_NOT_AVAILABLE', message: purchaseError });
+                }
                 const availableStock = inventory.getAvailableQuantity(selectedOffer || product);
                 if (availableStock < item.quantity) {
                     await session.abortTransaction();
@@ -1712,7 +1697,8 @@ const createMainOrder = async (req, res) => {
                     });
                 }
                 if (isRestaurantProduct(product)) {
-                    const vendorHours = isWithinVendorOperatingHours(product.vendor || {});
+                    const foodSeller = selectedOffer?.sellerType === 'naijago' ? null : selectedOffer?.sellerId || product.vendor;
+                    const vendorHours = isWithinVendorOperatingHours(foodSeller || {});
                     if (!vendorHours.open) {
                         await session.abortTransaction();
                         session.endSession();

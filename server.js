@@ -77,6 +77,7 @@ app.use('/api/vendor', require('./routes/vendorRoutes'));
 app.use('/api/pharmacist', require('./routes/pharmacistRoutes'));
 app.use('/api/admin', require('./routes/adminRoutes'));
 app.use('/api/admin', require('./routes/adminCarouselRoutes'));
+app.use('/api/categories', require('./routes/categoryRoutes'));
 app.use('/api/products', require('./routes/productRoutes'));
 const dealRoutes = require('./routes/dealRoutes');
 app.use('/api/deals', dealRoutes.router);

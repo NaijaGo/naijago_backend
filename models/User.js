@@ -77,7 +77,7 @@ const UserSchema = new mongoose.Schema({
   },
   vendorStatus: {
     type: String,
-    enum: ['none', 'sent', 'received', 'reviewing', 'approved', 'rejected'],
+    enum: ['none', 'sent', 'received', 'reviewing', 'approved', 'rejected', 'suspended'],
     default: 'none',
   },
   vendorRequestDate: {

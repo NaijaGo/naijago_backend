@@ -1,7 +1,14 @@
+const mongoose = require('mongoose');
+const Category = require('../models/Category');
+const taxonomy = require('../services/catalogTaxonomyService');
+const { isMedicineCategory, isMedicineProduct, isRestaurantCategory, requiresProductModeration,
+    preservesCategoryRestrictions } = require('../utils/categoryPolicy');
+const { isCatalogAdmin, isApprovedVendor, isApprovedPharmacistVendor } = require('../utils/productPermissions');
 // routes/productRoutes.js
 
 const express = require('express');
 const router = express.Router();
+router.use('/image-analysis', require('./productImageAnalysisRoutes').createRouter());
 const Product = require('../models/Product');
 const ProductOffer = require('../models/ProductOffer');
 const inventory = require('../services/inventoryService');
@@ -16,6 +23,7 @@ const cloudinary = require('../utils/cloudinary');
 const path = require('path');
 const {
     buildCategoryFilter,
+    buildCategorySelectionFilter,
     buildEffectivePriceExpression,
 } = require('../utils/productFilters');
 const {
@@ -146,29 +154,6 @@ const parsePagination = (query, defaults = {}) => {
     const limit = Math.min(Math.max(requestedLimit, 1), maxLimit);
     return { page, limit, skip: (page - 1) * limit };
 };
-
-const isMedicineCategory = (category = '') => {
-    const normalized = String(category).toLowerCase();
-    return normalized.includes('medicine') ||
-        normalized.includes('pharmacy') ||
-        normalized.includes('drug');
-};
-
-const isRestaurantCategory = (category = '') => {
-    const normalized = String(category).toLowerCase();
-    if (normalized.includes('restaurant equipment')) return false;
-    return normalized === 'restaurant' ||
-        normalized.startsWith('restaurant >') ||
-        normalized.includes('meal') ||
-        normalized.includes('fast food') ||
-        normalized.includes('local dishes') ||
-        normalized.includes('pastries') ||
-        normalized.includes('drinks') ||
-        normalized.includes('catering');
-};
-
-const requiresProductModeration = (category = '') =>
-    isRestaurantCategory(category) || isMedicineCategory(category);
 
 const toBoolean = (value) => value === true || value === 'true' || value === '1';
 
@@ -376,7 +361,7 @@ router.post(
     async (req, res) => {
         console.log('POST /api/products hit');
 
-        const { 
+        let {
             name, 
             description, 
             price, 
@@ -409,6 +394,11 @@ router.post(
             size_data // NEW: Size data from Flutter
         } = req.body;
 
+        let categoryFields;
+        try {
+            categoryFields = taxonomy.prepareProductCategory(req.body, {}, { referencesReady: await taxonomy.databaseReadiness({ Category, connection: mongoose.connection }) });
+            category = categoryFields.category; subcategory = categoryFields.subcategory;
+        } catch (error) { return res.status(error.statusCode || 400).json({ code: error.code, message: error.message }); }
         if (!name || !description || price === undefined || !category || stockQuantity === undefined) {
             return res.status(400).json({
                 message:
@@ -417,24 +407,38 @@ router.post(
         }
 
         try {
-            const isAdmin = req.user.role === 'admin';
+            const isAdmin = isCatalogAdmin(req.user);
             const vendor = isAdmin ? null : await User.findById(req.user._id);
-            if (!isAdmin && (!vendor || !vendor.isVendor || vendor.vendorStatus !== 'approved')) {
+            if (!isAdmin && !isApprovedVendor(vendor)) {
                 return res.status(403).json({
                     message: 'Only approved vendors can add products.',
                 });
             }
 
-            if (!isAdmin && isMedicineCategory(category) && vendor.role !== 'pharmacist') {
+            const classification = { ...categoryFields, medicineAccess,
+                requiresPrescription: toBoolean(requiresPrescription), requiresPharmacistApproval: toBoolean(requiresPharmacistApproval) };
+            const medicineListing = isMedicineProduct(classification);
+            if (!isAdmin && medicineListing && !isApprovedPharmacistVendor(vendor)) {
                 return res.status(403).json({
                     message: 'Medicine listings are only available to approved pharmacist vendors.',
                 });
             }
 
-            if (isRestaurantCategory(category) && !restaurantName) {
+            if (isRestaurantCategory(classification) && !String(restaurantName || '').trim()) {
                 return res.status(400).json({
                     message: 'Restaurant name is required for food listings.',
                 });
+            }
+            const requestedSellerType = isAdmin && sellerType === 'vendor' ? 'vendor' : isAdmin ? 'naijago' : 'vendor';
+            const requestedSellerId = requestedSellerType === 'vendor' ? (isAdmin ? sellerId : req.user._id) : null;
+            if (requestedSellerType === 'vendor' && !requestedSellerId) {
+                return res.status(400).json({ message: 'A seller is required for vendor products.' });
+            }
+            if (isAdmin && requestedSellerType === 'vendor') {
+                const seller = await User.findById(requestedSellerId);
+                if (!isApprovedVendor(seller) || (medicineListing && !isApprovedPharmacistVendor(seller))) {
+                    return res.status(400).json({ message: medicineListing ? 'Select an approved pharmacist vendor.' : 'Select an approved vendor.' });
+                }
             }
 
             // -----------------------------------------------------
@@ -512,24 +516,7 @@ router.post(
                 }
             }
 
-            const requiresModeration = requiresProductModeration(category);
-            const requestedSellerType = isAdmin && sellerType === 'vendor' ? 'vendor' : isAdmin ? 'naijago' : 'vendor';
-            const requestedSellerId = requestedSellerType === 'vendor'
-                ? (isAdmin ? sellerId : req.user._id)
-                : null;
-            if (requestedSellerType === 'vendor' && !requestedSellerId) {
-                return res.status(400).json({ message: 'A seller is required for vendor products.' });
-            }
-            if (isAdmin && requestedSellerType === 'vendor') {
-                const approvedSeller = await User.exists({
-                    _id: requestedSellerId,
-                    isVendor: true,
-                    vendorStatus: 'approved',
-                });
-                if (!approvedSeller) {
-                    return res.status(400).json({ message: 'Select an approved vendor.' });
-                }
-            }
+            const requiresModeration = requiresProductModeration(classification);
             const parseJsonField = (value, fallback) => {
                 if (value == null || value === '') return fallback;
                 if (typeof value !== 'string') return value;
@@ -557,6 +544,8 @@ router.post(
                 discountPrice: discountPrice === undefined || discountPrice === '' ? null : Number(discountPrice),
                 category,
                 subcategory: subcategory || '',
+                categoryId: categoryFields.categoryId,
+                subcategoryId: categoryFields.subcategoryId,
                 searchTags: parsedTags,
                 sku: resolvedSku,
                 gtin,
@@ -582,29 +571,29 @@ router.post(
                 provenance: isAdmin ? parseJsonField(provenance, {}) : {},
                 isActive: requestedStatus === 'active' && (!requiresModeration || isAdmin),
                 moderationStatus: requiresModeration && !isAdmin ? 'pending' : 'approved',
-                restaurantName: isRestaurantCategory(category) ? String(restaurantName).trim() : undefined,
-                foodInformation: isRestaurantCategory(category)
+                restaurantName: isRestaurantCategory(category, subcategory) ? String(restaurantName).trim() : undefined,
+                foodInformation: isRestaurantCategory(category, subcategory)
                     ? String(foodInformation || description).trim()
                     : undefined,
-                foodCategory: isRestaurantCategory(category)
+                foodCategory: isRestaurantCategory(category, subcategory)
                     ? normalizeFoodCategory(foodCategory || req.body.foodType || req.body.subcategory, category)
                     : undefined,
-                orderStartTime: isRestaurantCategory(category)
+                orderStartTime: isRestaurantCategory(category, subcategory)
                     ? normalizeTime(orderStartTime, '09:00')
                     : undefined,
-                orderEndTime: isRestaurantCategory(category)
+                orderEndTime: isRestaurantCategory(category, subcategory)
                     ? normalizeTime(orderEndTime, '19:00')
                     : undefined,
-                medicineAccess: isMedicineCategory(category)
+                medicineAccess: medicineListing
                     ? (medicineAccess || (toBoolean(isOverTheCounter) ? 'over_the_counter' : 'pharmacist_approval'))
                     : undefined,
-                isOverTheCounter: isMedicineCategory(category)
+                isOverTheCounter: medicineListing
                     ? toBoolean(isOverTheCounter)
                     : false,
-                requiresPrescription: isMedicineCategory(category)
+                requiresPrescription: medicineListing
                     ? toBoolean(requiresPrescription)
                     : false,
-                requiresPharmacistApproval: isMedicineCategory(category)
+                requiresPharmacistApproval: medicineListing
                     ? toBoolean(requiresPharmacistApproval)
                     : false,
             });
@@ -673,13 +662,14 @@ router.patch(
                 await session.abortTransaction();
                 return res.status(400).json({ message: 'sellerId is required for vendor ownership.' });
             }
+            let nextSeller = null;
             if (nextSellerId) {
-                const seller = await User.findOne({
+                nextSeller = await User.findOne({
                     _id: nextSellerId,
                     isVendor: true,
                     vendorStatus: 'approved',
                 }).session(session);
-                if (!seller) {
+                if (!nextSeller) {
                     await session.abortTransaction();
                     return res.status(400).json({ message: 'Select an approved vendor.' });
                 }
@@ -689,6 +679,10 @@ router.patch(
             if (!product) {
                 await session.abortTransaction();
                 return res.status(404).json({ message: 'Product not found.' });
+            }
+            if (nextSeller && isMedicineProduct(product) && !isApprovedPharmacistVendor(nextSeller)) {
+                await session.abortTransaction();
+                return res.status(400).json({ message: 'Select an approved pharmacist vendor for medicine.' });
             }
             await inventory.assertNoHolds([product._id], session);
             const previousRevision = product.inventoryRevision ?? 0;
@@ -839,7 +833,7 @@ router.put(
                 return res.status(404).json({ message: 'Product not found.' });
             }
 
-            const isAdmin = req.user.role === 'admin';
+            const isAdmin = isCatalogAdmin(req.user);
             if (!isAdmin && String(product.sellerId || product.vendor || '') !== req.user._id.toString()) {
                 return res.status(401).json({
                     message: 'Not authorized to update this product.',
@@ -855,14 +849,37 @@ router.put(
             }
 
             const vendor = await User.findById(req.user._id);
-            const nextCategory = category || product.category;
-            if (!isAdmin && isMedicineCategory(nextCategory) && vendor?.role !== 'pharmacist') {
+            if (!isAdmin && !isApprovedVendor(vendor)) {
+                return res.status(403).json({ message: 'Only approved vendors can update products.' });
+            }
+            const previousClassification = product.toObject();
+            const categoryFields = taxonomy.prepareProductCategory(req.body, product, { referencesReady: await taxonomy.databaseReadiness({ Category, connection: mongoose.connection }) });
+            const nextClassification = { ...previousClassification, ...categoryFields,
+                medicineAccess: medicineAccess === undefined ? product.medicineAccess : medicineAccess,
+                requiresPrescription: requiresPrescription === undefined ? product.requiresPrescription : toBoolean(requiresPrescription),
+                requiresPharmacistApproval: requiresPharmacistApproval === undefined ? product.requiresPharmacistApproval : toBoolean(requiresPharmacistApproval),
+            };
+            if (!isAdmin && (isMedicineProduct(previousClassification) || isMedicineProduct(nextClassification)) && !isApprovedPharmacistVendor(vendor)) {
                 return res.status(403).json({
                     message: 'Medicine listings are only available to approved pharmacist vendors.',
                 });
             }
 
-            if (isRestaurantCategory(nextCategory) && restaurantName !== undefined && !restaurantName) {
+            if (!isAdmin && !preservesCategoryRestrictions(previousClassification, nextClassification)) {
+                return res.status(400).json({ code: 'CATEGORY_REVIEW_REQUIRED',
+                    message: 'An administrator must review removal of an existing medicine or food classification.' });
+            }
+            if (isAdmin && isMedicineProduct(nextClassification) &&
+                (product.sellerType === 'vendor' || product.sellerId || product.vendor)) {
+                const seller = await User.findById(product.sellerId || product.vendor);
+                if (!isApprovedPharmacistVendor(seller)) return res.status(400).json({
+                    message: 'Select an approved pharmacist vendor before publishing medicine.',
+                });
+            }
+            const effectiveRestaurantName = restaurantName === undefined ? product.restaurantName : restaurantName;
+            if (isRestaurantCategory(nextClassification) &&
+                (restaurantName !== undefined || !isRestaurantCategory(previousClassification)) &&
+                !String(effectiveRestaurantName || '').trim()) {
                 return res.status(400).json({
                     message: 'Restaurant name is required for food listings.',
                 });
@@ -943,8 +960,7 @@ router.put(
             if (price !== undefined) product.price = Number(price);
             if (discountPrice !== undefined) product.discountPrice = discountPrice === '' ? null : Number(discountPrice);
             if (brand !== undefined) product.brand = String(brand).trim();
-            if (category !== undefined) product.category = String(category).trim();
-            if (subcategory !== undefined) product.subcategory = String(subcategory).trim();
+            Object.assign(product, categoryFields);
             if (sku !== undefined) product.sku = String(sku).trim();
             if (gtin !== undefined) product.gtin = String(gtin).trim();
             if (searchTags !== undefined) {
@@ -978,7 +994,7 @@ router.put(
             }
             if (is_flashsale !== undefined)
                 product.is_flashsale = is_flashsale === 'true';
-            if (requiresProductModeration(product.category)) {
+            if (requiresProductModeration(nextClassification)) {
                 product.isActive = false;
                 product.moderationStatus = 'pending';
                 product.moderationNote = '';
@@ -986,7 +1002,7 @@ router.put(
                 product.reviewedBy = null;
             }
 
-            if (isRestaurantCategory(product.category)) {
+            if (isRestaurantCategory(product)) {
                 if (restaurantName !== undefined) product.restaurantName = String(restaurantName).trim();
                 if (foodInformation !== undefined) product.foodInformation = String(foodInformation).trim();
                 if (foodCategory !== undefined || req.body.foodType !== undefined || req.body.subcategory !== undefined) {
@@ -1007,7 +1023,7 @@ router.put(
                 product.orderEndTime = undefined;
             }
 
-            if (isMedicineCategory(product.category)) {
+            if (isMedicineProduct(nextClassification)) {
                 if (medicineAccess !== undefined) product.medicineAccess = medicineAccess;
                 if (isOverTheCounter !== undefined) product.isOverTheCounter = toBoolean(isOverTheCounter);
                 if (requiresPrescription !== undefined) product.requiresPrescription = toBoolean(requiresPrescription);
@@ -1118,7 +1134,7 @@ router.get('/newarrivals', async (req, res) => {
             
         // Filter out food/restaurant items from new arrivals
         newArrivalsProducts = newArrivalsProducts
-            .filter(p => !isRestaurantCategory(p.category))
+            .filter(p => !isRestaurantCategory(p))
             .slice(0, 10);
         
         res.status(200).json(await attachPrimaryOffers(newArrivalsProducts));
@@ -1269,7 +1285,7 @@ router.get('/search', async (req, res) => {
     }
     return res.status(200).json(response);
   } catch (error) {
-    if (error instanceof SearchInputError) {
+    if (error instanceof SearchInputError || error instanceof taxonomy.CategoryInputError) {
       return res.status(400).json({ message: error.message });
     }
     console.error('Product search failed.');
@@ -1412,7 +1428,8 @@ router.get('/admin/catalog', protect, authorizeRoles('admin'), async (req, res) 
         const queryText = String(req.query.q || '').trim();
         if (req.query.status && req.query.status !== 'all') filter.productStatus = req.query.status;
         if (req.query.sellerType && req.query.sellerType !== 'all') filter.sellerType = req.query.sellerType;
-        if (req.query.category) filter.$and = [buildCategoryFilter(req.query.category)];
+        const categorySelection = buildCategorySelectionFilter(req.query);
+        if (categorySelection) filter.$and = [categorySelection];
         if (queryText) {
             const value = { $regex: escapeRegex(queryText), $options: 'i' };
             filter.$or = [
@@ -1446,7 +1463,7 @@ router.get('/admin/catalog', protect, authorizeRoles('admin'), async (req, res) 
         });
     } catch (error) {
         console.error('Admin catalogue fetch failed:', error);
-        res.status(500).json({ message: 'Unable to load the product catalogue.' });
+        res.status(error.statusCode || 500).json({ message: error.statusCode ? error.message : 'Unable to load the product catalogue.' });
     }
 });
 
@@ -1479,10 +1496,8 @@ router.get('/', async (req, res) => {
     const radiusKm = req.query.radiusKm !== undefined ? Number(req.query.radiusKm) : null;
     const filter = { isActive: true };
 
-    if (category) {
-      filter.$and = [buildCategoryFilter(category)];
-    }
-    if (subcategory) filter.subcategory = { $regex: `^${escapeRegex(subcategory)}$`, $options: 'i' };
+    const categorySelection = buildCategorySelectionFilter(req.query);
+    if (categorySelection) filter.$and = [categorySelection];
     if (brand) filter.brand = { $regex: `^${escapeRegex(brand)}$`, $options: 'i' };
 
     const effectivePriceExpression = buildEffectivePriceExpression(req.query.minPrice, req.query.maxPrice);
@@ -1566,7 +1581,7 @@ router.get('/', async (req, res) => {
     res.status(200).json(await attachPrimaryOffers(responseProducts));
   } catch (error) {
     console.error('Error fetching products:', error);
-    res.status(500).json({ message: 'Server error fetching products.' });
+    res.status(error.statusCode || 500).json({ message: error.statusCode ? error.message : 'Server error fetching products.' });
   }
 });
 
@@ -1612,8 +1627,32 @@ router.patch('/:id/archive', protect, async (req, res) => {
     try {
         const product = await Product.findById(req.params.id);
         if (!product) return res.status(404).json({ message: 'Product not found.' });
-        if (String(product.sellerId || product.vendor || '') !== req.user._id.toString() && req.user.role !== 'admin') {
+        if (String(product.sellerId || product.vendor || '') !== req.user._id.toString() && !isCatalogAdmin(req.user)) {
             return res.status(401).json({ message: 'Not authorized to archive this product.' });
+        }
+        if (!isCatalogAdmin(req.user) && !isApprovedVendor(await User.findById(req.user._id))) {
+            return res.status(403).json({ message: 'Only approved vendors can change product availability.' });
+        }
+        if (req.body.archived === false && !isCatalogAdmin(req.user) && requiresProductModeration(product)) {
+            product.moderationStatus = 'pending'; product.moderationNote = '';
+            product.reviewedAt = null; product.reviewedBy = null;
+        }
+        if (req.body.archived === false && isCatalogAdmin(req.user) && requiresProductModeration(product)) {
+            try { taxonomy.assertReferences(product); } catch (_) {
+                return res.status(400).json({ code: 'CATEGORY_REVIEW_REQUIRED', message: 'Resolve conflicting category references before restoring this listing.' });
+            }
+            if (taxonomy.resolveLabels(String(product.category).split('>')[0]) && !taxonomy.resolveLabels(product.category, product.subcategory)) {
+                return res.status(400).json({ code: 'CATEGORY_REVIEW_REQUIRED', message: 'Resolve conflicting category labels before restoring this listing.' });
+            }
+            if (isRestaurantCategory(product) && !String(product.restaurantName || '').trim()) {
+                return res.status(400).json({ message: 'Restaurant name is required for food listings.' });
+            }
+            if (product.sellerType === 'vendor' || product.sellerId || product.vendor) {
+                const seller = await User.findById(product.sellerId || product.vendor);
+                if (!isApprovedVendor(seller) || (isMedicineProduct(product) && !isApprovedPharmacistVendor(seller))) {
+                    return res.status(400).json({ message: 'An approved eligible vendor is required before restoring this listing.' });
+                }
+            }
         }
         product.productStatus = req.body.archived === false
             ? (product.stockQuantity > 0 ? 'active' : 'out_of_stock')
@@ -1646,11 +1685,15 @@ router.delete('/:id', protect, async (req, res) => {
 
         if (
             String(product.sellerId || product.vendor || '') !== req.user._id.toString() &&
-            req.user.role !== 'admin'
+            !isCatalogAdmin(req.user)
         ) {
             return res.status(401).json({
                 message: 'Not authorized to delete this product.',
             });
+        }
+
+        if (!isCatalogAdmin(req.user) && !isApprovedVendor(await User.findById(req.user._id))) {
+            return res.status(403).json({ message: 'Only approved vendors can delete products.' });
         }
 
         const hasOrders = await Shipment.exists({ 'items.product': product._id }).session(session);

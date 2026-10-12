@@ -411,10 +411,16 @@ function checkoutHarness(t) {
     buildPickupSequence: () => [], evaluateDispatchReadiness: () => ({ readyForDispatch: false }),
   };
   vm.createContext(sandbox);
-  for (const name of ['isMedicineProduct', 'isRestrictedMedicine', 'isRestaurantProduct', 'buildOrderItemFromProduct', 'calculateDistance']) {
+  for (const name of ['minutesFromTime', 'currentDayKey', 'isWithinRestaurantOrderWindow', 'isWithinVendorOperatingHours', 'isMedicineProduct', 'isRestrictedMedicine', 'isRestaurantProduct', 'productPurchaseError', 'buildOrderItemFromProduct', 'calculateDistance']) {
     const fn = source.match(new RegExp(`function ${name}\\([^\\n]*\\) \\{[\\s\\S]*?\\r?\\n\\}`));
-    assert.ok(fn, `Actual helper ${name} must exist`);
-    vm.runInContext(fn[0], sandbox);
+    if (fn) { vm.runInContext(fn[0], sandbox); } else {
+      assert.ok(source.includes("require('../utils/categoryPolicy')"), 'Checkout must import the shared category policy');
+      const policy = require('../utils/categoryPolicy');
+      const shared = { isMedicineProduct: policy.isMedicineProduct, isRestrictedMedicine: policy.isRestrictedMedicine,
+        isRestaurantProduct: policy.isRestaurantCategory, productPurchaseError: policy.productPurchaseError };
+      assert.equal(typeof shared[name], 'function', `Actual helper ${name} must exist`);
+      sandbox[name] = shared[name];
+    }
   }
   function handler(name) {
     const start = source.indexOf(`const ${name} = async (req, res) => {`);
@@ -439,6 +445,53 @@ function checkoutHarness(t) {
     summaryBody: { shippingAddress: address, userLocation: location,
       cartItems: [{ product: pid, offer: oid, quantity: 2, price: 1 }] } };
 }
+
+for (const values of [
+  { moderationStatus: 'pending' }, { moderationStatus: 'rejected' },
+  { productStatus: 'disabled' }, { isActive: false },
+  { category: 'Legacy', requiresPrescription: true, medicineAccess: 'otc' },
+  { category: 'Health & Beauty', subcategory: 'Medicine', requiresPharmacistApproval: true },
+  { category: 'Restaurant', subcategory: 'Restaurant Equipment', restaurantName: '' },
+  { category: 'Restaurant', subcategory: 'Meals', restaurantName: 'Fixture kitchen', orderStartTime: '25:00', orderEndTime: '25:01' },
+]) test(`actual checkout guards preserve restrictions ${JSON.stringify(values)}`, async t => {
+  const h = checkoutHarness(t); Object.assign(product, values);
+  users[0].role = 'pharmacist'; users[0].pharmacistStatus = 'approved';
+  for (const [handler, body] of [['calculateOrderSummary', h.summaryBody], ['createMainOrder', h.orderBody()]]) {
+    const result = await h.run(handler, body);
+    assert.equal(result.statusCode, 400, h.errors.join('\n'));
+  }
+  assert.equal(h.writes.length, 0); assert.ok(h.transitions.includes('abort'));
+});
+for (const seller of [
+  { vendorStatus: 'suspended' }, { vendorStatus: 'reviewing' },
+  { role: 'user' }, { role: 'pharmacist', pharmacistStatus: 'rejected' },
+]) test(`actual checkout rejects ineligible medicine seller ${JSON.stringify(seller)}`, async t => {
+  const h = checkoutHarness(t);
+  Object.assign(product, { category: 'Cosmetics & Beauty', subcategory: 'Medicine', medicineAccess: 'otc' });
+  Object.assign(users[0], seller);
+  for (const [handler, body] of [['calculateOrderSummary', h.summaryBody], ['createMainOrder', h.orderBody()]]) {
+    const result = await h.run(handler, body); assert.equal(result.statusCode, 400, h.errors.join('\n'));
+  }
+  assert.equal(h.writes.length, 0);
+});
+test('actual contradictory legacy food checkout retains temporary closure protection', async t => {
+  const h = checkoutHarness(t);
+  Object.assign(product, { category: 'Restaurant', subcategory: 'Restaurant Equipment', restaurantName: 'Fixture kitchen', orderStartTime: '00:00', orderEndTime: '00:00' });
+  users[0].isTemporarilyClosed = true;
+  for (const [handler, body] of [['calculateOrderSummary', h.summaryBody], ['createMainOrder', h.orderBody()]]) {
+    assert.equal((await h.run(handler, body)).statusCode, 400, h.errors.join('\n'));
+  }
+  assert.equal(h.writes.length, 0);
+});
+test('actual checkout rejects a missing populated vendor account before order writes', async t => {
+  const h = checkoutHarness(t); product.vendor = null; offer.sellerId = null;
+  for (const [handler, body] of [['calculateOrderSummary', h.summaryBody], ['createMainOrder', h.orderBody()]]) {
+    const result = await h.run(handler, body);
+    assert.equal(result.statusCode, 400, h.errors.join('\n'));
+    assert.equal(result.data.code, 'PRODUCT_NOT_AVAILABLE');
+  }
+  assert.equal(h.writes.length, 0);
+});
 test('actual summary handler: active Deal sets subtotal and server snapshot', async t => {
   records = [deal({ status: 'approved' })];
   const harness = checkoutHarness(t);

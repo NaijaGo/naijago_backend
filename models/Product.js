@@ -1,6 +1,7 @@
 // models/Product.js
 
 const mongoose = require('mongoose');
+const { assertReferences } = require('../services/catalogTaxonomyService');
 
 const productSchema = mongoose.Schema(
   {
@@ -25,6 +26,8 @@ const productSchema = mongoose.Schema(
       required: true,
     },
     subcategory: { type: String, trim: true, default: '', index: true },
+    categoryId: { type: mongoose.Schema.Types.ObjectId, ref: 'Category', default: null },
+    subcategoryId: { type: mongoose.Schema.Types.ObjectId, ref: 'Category', default: null },
     searchTags: [{ type: String, trim: true, lowercase: true }],
     sku: { type: String, trim: true, uppercase: true },
     gtin: { type: String, trim: true },
@@ -287,6 +290,7 @@ productSchema.set('toJSON', { virtuals: true });
 productSchema.set('toObject', { virtuals: true });
 
 productSchema.pre('validate', function normalizeSeller(next) {
+  try { assertReferences(this, { allowUnchangedLegacy: true }); } catch (error) { return next(error); }
   if (![this.stockQuantity, this.reservedStockQuantity ?? 0, this.inventoryRevision ?? 0]
     .every((value) => Number.isSafeInteger(value) && value >= 0)) {
     const error = new Error('Inventory quantities and revisions must be nonnegative safe integers.');

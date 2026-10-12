@@ -70,9 +70,15 @@ function harness({ legs = [5000], maximumDistanceKm = 10, count = 1, mode = 'roa
     const end = orderSource.indexOf('\n};', start);
     vm.runInContext(orderSource.slice(start, end + 3).replace(`const ${name}`, `var ${name}`), sandbox);
   }
-  for (const name of ['isMedicineProduct', 'isRestrictedMedicine', 'isRestaurantProduct', 'buildOrderItemFromProduct', 'calculateDistance']) {
+  for (const name of ['isMedicineProduct', 'isRestrictedMedicine', 'isRestaurantProduct', 'productPurchaseError', 'buildOrderItemFromProduct', 'calculateDistance']) {
     const fn = orderSource.match(new RegExp(`function ${name}\\([^\\n]*\\) \\{[\\s\\S]*?\\r?\\n\\}`));
-    assert.ok(fn); vm.runInContext(fn[0], sandbox);
+    if (fn) { vm.runInContext(fn[0], sandbox); } else {
+      assert.ok(orderSource.includes("require('../utils/categoryPolicy')"));
+      const policy = require('../utils/categoryPolicy');
+      const shared = { isMedicineProduct: policy.isMedicineProduct, isRestrictedMedicine: policy.isRestrictedMedicine,
+        isRestaurantProduct: policy.isRestaurantCategory, productPurchaseError: policy.productPurchaseError };
+      assert.equal(typeof shared[name], 'function'); sandbox[name] = shared[name];
+    }
   }
   sandbox.applyRoadPricingToSummaries = extract('applyRoadPricingToSummaries', sandbox);
   const summary = extract('calculateOrderSummary', sandbox);
