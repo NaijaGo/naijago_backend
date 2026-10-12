@@ -244,6 +244,27 @@ const AppSettingSchema = new mongoose.Schema(
       type: [ReferralRewardHistorySchema],
       default: [],
     },
+    vendorCommissionRates: {
+      type: [new mongoose.Schema({
+        categoryId: { type: String, required: true },
+        percentage: { type: Number, required: true, min: 0, max: 100 },
+      }, { _id: false })],
+      default: undefined,
+    },
+    commissionRevision: { type: Number, min: 0, default: undefined },
+    vendorCommissionHistory: {
+      type: [new mongoose.Schema({
+        changedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+        changedAt: { type: Date, required: true },
+        reason: { type: String, required: true, maxlength: 500 },
+        changes: { type: [new mongoose.Schema({
+          categoryId: { type: String, required: true }, label: { type: String, required: true },
+          previousPercentage: { type: Number, min: 0, max: 100, default: null },
+          newPercentage: { type: Number, min: 0, max: 100, default: null },
+        }, { _id: false })], required: true },
+      }, { _id: false })],
+      default: undefined,
+    },
     fallbackRatePerKm: {
       type: Number,
       min: 0,

@@ -15,6 +15,8 @@ const inventory = require('../services/inventoryService');
 const { inventorySaleBusinessKey } = require('../utils/orderInventoryIdentity');
 const { loadDealContext, resolveProductPrice } = require('../services/productPriceService');
 const AppSetting = require('../models/AppSetting');
+const { CATEGORY_COMMISSION_RATES } = require('../utils/vendorCommissionRates');
+const { getOverrides: getVendorCommissionOverrides, rateForProduct } = require('../services/vendorCommissionService');
 const User = require('../models/User');
 const Rider = require('../models/Rider');
 const CompanyDelivery = require('../models/CompanyDelivery');
@@ -162,7 +164,9 @@ const getCostLowCommissionConfig = async (session = null) => {
         .lean();
     if (session) query.session(session);
     const settings = await query;
+    const categoryOverrides = await getVendorCommissionOverrides(session);
     return {
+        categoryOverrides,
         vendorId: settings?.costLowStore?.vendorId
             ? String(settings.costLowStore.vendorId)
             : '',
@@ -179,6 +183,7 @@ const calculateItemCommission = ({
     itemSubtotal,
     quantity,
     category,
+    subcategory,
     costLowConfig,
 }) => {
     const isCostLow =
@@ -194,7 +199,8 @@ const calculateItemCommission = ({
             itemCommission: (commissionKoboPerUnit * quantity) / 100,
         };
     }
-    const commissionRate = getCommissionRateForCategory(category);
+    const commissionRate = rateForProduct(category, subcategory,
+        sellerType === 'vendor' ? costLowConfig.categoryOverrides : {});
     return {
         commissionType: 'percentage',
         commissionRate,
@@ -672,127 +678,6 @@ async function settleVerifiedPayment({ order, buyer, verifiedTx, app, session, m
 
 
 // Category-based commission rates (NaijaGo Final Structure)
-const CATEGORY_COMMISSION_RATES = {
-    // Core Marketplace
-    'Groceries': 0.05,
-    'Food & Beverage': 0.15,
-
-    'Phones & Tablets': 0.06,
-    'Computing': 0.06,
-    'Electronics': 0.06,
-    'Appliances': 0.06,
-
-    // Lifestyle & High Margin
-    'Fashion': 0.12,
-    'Jewelry & Watches': 0.12,
-    'Fragrances': 0.12,
-    'Health & Beauty': 0.06,
-    'Cosmetics & Beauty': 0.06,
-
-    // Home & Living
-    'Home & Kitchen': 0.07,
-    'Furniture': 0.08,
-    'Home Interior & Exterior': 0.08,
-    'Lighting': 0.08,
-
-    // Everyday & Business
-    'Office Products': 0.07,
-    'Automobile': 0.08,
-    'Agriculture': 0.05,
-
-    // Entertainment & Hobby
-    'Gaming': 0.10,
-    'Sporting Goods': 0.10,
-    'Toys & Games': 0.10,
-    'Music & Instruments': 0.08,
-    'Arts & Crafts': 0.10,
-    'Photography': 0.08,
-
-    // Services
-    'Travel & Tourism': 0.10,
-    'Events': 0.10,
-};
-
-// Helper function to get commission rate based on category
-// function getCommissionRateForCategory(category) {
-//     // Check each commission tier
-//     for (const [tier, data] of Object.entries(CATEGORY_COMMISSION_RATES)) {
-//         if (data.categories.includes(category)) {
-//             return data.rate;
-//         }
-//     }
-    
-//     // Default rate if category not found
-//     return 0.125; // 12.5% default
-// }
-
-function getCommissionRateForCategory(category) {
-    if (!category || typeof category !== 'string') return 0.08;
-
-    const normalizedCategory = category.trim();
-    const mainCategory = normalizedCategory.split('>')[0].trim();
-    const subCategory = normalizedCategory.includes('>')
-        ? normalizedCategory.split('>')[1].trim()
-        : '';
-
-    // THIS IS ONLY FOR FOOD (15% platform fee)
-    const lowerCat = normalizedCategory.toLowerCase();
-    if (!lowerCat.includes('restaurant equipment') && (
-        lowerCat === 'restaurant' ||
-        lowerCat.startsWith('restaurant >') ||
-        lowerCat.includes('meal') ||
-        lowerCat.includes('fast food') ||
-        lowerCat.includes('local dishes') ||
-        lowerCat.includes('pastries') ||
-        lowerCat.includes('drinks') ||
-        lowerCat.includes('catering') ||
-        mainCategory === 'Food & Beverage'
-    )) {
-        return 0.15;
-    }
-
-    // Exact match first
-    if (CATEGORY_COMMISSION_RATES[normalizedCategory]) {
-        return CATEGORY_COMMISSION_RATES[normalizedCategory];
-    }
-
-    // Main category match
-    if (CATEGORY_COMMISSION_RATES[mainCategory]) {
-        return CATEGORY_COMMISSION_RATES[mainCategory];
-    }
-
-    // Support old DB category names
-    const CATEGORY_ALIASES = {
-        'Home & Office': {
-            'Home & Kitchen': 0.07,
-            'Furniture': 0.08,
-            'Home Interior & Exterior': 0.08,
-            'Lighting': 0.08,
-            'Office Products': 0.07,
-            'Appliances': 0.06,
-        },
-        'Automobiles': 0.08,
-        'Automobile': 0.08,
-        'Health & Beauty': 0.06,
-        'Cosmetics & Beauty': 0.06,
-        'Fragrance': 0.12,
-        'Fragrances': 0.12,
-        'Groceries': 0.05,
-        'Animal Products': 0.05,
-    };
-
-    const alias = CATEGORY_ALIASES[mainCategory];
-
-    if (typeof alias === 'number') {
-        return alias;
-    }
-
-    if (alias && subCategory && alias[subCategory]) {
-        return alias[subCategory];
-    }
-
-    return 0.08;
-}
 
 function minutesFromTime(value, fallback) {
     const source = typeof value === 'string' && /^\d{2}:\d{2}$/.test(value)
@@ -1225,6 +1110,7 @@ const calculateOrderSummary = async (req, res) => {
                 itemSubtotal: itemPrice,
                 quantity: Number(item.quantity || 1),
                 category: productCategory,
+                subcategory: product.subcategory,
                 costLowConfig,
             });
             const { commissionRate, itemCommission } = commission;
@@ -1516,7 +1402,7 @@ const calculateOrderSummary = async (req, res) => {
             commissionSummary: {
                 totalCommission: parseFloat(totalPlatformFees.toFixed(2)),
                 averageRate: parseFloat((totalPlatformFees / totalSubtotal).toFixed(3)),
-                note: 'Commission rates vary by product category (5% - 12%)'
+                note: 'Commission rates vary by product category'
             }
         });
 
@@ -1786,6 +1672,7 @@ const createMainOrder = async (req, res) => {
                     itemSubtotal,
                     quantity: safeQuantity,
                     category: product.category || 'Uncategorized',
+                    subcategory: product.subcategory,
                     costLowConfig,
                 });
                 const { commissionRate, itemCommission } = commission;
@@ -2407,8 +2294,13 @@ router.put('/shipments/:id/reject', protect, authorizeRoles('vendor', 'admin'), 
         router.get('/commission-rates', async (req, res) => {
         try {
             const commissionStructure = {};
-
-            for (const [category, rate] of Object.entries(CATEGORY_COMMISSION_RATES)) {
+            const overrides = await getVendorCommissionOverrides();
+            const categories = { ...CATEGORY_COMMISSION_RATES };
+            for (const parent of require('../config/catalogTaxonomy.json').categories) {
+                categories[parent.label] = rateForProduct(parent.label, '', overrides);
+            }
+            for (const category of Object.keys(categories)) {
+                const rate = rateForProduct(category, '', overrides);
                 commissionStructure[category] = {
                     rate: rate * 100,
                     rateDecimal: rate

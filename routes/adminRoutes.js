@@ -942,6 +942,9 @@ const authorizeAdmin = (req, res, next) => {
     }
 };
 
+router.use('/commission-settings', protect, authorizeAdmin,
+    require('./vendorCommissionRoutes').createVendorCommissionRouter());
+
 const marketingListIdToSegment = (id) => {
     const value = String(id || '').trim();
     if (!value.startsWith('segment:')) return null;
