@@ -16,6 +16,86 @@ async function api(t, router, request) {
   return request(`http://127.0.0.1:${server.address().port}`);
 }
 const auth = (req, res, next) => { req.rider = { _id: ids.rider }; next(); };
+function historyRouter(f) {
+  return createRiderPartnershipAdminRouter({ ...f.models, agreements: f.agreements, bonuses: f.bonuses,
+    authenticate: (req, res, next) => {
+      if (!req.headers.authorization) return res.status(401).json({ message: 'Fixture sign-in required' });
+      req.user = { _id: ids.admin, isAdmin: req.headers.authorization === 'Bearer fixture-admin' }; next();
+    },
+    admin: (req, res, next) => req.user.isAdmin ? next() : res.status(403).json({ message: 'Fixture admin required' }),
+  });
+}
+
+test('admin acceptance history confirms rider identity and reads only that rider’s records', async t => {
+  const f = fixture(); await f.agreements.accept(ids.rider, f.acceptance()); f.writes.length = 0;
+  f.state.riders[0].fullName = 'Fixture rider'; f.state.riders[0].email = 'fixture@example.invalid';
+  await api(t, historyRouter(f), async base => {
+    const response = await fetch(`${base}/acceptances?riderId=${ids.rider}`, { headers: { Authorization: 'Bearer fixture-admin' } });
+    assert.equal(response.status, 200); assert.equal(response.headers.get('cache-control'), 'no-store');
+    const body = await response.json();
+    assert.equal(body.rider._id, ids.rider); assert.equal(body.rider.fullName, 'Fixture rider');
+    assert.equal(body.rider.walletBalance, undefined); assert.equal(body.status.accepted, true);
+    assert.equal(body.acceptances.length, 1); assert.equal(body.acceptances[0].riderId, ids.rider);
+    assert.equal(f.writes.length, 0);
+  });
+});
+
+test('admin history rejects invalid and unknown rider IDs before reporting acceptance', async t => {
+  const f = fixture();
+  await api(t, historyRouter(f), async base => {
+    for (const [riderId, status, code] of [['Fixture rider', 400, 'AGREEMENT_VALIDATION_ERROR'],
+      ['6'.repeat(24), 404, 'RIDER_NOT_FOUND']]) {
+      const response = await fetch(`${base}/acceptances?riderId=${encodeURIComponent(riderId)}`, { headers: { Authorization: 'Bearer fixture-admin' } });
+      assert.equal(response.status, status); const body = await response.json(); assert.equal(body.code, code);
+      assert.equal(body.status, undefined); assert.equal(f.writes.length, 0);
+    }
+  });
+});
+
+test('admin history distinguishes a real unaccepted rider from a missing account', async t => {
+  const f = fixture();
+  await api(t, historyRouter(f), async base => {
+    const response = await fetch(`${base}/acceptances?riderId=${ids.other}`, { headers: { Authorization: 'Bearer fixture-admin' } });
+    assert.equal(response.status, 200); const body = await response.json();
+    assert.equal(body.rider._id, ids.other); assert.equal(body.status.accepted, false);
+    assert.deepEqual(body.acceptances, []); assert.equal(f.writes.length, 0);
+  });
+});
+
+test('historical acceptance stays readable without a required agreement while delivery remains blocked', async t => {
+  const f = fixture({ configured: false });
+  f.state.acceptances.push({ _id: '6'.repeat(24), riderId: ids.rider, version: '0.9',
+    acceptedAt: new Date('2026-10-01T12:00:00Z'), contentHash: 'b'.repeat(64) });
+  await api(t, historyRouter(f), async base => {
+    const response = await fetch(`${base}/acceptances?riderId=${ids.rider}`, { headers: { Authorization: 'Bearer fixture-admin' } });
+    assert.equal(response.status, 200); const body = await response.json();
+    assert.equal(body.status, null); assert.equal(body.statusError.code, 'RIDER_AGREEMENT_NOT_CONFIGURED');
+    assert.equal(body.acceptances[0].version, '0.9'); assert.equal(body.acceptances[0].acceptedAt, '2026-10-01T12:00:00.000Z');
+    await assert.rejects(f.agreements.requireAccepted(ids.rider), { status: 503 });
+    assert.equal(f.writes.length, 0);
+  });
+});
+
+test('history remains admin-only and never grants riders access to acceptance records', async t => {
+  const f = fixture();
+  await api(t, historyRouter(f), async base => {
+    assert.equal((await fetch(`${base}/acceptances?riderId=${ids.rider}`)).status, 401);
+    assert.equal((await fetch(`${base}/acceptances?riderId=${ids.rider}`, { headers: { Authorization: 'Bearer fixture-rider' } })).status, 403);
+    assert.equal(f.writes.length, 0);
+  });
+});
+
+for (const model of ['riders', 'acceptances', 'policies']) {
+  test(`history database failure stays unavailable without false acceptance: ${model}`, async t => {
+    const f = fixture(); f.fail(model);
+    await api(t, historyRouter(f), async base => {
+      const response = await fetch(`${base}/acceptances?riderId=${ids.rider}`, { headers: { Authorization: 'Bearer fixture-admin' } });
+      assert.equal(response.status, 503); const body = await response.json();
+      assert.equal(body.success, false); assert.equal(body.code, 'RIDER_AGREEMENT_UNAVAILABLE');
+      assert.equal(body.status, undefined); assert.equal(f.writes.length, 0);
+    });
+  });
+}
 test('canonical content has one exact UTF-8 SHA-256 representation', () => {
   assert.equal(canonicalContent('One\r\nTwo\rThree'), 'One\nTwo\nThree');
   assert.equal(contentHash('abc'), 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad');

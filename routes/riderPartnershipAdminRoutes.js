@@ -6,6 +6,7 @@ const { getBonusService } = require('../services/riderDailyBonusService');
 function createRiderPartnershipAdminRouter({ agreements = getService(), bonuses = getBonusService(),
   Agreement = require('../models/RiderAgreement'), Policy = require('../models/RiderAgreementPolicy'),
   Acceptance = require('../models/RiderAgreementAcceptance'), Bonus = require('../models/RiderDailyBonus'),
+  Rider = require('../models/Rider'),
   authenticate = protect, admin = authorizeRoles('admin') } = {}) {
   const router = express.Router();
   router.use(authenticate, admin, rateLimit({ windowMs: 60000, limit: 60, standardHeaders: 'draft-8', legacyHeaders: false,
@@ -23,8 +24,22 @@ function createRiderPartnershipAdminRouter({ agreements = getService(), bonuses 
   }));
   router.get('/acceptances', wrap(async (req, res) => {
     if (!validId(req.query.riderId)) throw failure(400, 'AGREEMENT_VALIDATION_ERROR', 'Select a rider ID to review acceptance history.');
-    res.json({ status: await agreements.status(req.query.riderId), acceptances: await Acceptance.find({ riderId: req.query.riderId })
-      .sort({ acceptedAt: -1 }).limit(100).lean() });
+    const rider = await Rider.findById(req.query.riderId)
+      .select('fullName email phoneNumber plateNumber status').lean();
+    if (!rider) throw failure(404, 'RIDER_NOT_FOUND', 'This Go-Rider account could not be found. Search and select the rider again.');
+    const acceptances = await Acceptance.find({ riderId: req.query.riderId })
+      .sort({ acceptedAt: -1 }).limit(100).lean();
+    let status = null, statusError = null;
+    try { status = await agreements.status(req.query.riderId); }
+    catch (error) {
+      // Historical records remain readable before an effective policy exists.
+      // Never interpret this as acceptance or change the work eligibility guard.
+      if (error.code !== 'RIDER_AGREEMENT_NOT_CONFIGURED') throw error;
+      statusError = { code: error.code, message: error.message };
+    }
+    res.json({ rider: { _id: String(rider._id), fullName: rider.fullName,
+      email: rider.email, phoneNumber: rider.phoneNumber, plateNumber: rider.plateNumber, status: rider.status },
+      status, ...(statusError ? { statusError } : {}), acceptances });
   }));
   router.get('/bonuses', wrap(async (req, res) => res.json({ bonuses: await Bonus.find({ state: 'pending' })
     .sort({ requestedAt: 1 }).limit(100).populate('riderId', 'fullName plateNumber').lean() })));
