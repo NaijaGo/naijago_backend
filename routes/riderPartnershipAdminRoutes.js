@@ -13,7 +13,8 @@ function createRiderPartnershipAdminRouter({ agreements = getService(), bonuses 
     keyGenerator: req => String(req.user._id) }));
   const wrap = action => async (req, res) => { try { res.set('Cache-Control', 'no-store'); await action(req, res); } catch (error) { sendError(res, error); } };
   router.get('/agreements', wrap(async (req, res) => res.json({ agreements: await Agreement.find({}).sort({ createdAt: -1 }).limit(100).lean(),
-    policy: await Policy.findById('rider-partnership').lean(), setup: await agreements.setupStatus() })));
+    policy: await Policy.findById('rider-partnership').lean(), setup: await agreements.setupStatus(),
+    enforcementEnabled: agreements.enforcementEnabled() })));
   router.post('/agreements', wrap(async (req, res) => res.status(201).json({ agreement: await agreements.createDraft(req.user._id, req.body) })));
   router.put('/agreements/:id', wrap(async (req, res) => res.json({ agreement: await agreements.editDraft(req.params.id, req.body) })));
   router.post('/agreements/:id/publish', wrap(async (req, res) => res.json({ agreement: await agreements.publish(req.user._id, req.params.id, req.body) })));
@@ -34,7 +35,7 @@ function createRiderPartnershipAdminRouter({ agreements = getService(), bonuses 
     catch (error) {
       // Historical records remain readable before an effective policy exists.
       // Never interpret this as acceptance or change the work eligibility guard.
-      if (error.code !== 'RIDER_AGREEMENT_NOT_CONFIGURED') throw error;
+      if (!['RIDER_AGREEMENT_NOT_CONFIGURED', 'RIDER_ACCOUNT_RESTRICTED'].includes(error.code)) throw error;
       statusError = { code: error.code, message: error.message };
     }
     res.json({ rider: { _id: String(rider._id), fullName: rider.fullName,

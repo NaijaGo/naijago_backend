@@ -11,7 +11,7 @@ function createRiderAgreementRouter({ service = getService(), authenticate = cre
   router.get('/current', wrap(async (req, res) => res.json(await service.status(req.rider._id))));
   router.get('/status', wrap(async (req, res) => {
     const result = await service.status(req.rider._id);
-    delete result.agreement.content;
+    if (result.agreement) delete result.agreement.content;
     res.json(result);
   }));
   router.post('/accept', wrap(async (req, res) => res.json(await service.accept(req.rider._id,

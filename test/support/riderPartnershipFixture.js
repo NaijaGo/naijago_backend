@@ -21,7 +21,7 @@ function matches(row, filter) {
     return String(actual) === String(value);
   });
 }
-function fixture({ configured = true } = {}) {
+function fixture({ configured = true, enforcement = true } = {}) {
   let serial = 10, time = new Date('2026-10-13T10:00:00.000Z'), tail = Promise.resolve();
   const state = { agreements: [], policies: [], acceptances: [], riders: [
     { _id: ids.rider, status: 'approved', isAvailable: true, isActive: true, activeDeliveries: 0, walletBalance: 10, totalEarnings: 10 },
@@ -92,7 +92,8 @@ function fixture({ configured = true } = {}) {
     finally { finish(); }
   }
   const ready = async () => { if (readyFailure) throw new Error('Fixture index missing'); };
-  const agreements = createRiderAgreementService({ Agreement, Policy, Acceptance, Rider, MainOrder, Shipment, transact, ready, now: () => time });
+  const agreements = createRiderAgreementService({ Agreement, Policy, Acceptance, Rider, MainOrder, Shipment, transact, ready, now: () => time,
+    enforcementEnabled: () => enforcement });
   const bonuses = createRiderDailyBonusService({ Bonus, MainOrder, Rider, transact, ready, now: () => time });
   state.policies.push({ _id: 'rider-partnership', agreementId: configured ? ids.agreement : null, revision: 0, fence: 0, history: [] });
   state.agreements.push({ _id: ids.agreement, __v: 0, version: '1.0', content: 'Full fixture agreement\nAll paragraphs remain visible.',
@@ -104,7 +105,7 @@ function fixture({ configured = true } = {}) {
       isPaid: true, isDelivered: true, mainOrderStatus: 'delivered', deliveredAt: time });
   }
   return { state, reads, writes, agreements, bonuses, models: { Agreement, Policy, Acceptance, Rider, Bonus, MainOrder, Shipment },
-    acceptance, complete, setTime: date => { time = date; }, fail: name => { fail = name; }, failReady: () => { readyFailure = true; },
+    acceptance, complete, setEnforcement: value => { enforcement = value; }, setTime: date => { time = date; }, fail: name => { fail = name; }, failReady: () => { readyFailure = true; },
     assertTransactionWrites: () => writes.filter(row => row.options).forEach(row => assert.ok(row.options.session || row.name === 'riders')) };
 }
 module.exports = { fixture, ids };

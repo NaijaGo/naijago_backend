@@ -1,6 +1,8 @@
 const crypto = require('node:crypto');
 const mongoose = require('mongoose');
 const POLICY_ID = 'rider-partnership';
+// Only an explicit server setting pauses enforcement. Missing/invalid values fail closed.
+function agreementEnforcementEnabled() { return process.env.RIDER_AGREEMENT_ENFORCEMENT !== 'false'; }
 function failure(status, code, message, extra = {}) { return Object.assign(new Error(message), { status, code, ...extra }); }
 function canonicalContent(value) {
   if (typeof value !== 'string' || !value.trim() || value.length > 200000 || value.includes('\0')) {
@@ -34,6 +36,7 @@ async function checkUniqueIndex(Model, name) {
   }
 }
 function createRiderAgreementService({ Agreement, Policy, Acceptance, Rider, MainOrder, Shipment,
+  enforcementEnabled = agreementEnforcementEnabled,
   transact = operation => mongoose.connection.transaction(operation),
   now = () => new Date(), ready = async () => {
     await checkUniqueIndex(Agreement, 'agreement_version_unique');
@@ -58,11 +61,24 @@ function createRiderAgreementService({ Agreement, Policy, Acceptance, Rider, Mai
     return { agreement, policy: config };
   }
   async function status(riderId, options = {}) {
+    if (!enforcementEnabled()) {
+      if (!validId(String(riderId || ''))) throw failure(401, 'RIDER_AUTH_REQUIRED', 'Sign in to verify rider access.');
+      const rider = await Rider.findById(riderId).session(options.session || null).lean();
+      if (!rider || !['pending', 'approved'].includes(rider.status)) {
+        throw failure(403, 'RIDER_ACCOUNT_RESTRICTED', 'This rider account is restricted.');
+      }
+      // No policy, indexes or acceptance ledger are needed during the temporary pause.
+      // This describes access, never a fabricated acceptance or erased history.
+      return { success: true, enforcementEnabled: false, enforcementPaused: true,
+        accepted: false, requiresAcceptance: false, workAllowed: rider.status === 'approved',
+        riderStatus: rider.status, requiredVersion: null, agreement: null,
+        acceptedVersion: null, acceptedAt: null, acceptance: null };
+    }
     const { agreement } = await current(options);
     const acceptance = await Acceptance.findOne({ riderId, agreementId: agreement._id,
       version: agreement.version, contentHash: agreement.contentHash }).session(options.session || null).lean();
     const previous = acceptance || await Acceptance.findOne({ riderId }).sort({ acceptedAt: -1 }).session(options.session || null).lean();
-    return { success: true, accepted: !!acceptance, requiresAcceptance: !acceptance,
+    return { success: true, enforcementEnabled: true, accepted: !!acceptance, requiresAcceptance: !acceptance,
       requiredVersion: agreement.version, agreement: { agreementId: String(agreement._id), version: agreement.version,
         content: agreement.content, contentHash: agreement.contentHash, publishedAt: agreement.publishedAt,
         effectiveAt: agreement.effectiveAt, companyName: 'NaijaGo App Ltd' },
@@ -75,6 +91,10 @@ function createRiderAgreementService({ Agreement, Policy, Acceptance, Rider, Mai
     catch (error) {
       if (error.code && error.status) throw error;
       throw failure(503, 'RIDER_AGREEMENT_UNAVAILABLE', 'Agreement verification is unavailable. Please retry before starting work.');
+    }
+    if (result.enforcementPaused === true) {
+      if (result.workAllowed !== true) throw failure(403, 'RIDER_ACCOUNT_RESTRICTED', 'Only approved riders may start delivery work.');
+      return result;
     }
     if (!result.accepted) throw failure(403, 'RIDER_AGREEMENT_REQUIRED',
       'Accept the current Rider Partnership Agreement before starting new delivery work.', { requiredVersion: result.requiredVersion });
@@ -91,6 +111,7 @@ function createRiderAgreementService({ Agreement, Policy, Acceptance, Rider, Mai
     if (Object.keys(body).some(key => !allowed.has(key))) throw failure(400, 'AGREEMENT_VALIDATION_ERROR', 'Client identity, timestamps and audit fields are not accepted.');
     if (body.appVersion != null && (typeof body.appVersion !== 'string' || body.appVersion.length > 50)) throw failure(400, 'AGREEMENT_VALIDATION_ERROR', 'Invalid application version.');
     if (body.platform != null && !['android', 'ios', 'web', 'unknown'].includes(body.platform)) throw failure(400, 'AGREEMENT_VALIDATION_ERROR', 'Invalid platform.');
+    if (!enforcementEnabled()) throw failure(409, 'RIDER_AGREEMENT_ENFORCEMENT_PAUSED', 'Agreement acceptance is temporarily paused. Refresh your rider access status.');
     await ready();
     return transact(async session => {
       const result = await current({ session, fence: true });
@@ -113,6 +134,7 @@ function createRiderAgreementService({ Agreement, Policy, Acceptance, Rider, Mai
     });
   }
   async function acceptedRiderIds(options = {}) {
+    if (!enforcementEnabled()) return Rider.distinct('_id', { status: 'approved' }).session(options.session || null);
     const { agreement } = await current(options);
     return Acceptance.distinct('riderId', { agreementId: agreement._id, version: agreement.version,
       contentHash: agreement.contentHash }).session(options.session || null);
@@ -208,6 +230,8 @@ function createRiderAgreementService({ Agreement, Policy, Acceptance, Rider, Mai
         $push: { history: { previousAgreementId: config.agreementId, agreementId: agreement._id,
           changedBy: actorId, changedAt: now(), reason: body.reason.trim() } },
       }, { new: true, session }).lean();
+      // Preparing a required version must not end a deliberately paused requirement.
+      if (!enforcementEnabled()) return updated;
       const acceptedIds = await Acceptance.distinct('riderId', { agreementId: agreement._id,
         version: agreement.version, contentHash: agreement.contentHash }).session(session);
       // Finish existing claimed deliveries; revoke only eligibility for new work.
@@ -223,7 +247,7 @@ function createRiderAgreementService({ Agreement, Policy, Acceptance, Rider, Mai
     });
   }
   return { current, status, requireAccepted, accept, acceptedRiderIds, eligibleWork,
-    updateAvailability, createDraft, editDraft, publish, setRequired, policy, setupStatus };
+    updateAvailability, createDraft, editDraft, publish, setRequired, policy, setupStatus, enforcementEnabled };
 }
 let instance;
 function getService() {
@@ -232,4 +256,4 @@ function getService() {
     Rider: require('../models/Rider'), MainOrder: require('../models/MainOrder'), Shipment: require('../models/Shipment') });
 }
 module.exports = { createRiderAgreementService, getService, canonicalContent, contentHash, sendError, failure,
-  validId, checkUniqueIndex, POLICY_ID };
+  validId, checkUniqueIndex, POLICY_ID, agreementEnforcementEnabled };
