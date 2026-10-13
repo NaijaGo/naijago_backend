@@ -152,6 +152,17 @@ function createRiderAgreementService({ Agreement, Policy, Acceptance, Rider, Mai
       status: 'draft', createdBy: actorId }); }
     catch (error) { if (error.code === 11000) throw failure(409, 'AGREEMENT_VERSION_EXISTS', 'This agreement version already exists.'); throw error; }
   }
+  async function setupStatus() {
+    // Read-only readiness; never create collections, indexes or a policy here.
+    try { await ready(); await policy(null, false); return { ready: true }; }
+    catch (error) {
+      const setupMissing = ['RIDER_AGREEMENT_SETUP_REQUIRED', 'RIDER_AGREEMENT_NOT_CONFIGURED'].includes(error.code) || error.code === 26;
+      return { ready: false, code: setupMissing ? 'RIDER_AGREEMENT_SETUP_REQUIRED' : 'RIDER_AGREEMENT_UNAVAILABLE',
+        message: setupMissing
+          ? 'Agreement storage requires explicit backend setup before saving or publishing. No setup has been performed by this page.'
+          : 'Agreement storage could not be checked. Retry loading the records before saving.' };
+    }
+  }
   async function editDraft(id, body) {
     if (!validId(id) || !Number.isInteger(body.revision) || body.revision < 0) throw failure(400, 'AGREEMENT_VALIDATION_ERROR', 'Reload the draft before editing.');
     const content = canonicalContent(body.content);
@@ -212,7 +223,7 @@ function createRiderAgreementService({ Agreement, Policy, Acceptance, Rider, Mai
     });
   }
   return { current, status, requireAccepted, accept, acceptedRiderIds, eligibleWork,
-    updateAvailability, createDraft, editDraft, publish, setRequired, policy };
+    updateAvailability, createDraft, editDraft, publish, setRequired, policy, setupStatus };
 }
 let instance;
 function getService() {

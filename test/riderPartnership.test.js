@@ -26,6 +26,80 @@ function historyRouter(f) {
   });
 }
 
+test('admin agreement readiness is read-only and distinguishes initialized storage from required terms', async t => {
+  const f = fixture({ configured: false });
+  await api(t, historyRouter(f), async base => {
+    const response = await fetch(`${base}/agreements`, { headers: { Authorization: 'Bearer fixture-admin' } });
+    assert.equal(response.status, 200); assert.equal(response.headers.get('cache-control'), 'no-store');
+    const body = await response.json(); assert.deepEqual(body.setup, { ready: true });
+    assert.equal(body.policy.agreementId, null); assert.equal(f.writes.length, 0);
+    await assert.rejects(f.agreements.status(ids.rider), { status: 503 });
+  });
+});
+
+test('missing policy produces explicit setup status without initializing or changing data', async t => {
+  const f = fixture(); f.state.policies = [];
+  await api(t, historyRouter(f), async base => {
+    const response = await fetch(`${base}/agreements`, { headers: { Authorization: 'Bearer fixture-admin' } });
+    assert.equal(response.status, 200); const body = await response.json();
+    assert.equal(body.policy, null); assert.equal(body.setup.ready, false);
+    assert.equal(body.setup.code, 'RIDER_AGREEMENT_SETUP_REQUIRED');
+    assert.equal(f.state.policies.length, 0); assert.equal(f.writes.length, 0);
+  });
+});
+
+test('readiness checks actual index definitions and distinguishes missing setup from outages', async () => {
+  const { createRiderAgreementService } = require('../services/riderAgreementService');
+  for (const scenario of ['ready', 'missing-index', 'missing-collection', 'outage']) {
+    const f = fixture();
+    f.models.Agreement.collection = { listIndexes: () => ({ toArray: async () => {
+      if (scenario === 'missing-collection') throw Object.assign(new Error('Fixture missing collection'), { code: 26 });
+      if (scenario === 'outage') throw new Error('Fixture outage');
+      return [{ name: 'agreement_version_unique', unique: true, key: { version: 1 } }];
+    } }) };
+    f.models.Acceptance.collection = { listIndexes: () => ({ toArray: async () => scenario === 'missing-index' ? []
+      : [{ name: 'rider_version_unique', unique: true, key: { riderId: 1, version: 1 } }] }) };
+    const service = createRiderAgreementService(f.models);
+    const result = await service.setupStatus();
+    assert.equal(result.ready, scenario === 'ready');
+    if (scenario !== 'ready') assert.equal(result.code, scenario === 'outage' ? 'RIDER_AGREEMENT_UNAVAILABLE' : 'RIDER_AGREEMENT_SETUP_REQUIRED');
+    assert.equal(f.writes.length, 0);
+  }
+});
+
+test('actual admin HTTP handlers save, publish and require separately with unchanged wallet and delivery safeguards', async t => {
+  const f = fixture({ configured: false }); f.state.agreements = [];
+  const originalWallet = f.state.riders[0].walletBalance;
+  f.state.orders.push({ _id: 'claimed', rider: ids.rider, isClaimed: true, mainOrderStatus: 'out_for_delivery' },
+    { _id: 'offer', assignedRider: ids.rider, isClaimed: false, mainOrderStatus: 'processing' });
+  await api(t, historyRouter(f), async base => {
+    const send = (path, method, body) => fetch(`${base}${path}`, { method,
+      headers: { Authorization: 'Bearer fixture-admin', 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const saved = await send('/agreements', 'POST', { version: '1.0', content: ' Complete approved fixture agreement\r\nAll paragraphs. ' });
+    assert.equal(saved.status, 201); const { agreement } = await saved.json();
+    assert.equal(agreement.status, 'draft'); assert.equal(agreement.content, ' Complete approved fixture agreement\nAll paragraphs. ');
+    assert.equal(f.state.policies[0].agreementId, null);
+    const premature = await send('/required', 'PUT', { agreementId: agreement._id, revision: 0, reason: 'Initial terms' });
+    assert.equal(premature.status, 400); assert.equal(f.state.riders[0].isActive, true);
+    const published = await send(`/agreements/${agreement._id}/publish`, 'POST', { revision: 0 });
+    assert.equal(published.status, 200); assert.equal((await published.json()).agreement.status, 'published');
+    assert.equal(f.state.policies[0].agreementId, null); assert.equal(f.state.policies[0].revision, 0);
+    const required = await send('/required', 'PUT', { agreementId: agreement._id, revision: 0, reason: 'Initial approved terms' });
+    assert.equal(required.status, 200); const { policy } = await required.json();
+    assert.equal(policy.agreementId, agreement._id); assert.equal(policy.revision, 1); assert.equal(policy.history[0].changedBy, ids.admin);
+    assert.equal(f.state.riders[0].isActive, false); assert.equal(f.state.orders[1].assignedRider, undefined);
+    assert.equal(f.state.orders[0].isClaimed, true); assert.equal(f.state.riders[0].walletBalance, originalWallet);
+    assert.equal(f.state.acceptances.length, 0); assert.equal(f.state.bonuses.length, 0);
+    const conflict = await send('/required', 'PUT', { agreementId: agreement._id, revision: 0, reason: 'Stale request' });
+    assert.equal(conflict.status, 409); assert.equal(f.state.policies[0].history.length, 1);
+    const duplicate = await send('/required', 'PUT', { agreementId: agreement._id, revision: 1, reason: 'Retry same requirement' });
+    assert.equal(duplicate.status, 200); assert.equal(f.state.policies[0].revision, 1); assert.equal(f.state.policies[0].history.length, 1);
+    const overwrite = await send(`/agreements/${agreement._id}`, 'PUT', { content: 'Overwrite', revision: 1 });
+    assert.equal(overwrite.status, 409); assert.equal(f.state.agreements[0].content, agreement.content);
+    await assert.rejects(f.agreements.requireAccepted(ids.rider), { status: 403 });
+  });
+});
+
 test('admin acceptance history confirms rider identity and reads only that rider’s records', async t => {
   const f = fixture(); await f.agreements.accept(ids.rider, f.acceptance()); f.writes.length = 0;
   f.state.riders[0].fullName = 'Fixture rider'; f.state.riders[0].email = 'fixture@example.invalid';
