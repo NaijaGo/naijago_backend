@@ -1,3 +1,5 @@
+const riderAgreements = require('../services/riderAgreementService');
+const { agreementToken } = require('../middleware/riderAgreementGuard');
 // controllers/riderController.js
 const Rider = require('../models/Rider');
 const Shipment = require('../models/Shipment');
@@ -187,6 +189,7 @@ exports.registerRider = async (req, res) => {
       fullName: rider.fullName,
       email: rider.email,
       status: rider.status,
+      agreementToken: agreementToken(rider._id),
       isEmailVerified: rider.isEmailVerified,
       ...(googleIdentity ? {} : { token: generateToken(rider._id) }),
       message: googleIdentity && rider.isEmailVerified
@@ -311,6 +314,11 @@ exports.loginRider = async (req, res) => {
 
     // Check application status
     if (rider.status === 'pending') {
+      if (req.body.agreementOnly === true) {
+        return res.json({ success: true, _id: rider._id, status: 'pending',
+          fullName: rider.fullName, email: rider.email, agreementToken: agreementToken(rider._id),
+          message: 'Complete your agreement. Admin approval is still required before delivery work.' });
+      }
       return res.status(401).json({ 
         success: false,
         message: 'Application is under review. Please wait for admin approval.' 
@@ -740,38 +748,11 @@ exports.updateRiderStatus = async (req, res) => {
       });
     }
 
-    const existingRider = await Rider.findById(req.rider._id)
-      .select('status isAvailable isActive lastOnlineNotificationAt');
-    if (!existingRider) {
-      return res.status(404).json({
-        success: false,
-        message: 'Rider not found'
-      });
-    }
-
-    // If rider is marking themselves as active, ensure they're approved
-    if (isActive === true) {
-      if (existingRider.status !== 'approved') {
-        return res.status(400).json({ 
-          success: false,
-          message: 'Cannot activate account. Rider account must be approved by admin.' 
-        });
-      }
-    }
-
-    updateData.lastActive = new Date();
-    const nextIsOnline =
-      (isAvailable !== undefined ? isAvailable : existingRider.isAvailable) === true &&
-      (isActive !== undefined ? isActive : existingRider.isActive) === true;
-    if (!nextIsOnline) {
-      updateData.lastOnlineNotificationAt = null;
-    }
-
-    const updatedRider = await Rider.findByIdAndUpdate(
-      req.rider._id,
-      { $set: updateData },
-      { new: true }
-    ).select('-password');
+    const changes = {};
+    if (isAvailable !== undefined) changes.isAvailable = isAvailable;
+    if (isActive !== undefined) changes.isActive = isActive;
+    const { existingRider, updatedRider } = await riderAgreements.getService().updateAvailability(req.rider._id, changes);
+    const nextIsOnline = updatedRider.isAvailable === true && updatedRider.isActive === true;
 
     const notifyAdminRiderStatus = req.app.get('notifyAdminRiderStatus');
     if (typeof notifyAdminRiderStatus === 'function') {
@@ -841,6 +822,7 @@ exports.updateRiderStatus = async (req, res) => {
     });
     
   } catch (error) {
+    if (error.code && error.status) return riderAgreements.sendError(res, error);
     console.error('Update rider status error:', error);
     res.status(500).json({ 
       success: false,
@@ -998,6 +980,7 @@ exports.claimOrder = async (req, res) => {
   try {
     const orderId = req.params.id;
     const riderId = req.rider._id;
+    await riderAgreements.getService().requireAccepted(riderId, { session, fence: true });
 
     // Validate order ID
     if (!mongoose.Types.ObjectId.isValid(orderId)) {
@@ -1083,6 +1066,9 @@ exports.claimOrder = async (req, res) => {
 
     // Check rider availability
     const rider = await Rider.findById(riderId).session(session);
+    if (!rider || rider.status !== 'approved') {
+      throw riderAgreements.failure(403, 'RIDER_ACCOUNT_RESTRICTED', 'Only an approved rider may claim a delivery order.');
+    }
     if (!rider.isAvailable || !rider.isActive) {
       await session.abortTransaction();
       session.endSession();
@@ -1304,6 +1290,7 @@ exports.claimOrder = async (req, res) => {
   } catch (error) {
     await session.abortTransaction();
     session.endSession();
+    if (error.code && error.status) return riderAgreements.sendError(res, error);
     console.error('Claim order error:', error);
     res.status(500).json({ 
       success: false,
@@ -2154,12 +2141,13 @@ exports.getNearbyRiders = async (req, res) => {
       });
     }
 
-    const nearbyRiders = await Rider.findNearby(
+    const acceptedIds = new Set((await riderAgreements.getService().acceptedRiderIds()).map(String));
+    const nearbyRiders = (await Rider.findNearby(
       parseFloat(lat),
       parseFloat(lng),
       parseInt(maxDistance),
       20 // Limit to 20 riders
-    );
+    )).filter(rider => acceptedIds.has(String(rider._id)));
 
     res.json({
       success: true,

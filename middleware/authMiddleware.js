@@ -10,6 +10,7 @@ const protect = async (req, res, next) => {
         try {
             token = req.headers.authorization.split(' ')[1];
             const decoded = jwt.verify(token, process.env.JWT_SECRET);
+            if (decoded.purpose) return res.status(401).json({ code: 'RIDER_AUTH_REQUIRED', message: 'This session is limited to rider agreement acceptance.' });
 
             // 1. Try to find the user in the User collection first
             let user = await User.findById(decoded.id).select('-password');

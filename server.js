@@ -26,6 +26,7 @@ const {
   notifyRiderAssignmentOffer,
 } = require('./services/riderAssignmentService');
 const notificationService = require('./services/notificationService');
+const riderAgreementService = require('./services/riderAgreementService');
 const { publishAdminActivity } = require('./services/adminActivityService');
 const adminActivityMiddleware = require('./middleware/adminActivityMiddleware');
 const { cleanupObsoleteIndexes } = require('./utils/dbIndexMaintenance');
@@ -76,6 +77,7 @@ app.use('/api/companies', require('./routes/companyRoutes')); // ADDED
 app.use('/api/vendor', require('./routes/vendorRoutes'));
 app.use('/api/pharmacist', require('./routes/pharmacistRoutes'));
 app.use('/api/admin', require('./routes/adminRoutes'));
+app.use('/api/admin/rider-partnership', require('./routes/riderPartnershipAdminRoutes'));
 app.use('/api/admin', require('./routes/adminCarouselRoutes'));
 app.use('/api/categories', require('./routes/categoryRoutes'));
 app.use('/api/products', require('./routes/productRoutes'));
@@ -132,6 +134,7 @@ io.use(async (socket, next) => {
     if (!token) return next(new Error('Authentication token required'));
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    if (decoded.purpose) return next(new Error('Agreement-only sessions cannot connect to delivery sockets'));
     const UserModel = require('./models/User');
     const RiderModel = require('./models/Rider');
     const CompanyModel = require('./models/Company');
@@ -226,6 +229,19 @@ const onlineUsers = new Map(); // userId -> socketId
 const onlineRiders = new Map(); // riderId -> {socketId, location, lastUpdate} - INDIVIDUAL
 const onlineCompanies = new Map(); // companyId -> socketId - NEW
 const onlineCompanyRiders = new Map(); // companyRiderId -> {socketId, companyId, location} - NEW
+app.set('onRiderAgreementChanged', async () => {
+  let acceptedIds = new Set();
+  try { acceptedIds = new Set((await riderAgreementService.getService().acceptedRiderIds()).map(String)); }
+  catch (_) { /* Fail closed if the latest requirement cannot be verified. */ }
+  for (const [riderId, data] of onlineRiders) {
+    if (acceptedIds.has(String(riderId))) continue;
+    data.isAvailable = false; data.isActive = false;
+    onlineRiders.set(riderId, data);
+    io.to(data.socketId).emit('rider_agreement_required', {
+      code: 'RIDER_AGREEMENT_REQUIRED', message: 'Refresh the current rider agreement before starting new work.',
+    });
+  }
+});
 const onlineAdmins = new Map(); // adminId -> socketId
 const onlineVendors = new Map(); // vendorId -> socketId
 const onlinePharmacists = new Map(); // pharmacist userId -> socketId
@@ -610,11 +626,14 @@ io.on('connection', (socket) => {
     });
     
     // Fetch rider's current status from DB
-    Rider.findById(userId).then(rider => {
+    Rider.findById(userId).then(async rider => {
       if (rider) {
+        let accepted = false;
+        try { await riderAgreementService.getService().requireAccepted(userId); accepted = rider.status === 'approved'; } catch (_) {}
+
         const riderData = onlineRiders.get(userId);
-        riderData.isAvailable = rider.isAvailable || false;
-        riderData.isActive = rider.isActive || false;
+        riderData.isAvailable = accepted && rider.isAvailable === true;
+        riderData.isActive = accepted && rider.isActive === true;
         riderData.location = rider.currentLocation || null;
         onlineRiders.set(userId, riderData);
         
@@ -888,16 +907,14 @@ io.on('connection', (socket) => {
       try {
         const { isAvailable, isActive } = data;
         
+        const changes = {};
+        if (isAvailable !== undefined) changes.isAvailable = isAvailable;
+        if (isActive !== undefined) changes.isActive = isActive;
+        const { updatedRider } = await riderAgreementService.getService().updateAvailability(userId, changes);
         const riderData = onlineRiders.get(userId) || {};
-        if (isAvailable !== undefined) riderData.isAvailable = isAvailable;
-        if (isActive !== undefined) riderData.isActive = isActive;
+        riderData.isAvailable = updatedRider.isAvailable;
+        riderData.isActive = updatedRider.isActive;
         onlineRiders.set(userId, riderData);
-
-        // Update in database
-        const updateData = { lastActive: new Date() };
-        if (isAvailable !== undefined) updateData.isAvailable = isAvailable;
-        if (isActive !== undefined) updateData.isActive = isActive;
-        await Rider.findByIdAndUpdate(userId, { $set: updateData });
 
         // Broadcast to admins
         broadcastToAdmins('rider_status_change', {
@@ -915,6 +932,7 @@ io.on('connection', (socket) => {
         });
 
       } catch (error) {
+        if (error.code && error.status) return socket.emit('rider_agreement_required', { code: error.code, requiredVersion: error.requiredVersion, message: error.message });
         console.error('Rider status update error:', error);
         socket.emit('error', { message: 'Failed to update status' });
       }
@@ -1580,6 +1598,7 @@ io.on('connection', (socket) => {
         const { orderId, riderId, riderType = 'individual', companyId } = data;
         
         if (riderType === 'individual') {
+          const order = await riderAgreementService.getService().eligibleWork(riderId, async session => {
           const order = await MainOrder.findOneAndUpdate(
             {
               _id: orderId,
@@ -1597,13 +1616,13 @@ io.on('connection', (socket) => {
                 assignmentRejectedBy: riderId,
               },
             },
-            { new: true }
+            { new: true, session }
           )
             .populate('assignedRider', 'fullName phoneNumber plateNumber currentLocation lastActive isAvailable isActive')
             .populate('user', 'firstName lastName phoneNumber');
 
           if (!order) {
-            return socket.emit('error', { message: 'Order not found or already claimed' });
+            throw riderAgreementService.failure(409, 'RIDER_ORDER_UNAVAILABLE', 'Order not found or already claimed');
           }
 
           await Shipment.updateMany(
@@ -1617,8 +1636,12 @@ io.on('connection', (socket) => {
               $pull: {
                 assignmentRejectedBy: riderId,
               },
-            }
+            },
+            { session }
           );
+
+            return order;
+          });
 
           await notifyRiderAssignmentOffer({
             app,

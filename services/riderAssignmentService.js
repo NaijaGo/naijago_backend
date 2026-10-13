@@ -1,3 +1,4 @@
+const riderAgreementService = require('./riderAgreementService');
 const Rider = require('../models/Rider');
 const MainOrder = require('../models/MainOrder');
 const Shipment = require('../models/Shipment');
@@ -58,6 +59,7 @@ const findEligibleRiders = async ({
   );
 
   const excludedIds = excludeRiderIds.filter(Boolean);
+  const acceptedIds = await riderAgreementService.getService().acceptedRiderIds();
   const riders = await Rider.find({
     status: 'approved',
     isAvailable: true,
@@ -66,7 +68,7 @@ const findEligibleRiders = async ({
     'currentLocation.lat': { $exists: true, $ne: null },
     'currentLocation.lng': { $exists: true, $ne: null },
     'currentLocation.lastUpdated': { $gte: locationCutoff },
-    ...(excludedIds.length > 0 ? { _id: { $nin: excludedIds } } : {}),
+    _id: { $in: acceptedIds, ...(excludedIds.length > 0 ? { $nin: excludedIds } : {}) },
   })
     .select('fullName phoneNumber plateNumber vehicleType currentLocation activeDeliveries rating totalRatings')
     .lean();
@@ -153,6 +155,7 @@ const notifyEligibleRidersForShipment = async ({
     mainOrderSet.shipmentStatus = 'ready_for_pickup';
   }
 
+  const assignedOrder = await riderAgreementService.getService().eligibleWork(nearestRider._id, async session => {
   const assignedOrder = await MainOrder.findOneAndUpdate(
     {
       _id: currentMainOrder._id,
@@ -164,10 +167,10 @@ const notifyEligibleRidersForShipment = async ({
     {
       $set: mainOrderSet,
     },
-    { new: true },
+    { new: true, session },
   );
 
-  if (!assignedOrder) return [];
+  if (!assignedOrder) return null;
 
   await Shipment.updateMany(
     {
@@ -183,7 +186,12 @@ const notifyEligibleRidersForShipment = async ({
         assignedAt: new Date(),
       },
     },
+    { session },
   );
+
+    return assignedOrder;
+  });
+  if (!assignedOrder) return [];
 
   await notifyRiderAssignmentOffer({
     app,
@@ -342,6 +350,8 @@ const notifyRiderAssignmentOffer = async ({
 }) => {
   if (!riderId || !mainOrder) return;
 
+  try { await riderAgreementService.getService().requireAccepted(riderId); }
+  catch (_) { return; } // The offer may have been released by a concurrent policy change. Never notify without verification.
   const shipments = await Shipment.find({ mainOrder: mainOrder._id }).lean();
   const payoutBreakdown =
     mainOrder.riderPayoutBreakdown ||

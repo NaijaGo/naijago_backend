@@ -1,3 +1,4 @@
+const riderAgreementService = require('../services/riderAgreementService');
 // adminRoutes.js
 const express = require('express');
 const mongoose = require('mongoose');
@@ -3567,6 +3568,7 @@ router.put('/riders/assign-order', protect, authorizeAdmin, async (req, res) => 
     session.startTransaction();
 
     try {
+        await riderAgreementService.getService().requireAccepted(riderId, { session, fence: true });
         const rider = await Rider.findOne({
             _id: riderId,
             status: 'approved',
@@ -3686,6 +3688,7 @@ router.put('/riders/assign-order', protect, authorizeAdmin, async (req, res) => 
     } catch (error) {
         await session.abortTransaction();
         session.endSession();
+        if (error.code && error.status) return riderAgreementService.sendError(res, error);
         console.error('Manual rider assignment error:', error);
         res.status(500).json({ message: 'Server error assigning rider.', error: error.message });
     }

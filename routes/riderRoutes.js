@@ -100,6 +100,7 @@ router.post('/reset-password-submit', resetRiderPassword);
 // ============================================
 
 // Apply riderProtect middleware to all routes below (instead of protect)
+router.use('/agreements', require('./riderAgreementRoutes'));
 router.use(riderProtect); // CHANGED: Use riderProtect instead of protect
 
 /**
@@ -146,14 +147,14 @@ router.put('/bank-account', updateBankAccount);
  * @desc    Get available orders for rider (paid but not delivered)
  * @access  Private (Rider only)
  */
-router.get('/orders/available', getAvailableOrders);
+router.get('/orders/available', require('../middleware/riderAgreementGuard').createAgreementGuard(), getAvailableOrders);
 
 /**
  * @route   PUT /api/riders/orders/claim/:id
  * @desc    Claim an entire order (all shipments)
  * @access  Private (Rider only)
  */
-router.put('/orders/claim/:id', claimOrder);
+router.put('/orders/claim/:id', require('../middleware/riderAgreementGuard').createAgreementGuard(), claimOrder);
 
 /**
  * @route   PUT /api/riders/orders/reject/:id
@@ -308,6 +309,17 @@ router.put('/notifications/mark-read', async (req, res) => {
  * @access  Private (Rider only)
  */
 router.post('/withdraw', requestWithdrawal);
+
+const { getBonusService } = require('../services/riderDailyBonusService');
+const { sendError: sendPartnershipError } = require('../services/riderAgreementService');
+router.get('/daily-bonus', async (req, res) => {
+  try { res.set('Cache-Control', 'no-store'); res.json(await getBonusService().progress(req.rider._id)); }
+  catch (error) { sendPartnershipError(res, error); }
+});
+router.post('/daily-bonus/request', async (req, res) => {
+  try { res.json({ success: true, bonus: await getBonusService().request(req.rider._id) }); }
+  catch (error) { sendPartnershipError(res, error); }
+});
 
 // ============================================
 // ADMIN/MANAGEMENT ROUTES
