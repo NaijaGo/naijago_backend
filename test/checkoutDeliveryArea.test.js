@@ -49,7 +49,7 @@ function harness({ legs = [5000], maximumDistanceKm = 10, count = 1, mode = 'roa
   const query = value => ({ populate() { return this; }, select() { return this; }, then(resolve, reject) { return Promise.resolve(value).then(resolve, reject); } });
   const settings = { deliveryPricing: { mode, baseFee: 500, pricePerKm: 150, minimumFee: 1000,
     maximumFee: 5000, maximumDistanceKm }, riderPayoutPricing: {}, freeDeliveryCampaign: { enabled: false }, zones: [] };
-  const sandbox = { ...require('../utils/checkoutLocation'), ...require('../utils/addressCoordinates'), Date, Map, Set, Number, String, Math, Object, Array, parseFloat,
+  const sandbox = { ...require('../utils/productOptions'), ...require('../utils/checkoutLocation'), ...require('../utils/addressCoordinates'), Date, Map, Set, Number, String, Math, Object, Array, parseFloat,
     console: { error: (...args) => console.error("Isolated summary diagnostic:", ...args) },
     User: { findById: () => query({}) },
     Product: { findById: id => query(products.find(row => row._id === id)) },

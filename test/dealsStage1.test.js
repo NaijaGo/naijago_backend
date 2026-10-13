@@ -362,7 +362,7 @@ test('checkout source wiring: summary and final creation use shared resolver and
 test('checkout item builder: authoritative Deal price/snapshot survives malicious submitted price', () => {
   const source = fs.readFileSync(path.join(__dirname, '../routes/orderRoutes.js'), 'utf8');
   const functionSource = source.match(/function buildOrderItemFromProduct\(item, product\) \{[\s\S]*?\r?\n\}/)[0];
-  const build = vm.runInNewContext(`(${functionSource})`);
+  const build = vm.runInNewContext(`(${functionSource})`, require('../utils/productOptions'));
   const resolved = prices.resolveProductPrice(product, offer, context());
   const item = build({ ...{ product: pid, quantity: 1, price: 1, dealSnapshot: { finalPrice: 1 } },
     authoritativePrice: resolved.finalPrice, dealSnapshot: resolved.dealSnapshot }, product);
@@ -394,7 +394,7 @@ function checkoutHarness(t) {
     async save() { writes.push({ type: 'shipment', value: this }); return this; }
     static countDocuments() { return query(0); }
   }
-  const sandbox = { ...require('../utils/checkoutLocation'), ...require('../utils/addressCoordinates'), hasValidCoordinates: location => !require('../utils/addressCoordinates').validateCoordinates(location?.latitude, location?.longitude, {required:true}).error, Date, Map, Set, Number, String, Math, Object, Array, parseFloat,
+  const sandbox = { ...require('../utils/productOptions'), ...require('../utils/checkoutLocation'), ...require('../utils/addressCoordinates'), hasValidCoordinates: location => !require('../utils/addressCoordinates').validateCoordinates(location?.latitude, location?.longitude, {required:true}).error, Date, Map, Set, Number, String, Math, Object, Array, parseFloat,
     console: { error: (...args) => errors.push(args.join(' ')) }, Product, ProductOffer: Offer, User,
     MainOrder: OrderStub, Shipment: ShipmentStub, mongoose: { startSession: async () => session },
     loadDealContext: prices.loadDealContext, resolveProductPrice: prices.resolveProductPrice,
@@ -557,4 +557,33 @@ test('location: final order retains selected coordinates and structured optional
  const summary=await h.run('calculateOrderSummary',{...h.summaryBody,shippingAddress:body.shippingAddress});assert.equal(summary.statusCode,200);
  const result=await h.run('createMainOrder',body);assert.equal(result.statusCode,201,h.errors.join('\n'));
  const order=h.writes.find(w=>w.type==='order').value;assert.equal(order.userLocation.latitude,body.userLocation.latitude);assert.equal(order.userLocation.longitude,body.userLocation.longitude);assert.equal(order.shippingAddress.area,'Gwarinpa');assert.equal(order.shippingAddress.state,'FCT');assert.equal(order.shippingAddress.postalCode,'');
+});
+
+test('actual checkout carries valid colour and size through summary and saved shipment', async t => {
+  const h = checkoutHarness(t);
+  product.availableColors = ['Royal Blue'];
+  product.sizeData = { type: 'clothing', sizes: [{value:'M'}] };
+  t.after(() => { delete product.availableColors; delete product.sizeData; });
+  h.summaryBody.cartItems[0].selectedColor = 'Royal Blue';
+  h.summaryBody.cartItems[0].selectedSize = 'M';
+  const summary = await h.run('calculateOrderSummary', h.summaryBody);
+  assert.equal(summary.statusCode, 200, h.errors.join('\n'));
+  const quoted = summary.data.shipmentSummaries[0].items[0];
+  assert.equal(quoted.selectedColor, 'Royal Blue'); assert.equal(quoted.selectedSize, 'M');
+  const body = h.orderBody();
+  Object.assign(body.shipmentSummaries[0].items[0], {selectedColor:'Royal Blue',selectedSize:'M'});
+  const created = await h.run('createMainOrder', body);
+  assert.equal(created.statusCode, 201, h.errors.join('\n'));
+  const saved = h.writes.find(row => row.type === 'shipment').value.items[0];
+  assert.equal(saved.selectedColor, 'Royal Blue'); assert.equal(saved.selectedSize, 'M');
+});
+test('actual checkout rejects tampered colours and sizes before saving orders', async t => {
+  const h = checkoutHarness(t);
+  product.availableColors = ['Black']; product.sizeData = {type:'clothing',sizes:[{value:'M'}]};
+  t.after(() => { delete product.availableColors; delete product.sizeData; });
+  for(const options of [{selectedColor:'Red',selectedSize:'M'},{selectedColor:'Black',selectedSize:'XXL'}]) {
+    const body=h.orderBody();Object.assign(body.shipmentSummaries[0].items[0],options);
+    const created=await h.run('createMainOrder',body);
+    assert.equal(created.statusCode,400,h.errors.join('\n'));assert.equal(h.writes.length,0);
+  }
 });

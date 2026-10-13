@@ -1,3 +1,4 @@
+const { resolveSelection } = require('../utils/productOptions');
 const crypto = require('crypto');
 const mongoose = require('mongoose');
 const Product = require('../models/Product');
@@ -57,7 +58,10 @@ async function items(input, expectedSeller, { requireAvailable = false } = {}) {
         if (expectedSeller && (expectedSeller.sellerType !== sellerType || String(expectedSeller.sellerId || '') !== String(sellerId || ''))) throw failure(400, 'All group products must belong to the same shop.');
         const selectedSize = row.selectedSize ?? '', customerNote = row.customerNote ?? '';
         if (typeof selectedSize !== 'string' || selectedSize.length > 80 || typeof customerNote !== 'string' || customerNote.length > 500) throw failure(400, 'Invalid product option or note.');
-        result.push({ product: product._id, offer: offer?._id || null, quantity: row.quantity, selectedSize: selectedSize.trim(), customerNote: customerNote.trim(), productName: String(product.name || 'Product').slice(0, 300) });
+        const selection = resolveSelection(product, { ...row, selectedSize: selectedSize.trim() });
+        result.push({ product: product._id, offer: offer?._id || null, quantity: row.quantity,
+            selectedSize: selectedSize.trim(), ...(selection.selectedColor ? {selectedColor: selection.selectedColor} : {}),
+            customerNote: customerNote.trim(), productName: String(product.name || 'Product').slice(0, 300) });
         productQuantities.set(String(product._id), (productQuantities.get(String(product._id)) || 0) + row.quantity);
         if (offer) offerQuantities.set(String(offer._id), (offerQuantities.get(String(offer._id)) || 0) + row.quantity);
         sellers.push(seller);
@@ -143,10 +147,12 @@ function occurrenceView(row) {
 function consolidate(rows) {
     const result = new Map();
     for (const row of rows) {
-        const key = JSON.stringify([String(row.product), String(row.offer || ''), row.selectedSize || '', row.customerNote || '']);
+        const key = JSON.stringify([String(row.product), String(row.offer || ''), row.selectedSize || '', row.customerNote || '',
+            ...(row.selectedColor ? [row.selectedColor] : [])]);
         const existing = result.get(key);
         if (existing) existing.quantity += row.quantity;
-        else result.set(key, { product: String(row.product), offer: row.offer ? String(row.offer) : undefined, quantity: row.quantity, selectedSize: row.selectedSize || '', customerNote: row.customerNote || '' });
+        else result.set(key, { product: String(row.product), offer: row.offer ? String(row.offer) : undefined, quantity: row.quantity, selectedSize: row.selectedSize || '',
+            ...(row.selectedColor ? {selectedColor: row.selectedColor} : {}), customerNote: row.customerNote || '' });
     }
     if (!result.size || result.size > 100 || [...result.values()].some(row => row.quantity > 1000)) throw failure(400, 'The combined basket is empty or too large.');
     return [...result.values()];

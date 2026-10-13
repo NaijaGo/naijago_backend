@@ -37,7 +37,7 @@ function normalizeAllocations(allocations, { hold = false } = {}) {
     }
     // Immediate orders retain their existing aggregate accounting. Holds cannot
     // imply that variant/size stock is protected by that aggregate accounting.
-    if (hold && (input.variantId || (input.selectedSize != null && input.selectedSize !== ''))) {
+    if (hold && (input.selectedColor || input.variantId || (input.selectedSize != null && input.selectedSize !== ''))) {
       fail('UNSUPPORTED_INVENTORY_VARIANT', 'Variant and size reservations are not supported.', 409);
     }
     const allocation = { product: objectId(input.product), offer: input.offer ? objectId(input.offer) : null,
@@ -72,7 +72,7 @@ async function validateInventoryIdentity(allocation, { session, hold = false } =
     if (!offer) fail('INVALID_INVENTORY_OFFER', 'Offer does not belong to this product.', 400);
     getAvailableQuantity(offer);
   }
-  if (hold && (product.variants?.length || product.sizeData?.sizes?.length ||
+  if (hold && (product.availableColors?.length || product.variants?.length || product.sizeData?.sizes?.length ||
       product.sizeData?.customDimensions?.length || offer?.variants?.length)) {
     fail('UNSUPPORTED_INVENTORY_VARIANT', 'Products with variant or size inventory cannot be reserved yet.');
   }

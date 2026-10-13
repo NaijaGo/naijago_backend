@@ -1,3 +1,4 @@
+const { resolveSelection } = require('../utils/productOptions');
 const { isMedicineProduct, isRestrictedMedicine, isRestaurantCategory: isRestaurantProduct, productPurchaseError } = require('../utils/categoryPolicy');
 const { validateCheckoutLocation, normalizeCheckoutAddress } = require('../utils/checkoutLocation');
 const { validateCoordinates } = require('../utils/addressCoordinates');
@@ -352,7 +353,7 @@ async function decrementPaidItemInventory({ item, orderId, shipmentId, itemIndex
     const businessKey = inventorySaleBusinessKey({ item, orderId, shipmentId, itemIndex });
     return inventory.immediateSale({
         allocations: [{ product: item.product, offer: item.offer, quantity: Number(item.quantity),
-            variantId: item.variantId, selectedSize: item.selectedSize }],
+            variantId: item.variantId, selectedSize: item.selectedSize, selectedColor: item.selectedColor }],
         order: orderId,
         businessKey,
         session,
@@ -757,7 +758,7 @@ function buildOrderItemFromProduct(item, product) {
         quantity: item.quantity,
         price: authoritativePrice,
         dealSnapshot: item.dealSnapshot || undefined,
-        selectedSize: item.selectedSize || null,
+        ...resolveSelection(product, item),
         category: product.category || 'Uncategorized',
         productSnapshot: {
             brand: product.brand || '',
@@ -1938,6 +1939,7 @@ const createMainOrder = async (req, res) => {
                     price: item.price,
                     dealSnapshot: item.dealSnapshot || undefined,
                     selectedSize: item.selectedSize || null,
+                    selectedColor: item.selectedColor || null,
                     category: item.category, // Store category
                     productSnapshot: item.productSnapshot || {},
                     commissionRate: item.commissionRate, // Store individual item commission rate
@@ -2039,6 +2041,7 @@ const createMainOrder = async (req, res) => {
         await session.abortTransaction();
         session.endSession();
         console.error('Error creating multi-vendor order:', error.code || error.message);
+        if (error.code === 'PRODUCT_OPTIONS_INVALID') return res.status(400).json({ code: error.code, message: error.message });
         if (String(error.code || '').startsWith('DEAL_')) {
             return res.status(error.statusCode || 503).json({ code: error.code, message: error.message });
         }

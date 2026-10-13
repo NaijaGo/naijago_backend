@@ -145,7 +145,8 @@ async function invoke(handler, request) {
     return body;
 }
 const fingerprint = quote => service.hash(JSON.stringify({ total: quote.totalPrice, subtotal: quote.totalSubtotal, shipping: quote.totalShippingPrice, tax: quote.taxPrice,
-    items: quote.shipmentSummaries.flatMap(summary => summary.items.map(item => ({ product: String(item.product), offer: String(item.offer || ''), size: item.selectedSize || '', quantity: item.quantity, price: item.price }))) }));
+    items: quote.shipmentSummaries.flatMap(summary => summary.items.map(item => ({ product: String(item.product), offer: String(item.offer || ''), size: item.selectedSize || '', quantity: item.quantity, price: item.price,
+        ...(item.selectedColor ? {color: item.selectedColor} : {}) }))) }));
 async function purchaseContext(req, kind) {
     const Model = kind === 'group' ? GroupOrder : RecurringOccurrence;
     const row = await Model.findOne({ _id: service.id(req.params.id), owner: req.user._id, revision: service.revision(req.body.revision) });

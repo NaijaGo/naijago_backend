@@ -29,12 +29,14 @@ function normalizeAllocations(items) {
   const merged = new Map();
   for (const item of items) {
     const allocation = { product: requireId(item?.product), offer: item.offer == null ? null : requireId(item.offer),
+      ...(item.selectedColor != null && item.selectedColor !== '' ? { selectedColor: item.selectedColor } : {}),
       variantId: item.variantId == null ? null : requireId(item.variantId), selectedSize: item.selectedSize ?? '', quantity: item.quantity };
-    if (typeof allocation.selectedSize !== 'string' || allocation.selectedSize.length > 120 ||
+    if (allocation.selectedColor !== undefined && (typeof allocation.selectedColor !== 'string' || allocation.selectedColor.length > 40) || typeof allocation.selectedSize !== 'string' || allocation.selectedSize.length > 120 ||
         !Number.isSafeInteger(allocation.quantity) || allocation.quantity < 1 || allocation.quantity > 10000) {
       throw schedulingError('INVALID_INVENTORY_ALLOCATIONS', 'Invalid exact item or quantity.');
     }
-    const key = JSON.stringify([allocation.product, allocation.offer, allocation.variantId, allocation.selectedSize]);
+    const key = JSON.stringify([allocation.product, allocation.offer, allocation.variantId, allocation.selectedSize,
+      ...(allocation.selectedColor ? [allocation.selectedColor] : [])]);
     if (merged.has(key)) merged.get(key).quantity += allocation.quantity;
     else merged.set(key, allocation);
     if (merged.get(key).quantity > 10000) throw schedulingError('INVALID_INVENTORY_ALLOCATIONS', 'Quantity exceeds reservation limit.');

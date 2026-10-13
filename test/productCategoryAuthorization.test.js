@@ -156,3 +156,21 @@ test('suspended vendor status is supported by the real User schema', async () =>
   const user = new User({ vendorStatus: 'suspended' }); await user.validate(['vendorStatus']);
   assert.equal(user.vendorStatus, 'suspended');
 });
+
+test('actual vendor update saves colours while retaining text-only category and approval', async t => {
+  const f=await fixture(t);
+  const result=await f.request(`/api/products/${pid}`,{availableColors:'["Black","Royal Blue"]'});
+  assert.equal(result.status,200);assert.deepEqual(f.saved[0].availableColors,['Black','Royal Blue']);
+  assert.equal(f.saved[0].category,'Fashion');assert.equal(f.saved[0].moderationStatus,'approved');
+});
+test('actual vendor update rejects invalid colours before saving', async t => {
+  const f=await fixture(t);
+  const result=await f.request(`/api/products/${pid}`,{availableColors:JSON.stringify(['x'.repeat(41)])});
+  assert.equal(result.status,400);assert.equal(f.saved.length,0);
+});
+
+test('actual vendor update can explicitly clear optional sizes without clearing omitted colours', async t => {
+  const f=await fixture(t,{product:{availableColors:['Cream'],sizeData:{type:'custom',customDimensions:[{length:10,width:20,height:30,unit:'cm',label:'Small'}]}}});
+  const result=await f.request(`/api/products/${pid}`,{size_data:JSON.stringify({type:null,sizes:[]})});
+  assert.equal(result.status,200);assert.equal(f.saved[0].sizeData,null);assert.deepEqual(f.saved[0].availableColors,['Cream']);
+});

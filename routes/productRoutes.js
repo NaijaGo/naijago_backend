@@ -1,3 +1,4 @@
+const { parseColors } = require('../utils/productOptions');
 const mongoose = require('mongoose');
 const Category = require('../models/Category');
 const taxonomy = require('../services/catalogTaxonomyService');
@@ -553,6 +554,7 @@ router.post(
                 variants: parseJsonField(variants, []),
                 stockQuantity: Number(stockQuantity),
                 imageUrls: uploadedImages,
+                availableColors: parseColors(req.body.availableColors ?? []),
                 sizeData, // NEW: Add size data to product
                 sellerType: requestedSellerType,
                 sellerId: requestedSellerId,
@@ -642,7 +644,7 @@ router.post(
             });
         } catch (error) {
             console.error('Error adding product:', error);
-            res.status(500).json({ message: 'Server error adding product.' });
+            res.status(error.statusCode || 500).json({ code: error.code, message: error.statusCode ? error.message : 'Server error adding product.' });
         }
     }
 );
@@ -921,6 +923,9 @@ router.put(
             if (size_data) {
                 try {
                     const parsedSizeData = JSON.parse(size_data);
+                    if (parsedSizeData.type === null && Array.isArray(parsedSizeData.sizes) && parsedSizeData.sizes.length === 0) {
+                        sizeData = null; // Explicit clearing only; omitted fields retain legacy sizes.
+                    }
                     
                     if (parsedSizeData.type) {
                         sizeData = {
@@ -987,6 +992,7 @@ router.put(
             if (stockQuantity !== undefined) product.stockQuantity = Number(stockQuantity);
             if (productStatus !== undefined) product.productStatus = productStatus;
             product.imageUrls = updatedImageUrls;
+            if (req.body.availableColors !== undefined) product.availableColors = parseColors(req.body.availableColors);
             product.sizeData = sizeData; // NEW: Update size data
             const nextProductLocation = buildProductLocation(req.body);
             if (nextProductLocation !== undefined) {

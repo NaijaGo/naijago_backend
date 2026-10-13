@@ -21,6 +21,7 @@ const ShipmentItemSchema = new mongoose.Schema({
         subcategory: { type: String, default: '' },
         attributes: { type: Map, of: String, default: {} },
     },
+    selectedColor: { type: String, trim: true, maxlength: 40, default: null },
     selectedSize: {  // NEW FIELD: Store selected size/variant
         type: mongoose.Schema.Types.Mixed, // Can be String, Object, or null
         default: null,

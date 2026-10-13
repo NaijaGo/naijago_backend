@@ -4,7 +4,7 @@ const itemSchema = new Schema({
     product: { type: Schema.Types.ObjectId, ref: 'Product', required: true },
     offer: { type: Schema.Types.ObjectId, ref: 'ProductOffer', default: null },
     quantity: { type: Number, min: 1, max: 1000, required: true, validate: Number.isSafeInteger },
-    selectedSize: { type: String, maxlength: 80, default: '' },
+    selectedColor: { type: String, maxlength: 40, default: null }, selectedSize: { type: String, maxlength: 80, default: '' },
     customerNote: { type: String, maxlength: 500, default: '' },
     productName: { type: String, maxlength: 300, default: '' },
 }, { _id: false });

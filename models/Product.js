@@ -29,6 +29,7 @@ const productSchema = mongoose.Schema(
     categoryId: { type: mongoose.Schema.Types.ObjectId, ref: 'Category', default: null },
     subcategoryId: { type: mongoose.Schema.Types.ObjectId, ref: 'Category', default: null },
     searchTags: [{ type: String, trim: true, lowercase: true }],
+    availableColors: { type: [String], default: [], validate: value => value.length <= 32 && value.every(label => typeof label === 'string' && label.length <= 40) },
     sku: { type: String, trim: true, uppercase: true },
     gtin: { type: String, trim: true },
     discountPrice: { type: Number, default: null, min: 0 },
