@@ -4,15 +4,17 @@ const bcrypt = require('bcryptjs');
 
 // Define the User Schema
 const UserSchema = new mongoose.Schema({
+  // Native Apple login collects only name/email; delivery details remain separate.
+  appleSubject: { type: String, trim: true },
   googleSubject: { type: String, trim: true },
   firstName: {
     type: String,
-    required: [true, 'First name is required'],
+    required: [function() { return !this.appleSubject || this.isVendor || this.isAdmin || this.role !== 'user'; }, 'First name is required'],
     trim: true,
   },
   lastName: {
     type: String,
-    required: [true, 'Last name is required'],
+    required: [function() { return !this.appleSubject || this.isVendor || this.isAdmin || this.role !== 'user'; }, 'Last name is required'],
     trim: true,
   },
   email: {
@@ -25,8 +27,7 @@ const UserSchema = new mongoose.Schema({
   },
   phoneNumber: {
     type: String,
-    required: [true, 'Phone number is required'],
-    unique: true,
+    required: [function() { return !this.appleSubject || this.isVendor || this.isAdmin || this.role !== 'user'; }, 'Phone number is required'],
     trim: true,
     match: [/^(?:\+?234|0)[789]\d{9}$/, 'Please enter a valid Nigerian phone number'],
   },
@@ -559,6 +560,21 @@ UserSchema.virtual('isPharmacist').get(function() {
 });
 
 UserSchema.index({ googleSubject: 1 }, { unique: true, partialFilterExpression: { googleSubject: { $type: 'string' } } });
+// Existing phone uniqueness is preserved by explicit setup before Apple is enabled.
+// Mongoose's automatic initializer must not replace a production index on startup.
+UserSchema.index({ phoneNumber: 1 }, { name: 'user_phone_string_unique', unique: true,
+  partialFilterExpression: { phoneNumber: { $type: 'string' } }, _autoIndex: false });
+
+UserSchema.pre('save', async function() {
+  // Preserve phone uniqueness on new databases as well as existing deployments:
+  // missing manual setup must block registration/phone changes, not permit duplicates.
+  if (typeof this.phoneNumber !== 'string' || (!this.isNew && !this.isModified('phoneNumber'))) return;
+  const indexes = await this.constructor.collection.listIndexes().toArray();
+  const protectedPhone = indexes.some(index => index.unique === true && !index.sparse &&
+    JSON.stringify(index.key) === '{"phoneNumber":1}' && (!index.partialFilterExpression ||
+      JSON.stringify(index.partialFilterExpression) === '{"phoneNumber":{"$type":"string"}}'));
+  if (!protectedPhone) throw new Error('Customer phone uniqueness requires explicit database setup.');
+});
 
 UserSchema.pre('save', function(next) {
   if (this.role === 'pharmacist') {

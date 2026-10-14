@@ -29,6 +29,7 @@ const {
 } = require('../services/referralService');
 
 const router = express.Router();
+router.use('/apple', require('./appleAuthRoutes').createAppleRouter());
 const resend = process.env.RESEND_API_KEY
     ? new Resend(process.env.RESEND_API_KEY)
     : null;
@@ -579,6 +580,7 @@ router.get('/email/verify/:token', async (req, res) => {
 
 
 const { googleUserAuth } = require('../middleware/googleAuthMiddleware');
+const { reviewAccessSeconds, reviewToken } = require('../services/appReviewAccessService');
 const googleLoginLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 30, standardHeaders: 'draft-8', legacyHeaders: false,
   message: { message: 'Too many sign-in attempts. Please try again later.' } });
 const loginUser = async (req, res) => {
@@ -665,6 +667,14 @@ const loginUser = async (req, res) => {
         code: 'INVALID_DEVICE_FINGERPRINT',
         message: 'Unable to identify this device securely. Please update or restart the app and try again.',
       });
+    }
+
+    const reviewSeconds = !req.googleAuthenticatedUser && typeof password === 'string' && password.length >= 12
+      ? reviewAccessSeconds(user) : 0;
+    if (reviewSeconds > 0) {
+      // Correct password and verified email have already been checked above.
+      // Do not permanently trust the reviewer's device or change user verification.
+      return res.status(200).json({ ...loginPayload('Demo account login successful.'), token: reviewToken(user, reviewSeconds) });
     }
 
     if (!user.deviceFingerprint && !(user.trustedDevices || []).length) {
@@ -879,6 +889,8 @@ router.delete('/delete-account', protect, async (req, res) => {
         console.log(`Deleting all return requests for user: ${userId}`);
         await ReturnRequest.deleteMany({ user: userId });
 
+        // Remove only this account's Apple association; no other identities are touched.
+        await require('../models/AppleIdentity').deleteMany({ userId });
         // 3. Finally, delete the user account itself
         await User.findByIdAndDelete(userId);
 

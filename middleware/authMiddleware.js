@@ -24,6 +24,10 @@ const protect = async (req, res, next) => {
                 return res.status(401).json({ message: 'Not authorized, account not found' });
             }
 
+            if (decoded.reviewAccess === true && !require('../services/appReviewAccessService').reviewAccessSeconds(user)) {
+                return res.status(401).json({ message: 'Demo account access has expired or been disabled.' });
+            }
+
             // Attach the found user (or rider) to the request object
             req.user = user;
             next();
