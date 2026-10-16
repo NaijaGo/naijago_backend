@@ -4,7 +4,7 @@ const crypto = require('node:crypto');
 const nairaToKobo = (value) => {
   if (!['number', 'string'].includes(typeof value) || String(value).trim() === '') return null;
   const amount = Number(value), kobo = Math.round(amount * 100);
-  return Number.isFinite(amount) && amount > 0 && Number.isSafeInteger(kobo)
+  return Number.isFinite(amount) && amount > 0 && Number.isSafeInteger(kobo) && kobo > 0
     && Math.abs(amount * 100 - kobo) < 0.00001 ? kobo : null;
 };
 const normalizeKoraTransaction = (response) => {

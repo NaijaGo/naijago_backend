@@ -132,10 +132,17 @@ Do not create a replacement payout or refund an uncertain transfer manually.
 
 ## Validation performed
 
-JavaScript parser checks and Git whitespace checks were run locally. Automated
-tests were not added or run in this task. No provider test/live transaction,
-webhook delivery, database transaction or device checkout was exercised. These
-changes are prepared for review and staging, not a claim of production readiness.
+The initial integration received JavaScript parser and Git whitespace checks.
+The subsequent verification on 16 October 2026 passed 55 targeted local tests,
+including 39 Kora checks with isolated provider/database fixtures and 16 existing
+payment regression checks. A tiny positive amount rounding to zero kobo is now
+rejected. See [the verification report](KORA_VERIFICATION_2026-10-16.md).
+
+No provider test/live transaction, signed provider delivery, real database
+transaction or device checkout was exercised. Local tests do not establish
+production readiness. At the checked public app origin, the Kora POST webhook
+returned 404 while historical gateway webhooks returned 401. The deployed
+service URL/revision and route availability must be resolved before live testing.
 
 ## Official references consulted
 
