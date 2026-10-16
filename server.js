@@ -2,6 +2,13 @@
 // server.js (UPDATED WITH BOTH INDIVIDUAL & COMPANY RIDERS)
 const express = require('express');
 const dotenv = require('dotenv').config();
+const loadTestMode = require('./config/loadTestMode').configureLoadTestMode(process.env);
+if (loadTestMode.enabled) {
+  // A read-only test account cannot create collections or build indexes.
+  const mongoose = require('mongoose');
+  mongoose.set('autoIndex', false);
+  mongoose.set('autoCreate', false);
+}
 const colors = require('colors');
 const path = require('path');
 const http = require('http');
@@ -35,6 +42,7 @@ const orderRoutes = require('./routes/orderRoutes');
 const {processPendingKoraWithdrawals} = require('./services/koraPayoutService');
 
 const app = express();
+if (loadTestMode.enabled) app.use(loadTestMode.middleware);
 // Render places one trusted reverse proxy in front of the service. Trusting
 // every proxy lets clients spoof X-Forwarded-For and bypass IP rate limits.
 app.set('trust proxy', 1);
@@ -120,6 +128,7 @@ app.get('/', (req, res) => res.json({
 // HTTP + Socket.IO
 const server = http.createServer(app);
 const io = new Server(server, {
+  ...(loadTestMode.enabled ? { allowRequest: (_req, callback) => callback(null, false) } : {}),
   cors: { origin: process.env.FRONTEND_ORIGIN || '*', methods: ['GET', 'POST'] },
   pingTimeout: 60000,
   connectionStateRecovery: {
@@ -2207,6 +2216,13 @@ app.use(errorHandler);
 
 const startServer = async () => {
   await connectDB();
+  if (loadTestMode.enabled) {
+    await loadTestMode.verifyDatabase(require('mongoose').connection);
+    server.listen(PORT, '0.0.0.0', () => {
+      console.log('Browsing load-test server ready; writes, sockets and startup jobs are disabled.');
+    });
+    return;
+  }
   await cleanupObsoleteIndexes();
   const referralSettingsState = await initializeReferralProgramSettings();
   const deliveryFeeSettingsState = await initializeDeliveryFeeSettings();
