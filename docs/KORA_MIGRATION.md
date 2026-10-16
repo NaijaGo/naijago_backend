@@ -148,6 +148,12 @@ an allowlisted HTTP status/category without raw provider/customer/key data.
 See the subsequent-diagnosis section of the verification report. Successful
 live checkout and bank transfers still require confirmation.
 
+The later HTTP 422 checkout failure identified `reference` as the rejected
+field. New checkout references now use 35 alphanumeric characters with 128
+random bits; existing references are preserved for reconciliation. For a
+confirmed never-opened, never-paid rejected attempt, test a fresh checkout from
+Cart after deployment. See the reference-validation follow-up in the report.
+
 ## Official references consulted
 
 - [Checkout Redirect](https://developers.korapay.com/docs/checkout-redirect)

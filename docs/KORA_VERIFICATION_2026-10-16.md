@@ -127,3 +127,36 @@ After deploying this patch, resume the existing unpaid order once. If checkout
 still fails, inspect the new diagnostic object in Render logs to identify the
 next account/configuration/request investigation. This patch improves diagnosis;
 it does not establish that the live checkout failure has been fixed.
+
+## Reference validation follow-up
+
+The subsequent Render screenshot records HTTP **422**, `request_rejected`, and
+`fields: ['reference']`. This identifies a provider reference validation error;
+it does not reveal the exact length/character rule. The public Checkout Redirect
+guide requires a unique reference but does not publish a complete length and
+character constraint for that endpoint. Do not claim an unverified maximum.
+
+The previous generator produced `NGK_<24-character order ID>_<24 hex digits>`,
+53 characters including underscores. New checkout attempts now reserve a compact
+35-character, alphanumeric reference: `NGK` plus 32 random hex digits (128 random
+bits). Order identity remains in stored payment data and the existing `order-id`
+metadata. This is a conservative compatibility correction based on the rejected
+field; live provider acceptance still needs confirmation.
+
+Existing references are **not** rewritten, truncated or replaced, including
+references with an existing checkout URL or an ambiguous initialization result.
+Their reconciliation and verification remain available. No order, payment,
+wallet or database record was manually changed by this patch.
+
+The user confirmed no Kora payment page opened and no money was sent for the
+reported ₦700 order. After this backend patch is live, test a **fresh checkout
+from Cart**, not `Continue secure payment` on an old rejected attempt. The old
+unpaid attempts retain their original references. A previous successful,
+pending or uncertain payment must instead be reconciled before another payment.
+
+New tests cover reference format/length, distinct generation across 100 orders,
+the real initialization payload with an isolated HTTP fixture, preservation of
+historical references/URLs, and unchanged same-reference retries/concurrency.
+The targeted command passes **61 tests, 0 failures and 0 skipped** after this
+change. Parser and Git whitespace checks also passed. Live Kora acceptance of
+the compact reference remains to be checked after deployment.

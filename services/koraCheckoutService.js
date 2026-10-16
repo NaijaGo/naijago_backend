@@ -13,7 +13,9 @@ const prepareKoraCheckout = async ({order, buyer}) => {
     // Reserve one reference before any provider request, including concurrent requests.
     const reserved = await MainOrder.findOneAndUpdate({_id: order._id, isPaid: false, totalPrice: kobo / 100,
       'paymentResult.tx_ref': {$in: [null, '']}}, {$set: {paymentResult: {
-      provider: 'korapay', tx_ref: `NGK_${order._id}_${crypto.randomBytes(12).toString('hex')}`,
+      // Keep provider-facing references compact and alphanumeric. The order is
+      // linked by paymentResult and metadata; its ID need not lengthen the ref.
+      provider: 'korapay', tx_ref: `NGK${crypto.randomBytes(16).toString('hex')}`,
       mode: config.mode, status: 'initiated', expectedAmount: kobo / 100, expectedAmountKobo: kobo,
       expectedCustomerEmail: buyer.email, currency: 'NGN', initiatedAt: new Date(),
     }}}, {new: true});
