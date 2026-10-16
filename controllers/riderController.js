@@ -1956,6 +1956,15 @@ exports.getEarnings = async (req, res) => {
  * @desc Request withdrawal from wallet
  */
 exports.requestWithdrawal = async (req, res) => {
+  if (String(process.env.PAYOUT_PROVIDER || 'korapay').trim().toLowerCase() === 'korapay') {
+    try {
+      const {requestKoraRiderWithdrawal} = require('../services/koraPayoutService');
+      return res.json(await requestKoraRiderWithdrawal({riderId: req.rider._id, amount: req.body.amount}));
+    } catch (error) {
+      return res.status(error.statusCode || 503).json({success: false,
+        message: error.statusCode ? error.message : 'Unable to prepare withdrawal. Check withdrawal history before retrying.'});
+    }
+  }
   const session = await mongoose.startSession();
   session.startTransaction();
 

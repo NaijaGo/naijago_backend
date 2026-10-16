@@ -46,7 +46,12 @@ const {
     buildPendingPaymentResult,
     paymentMatchesOrder,
 } = require('../utils/flutterwavePayment');
-const { initiateSquadPayment, verifySquadPayment } = require('../services/squadPaymentService');
+const { verifySquadPayment } = require('../services/squadPaymentService');
+const { prepareKoraCheckout } = require('../services/koraCheckoutService');
+const { getKoraConfig, verifyKoraPayment } = require('../services/koraPaymentService');
+const { koraPaymentMatchesOrder, verifyKoraWebhookSignature, buildKoraPendingPaymentResult,
+    koraVerifiedTransaction } = require('../utils/koraPayment');
+const { reconcileKoraWithdrawal } = require('../services/koraPayoutService');
 const {
     buildSquadPendingPaymentResult,
     normalizeSquadTransaction,
@@ -56,9 +61,6 @@ const {
 
 const buildFlutterwaveTxRef = (orderId) =>
     `NGO_${orderId}_${crypto.randomBytes(12).toString('hex')}`;
-
-const buildSquadTxRef = (orderId) =>
-    `NGS_${orderId}_${crypto.randomBytes(12).toString('hex')}`;
 
 const hasValidCoordinates = (location) => {
     return !validateCoordinates(location?.latitude, location?.longitude, { required: true }).error;
@@ -157,7 +159,7 @@ const resolveCampaignRouteDistance = async ({ campaign, shipmentSummaries, userL
 };
 
 const configuredPaymentProvider = () =>
-    String(process.env.PAYMENT_PROVIDER || 'flutterwave').trim().toLowerCase();
+    String(process.env.PAYMENT_PROVIDER || 'korapay').trim().toLowerCase();
 
 const getCostLowCommissionConfig = async (session = null) => {
     const query = AppSetting.findOne({ key: 'cost_low_store' })
@@ -399,7 +401,7 @@ async function settleVerifiedPayment({ order, buyer, verifiedTx, app, session, m
             await decrementPaidItemInventory({ item, orderId: order._id, shipmentId: shipment._id, itemIndex, session });
         }
         if (!deferVendorNotifications) {
-            await notifyVendorOfPaidShipment({ app, order, shipment, paymentMethod: provider === 'squad' ? 'Squad' : 'Flutterwave', session });
+            await notifyVendorOfPaidShipment({ app, order, shipment, paymentMethod: provider === 'korapay' ? 'KoraPay' : provider === 'squad' ? 'Squad' : 'Flutterwave', session });
         }
     }
     return order.save({ session });
@@ -2498,62 +2500,30 @@ router.post('/:id/payment-intent', protect, async (req, res) => {
         }
 
         const provider = configuredPaymentProvider();
-        if (provider === 'squad') {
+        if (provider === 'korapay') {
+            if (order.paymentResult?.tx_ref && order.paymentResult.provider !== 'korapay') {
+                // Acknowledged by existing clients as review/pending, never paid.
+                // Recovery/webhooks continue to verify the historical reference.
+                return res.status(200).json({code: 'PAYMENT_RECONCILIATION_PENDING', status: 'pending',
+                    orderId: order._id, isPaid: false,
+                    message: 'An earlier payment is awaiting verification. Do not pay again. Check My Orders or contact support.'});
+            }
+            if (!Array.isArray(req.body?.supported_payment_providers)
+                || !req.body.supported_payment_providers.includes('korapay')) {
+                return res.status(426).json({code: 'PAYMENT_APP_UPDATE_REQUIRED', message: 'Update NaijaGo to use the current secure checkout.'});
+            }
             const buyer = await User.findById(req.user.id).select('firstName lastName email');
-            if (!buyer?.email) {
-                return res.status(400).json({ message: 'A verified email address is required for payment.' });
-            }
-            const existingSquadRef = order.paymentResult?.provider === 'squad'
-                ? order.paymentResult.tx_ref
-                : null;
-            if (existingSquadRef && order.paymentResult?.checkoutUrl) {
-                return res.status(200).json({
-                    provider: 'squad',
-                    orderId: order._id,
-                    tx_ref: existingSquadRef,
-                    checkout_url: order.paymentResult.checkoutUrl,
-                    amount: order.totalPrice,
-                    amount_kobo: Math.round(Number(order.totalPrice) * 100),
-                    currency: 'NGN',
-                    status: order.paymentResult.status || 'initiated',
-                });
-            }
-            const txRef = existingSquadRef || buildSquadTxRef(order._id);
-            const checkout = await initiateSquadPayment({
-                amountNaira: order.totalPrice,
-                email: buyer.email,
-                customerName: `${buyer.firstName || ''} ${buyer.lastName || ''}`.trim() || buyer.email,
-                transactionRef: txRef,
-                orderId: order._id,
-            });
-            order.paymentResult = {
-                ...(order.paymentResult || {}),
-                provider: 'squad',
-                tx_ref: checkout.data.transaction_ref,
-                checkoutUrl: checkout.data.checkout_url,
-                status: 'initiated',
-                expectedAmount: order.totalPrice,
-                expectedAmountKobo: Math.round(Number(order.totalPrice) * 100),
-                currency: 'NGN',
-                initiatedAt: order.paymentResult?.initiatedAt || new Date(),
-            };
-            await order.save();
-            return res.status(existingSquadRef ? 200 : 201).json({
-                provider: 'squad',
-                orderId: order._id,
-                tx_ref: checkout.data.transaction_ref,
-                checkout_url: checkout.data.checkout_url,
-                amount: order.totalPrice,
-                amount_kobo: Math.round(Number(order.totalPrice) * 100),
-                currency: 'NGN',
-                status: 'initiated',
-            });
+            const intent = await prepareKoraCheckout({order, buyer});
+            return res.status(200).json(intent);
         }
         if (provider !== 'flutterwave') {
             return res.status(503).json({ message: 'Online payment is temporarily unavailable.' });
         }
 
         const existingRef = order.paymentResult?.tx_ref;
+        if (existingRef && order.paymentResult?.provider && order.paymentResult.provider !== 'flutterwave') {
+            return res.status(409).json({message: 'This order already has a payment reference. Verify that payment before starting another checkout.'});
+        }
         const txRef = existingRef || buildFlutterwaveTxRef(order._id);
         order.paymentResult = {
             ...(order.paymentResult || {}),
@@ -2572,8 +2542,8 @@ router.post('/:id/payment-intent', protect, async (req, res) => {
             status: order.paymentResult.status,
         });
     } catch (error) {
-        console.error('[PAYMENT INTENT] Error:', error);
-        return res.status(500).json({ message: 'Unable to prepare payment.' });
+        console.error('[PAYMENT INTENT] Error:', error.code || 'unavailable');
+        return res.status(error.statusCode || 500).json({ message: error.statusCode ? error.message : 'Unable to prepare payment.' });
     }
 });
 
@@ -2590,17 +2560,16 @@ router.put('/:id/pay', protect, async (req, res) => {
             return res.status(404).json({ message: 'Main Order not found' });
         }
         console.log(`[PAY ENDPOINT] Found order: ${mainOrder._id} | Current isPaid: ${mainOrder.isPaid} | Status: ${mainOrder.mainOrderStatus}`);
+        if (mainOrder.user.toString() !== req.user.id.toString()) {
+            await session.abortTransaction();
+            session.endSession();
+            return res.status(401).json({message: 'Not authorized to modify this order'});
+        }
         if (mainOrder.isPaid) {
             console.warn(`[PAY ENDPOINT] WARNING: Order already paid - ID: ${mainOrder._id} | Paid at: ${mainOrder.paidAt}`);
             await session.commitTransaction();
             session.endSession();
             return res.status(200).json(mainOrder);
-        }
-        if (mainOrder.user.toString() !== req.user.id.toString()) {
-            console.error(`[PAY ENDPOINT] Unauthorized attempt - Order user: ${mainOrder.user} | Request user: ${req.user.id}`);
-            await session.abortTransaction();
-            session.endSession();
-            return res.status(401).json({ message: 'Not authorized to modify this order' });
         }
         const buyer = await User.findById(req.user.id).session(session);
         if (!buyer) {
@@ -2638,6 +2607,30 @@ router.put('/:id/pay', protect, async (req, res) => {
         }
         console.log(`[PAY ENDPOINT] Idempotency check passed - no conflicting order found for tx_ref: ${transaction_id}`);
         const provider = String(mainOrder.paymentResult?.provider || 'flutterwave').toLowerCase();
+        if (provider === 'korapay') {
+            if (mainOrder.paymentResult.mode !== getKoraConfig().mode) {
+                throw Object.assign(new Error('Payment mode changed. Contact support before paying again.'), {statusCode: 409});
+            }
+            const verified = await verifyKoraPayment({transactionRef: transaction_id});
+            if (!koraPaymentMatchesOrder(verified, mainOrder, transaction_id)) {
+                mainOrder.paymentResult = buildKoraPendingPaymentResult(mainOrder.paymentResult, verified, transaction_id);
+                await mainOrder.save({session});
+                await session.commitTransaction();
+                session.endSession();
+                return res.status(202).json({status: mainOrder.paymentResult.status,
+                    message: 'Payment is not confirmed yet. It will be checked again. Do not pay twice.'});
+            }
+            const updatedOrder = await settleVerifiedPayment({order: mainOrder, buyer,
+                verifiedTx: koraVerifiedTransaction(verified), app: req.app, session,
+                method: 'direct_verify', provider: 'korapay', deferVendorNotifications: true});
+            await session.commitTransaction();
+            session.endSession();
+            try {await notifyPaidOrderVendors({app: req.app, order: updatedOrder, paymentMethod: 'KoraPay'});}
+            catch (error) {console.error('Kora post-commit vendor notification error:', error.message);}
+            try {await grantReferralRewardForVerifiedUser(req.user.id);}
+            catch (error) {console.error('Kora referral reward processing error:', error.message);}
+            return res.json(updatedOrder);
+        }
         if (provider === 'squad') {
             const verified = await verifySquadPayment({
                 transactionRef: transaction_id,
@@ -2778,7 +2771,7 @@ router.put('/:id/pay', protect, async (req, res) => {
             stack: error.stack,
             providerError: error.response?.data || null
         });
-        if (error.code === 'SQUAD_RATE_LIMITED') res.set('Retry-After', String(error.retryAfterSeconds));
+        if (['SQUAD_RATE_LIMITED', 'KORAPAY_RATE_LIMITED'].includes(error.code)) res.set('Retry-After', String(error.retryAfterSeconds));
         res.status(error.statusCode || 500).json({
             message: error.statusCode ? error.message : 'Unable to confirm payment right now.'
         });
@@ -3558,6 +3551,50 @@ router.get('/:id', protect, async (req, res) => {
 });
 
 
+router.post('/webhooks/korapay', async (req, res) => {
+  let config;
+  try {config = getKoraConfig();} catch {return res.status(503).send('Kora is not configured');}
+  if (!verifyKoraWebhookSignature({body: req.body, signature: req.headers['x-korapay-signature'], secretKey: config.secretKey})) {
+    return res.status(401).send('Signature mismatch');
+  }
+  const {event, data} = req.body;
+  if (['transfer.success', 'transfer.failed'].includes(event)) {
+    try {await reconcileKoraWithdrawal(data.reference); return res.sendStatus(200);}
+    catch (error) {console.error('[KORA PAYOUT WEBHOOK]', error.code || 'reconciliation_failed'); return res.sendStatus(503);}
+  }
+  if (!['charge.success', 'charge.failed'].includes(event) || typeof data.reference !== 'string') return res.sendStatus(200);
+  const session = await mongoose.startSession();
+  let settledOrder = null;
+  try {
+    await session.withTransaction(async () => {
+      settledOrder = null;
+      const order = await MainOrder.findOne({'paymentResult.provider': 'korapay',
+        'paymentResult.tx_ref': data.reference, isPaid: false}).session(session);
+      if (!order) return;
+      if (order.paymentResult.mode !== config.mode) throw new Error('Payment mode mismatch');
+      const verified = await verifyKoraPayment({transactionRef: data.reference});
+      if (!koraPaymentMatchesOrder(verified, order, data.reference)) {
+        order.paymentResult = buildKoraPendingPaymentResult(order.paymentResult, verified, data.reference);
+        await order.save({session}); return;
+      }
+      const buyer = await User.findById(order.user).session(session);
+      if (!buyer) throw new Error('Buyer account not found');
+      settledOrder = await settleVerifiedPayment({order, buyer, verifiedTx: koraVerifiedTransaction(verified),
+        app: req.app, session, method: 'webhook', provider: 'korapay', deferVendorNotifications: true});
+    });
+    if (settledOrder) {
+      try {await notifyPaidOrderVendors({app: req.app, order: settledOrder, paymentMethod: 'KoraPay'});
+        await grantReferralRewardForVerifiedUser(settledOrder.user);}
+      catch (error) {console.error('[KORA WEBHOOK] Post-commit notification pending:', error.message);}
+    }
+    return res.sendStatus(200);
+  } catch (error) {
+    console.error('[KORA WEBHOOK]', error.code || 'reconciliation_failed');
+    return res.sendStatus(503);
+  } finally {await session.endSession();}
+});
+
+// Historical Squad references remain verifiable; new checkout uses Kora.
 router.post('/webhooks/squad', async (req, res) => {
   const signature = req.headers['x-squad-encrypted-body'] || req.headers['x-squad-signature'];
   const secretKey = String(process.env.SQUAD_SECRET_KEY || '').trim();
@@ -3652,6 +3689,7 @@ router.post('/webhooks/flutterwave', async (req, res) => {
     // Find the order by the tx_ref we generated client-side
     const order = await MainOrder.findOne({
       'paymentResult.tx_ref': webhookTxRef,
+      $or: [{'paymentResult.provider': 'flutterwave'}, {'paymentResult.provider': {$exists: false}}],
       isPaid: false   // only process if not already marked paid
     }).session(session);
 
@@ -3708,6 +3746,7 @@ async function processPendingFlutterwavePayments(app) {
     const candidates = await MainOrder.find({
       isPaid: false,
       mainOrderStatus: 'pending_payment',
+      $or: [{'paymentResult.provider': 'flutterwave'}, {'paymentResult.provider': {$exists: false}}],
       'paymentResult.tx_ref': { $exists: true, $ne: '' },
       'paymentResult.status': { $in: ['initiated', 'pending', 'unknown'] },
     }).sort({ 'paymentResult.lastCheckedAt': 1, createdAt: 1 }).limit(20);
@@ -3835,6 +3874,48 @@ async function processPendingSquadPayments(app) {
   }
 }
 
+let koraRecoveryRunning = false;
+async function processPendingKoraPayments(app) {
+  if (koraRecoveryRunning || !process.env.KORAPAY_SECRET_KEY) return;
+  koraRecoveryRunning = true;
+  try {
+    const config = getKoraConfig();
+    const candidates = await MainOrder.find({isPaid: false, 'paymentResult.provider': 'korapay',
+      'paymentResult.mode': config.mode, 'paymentResult.tx_ref': {$exists: true, $ne: ''},
+      'paymentResult.status': {$in: ['initiated', 'pending', 'unknown']}})
+      .sort({'paymentResult.lastCheckedAt': 1, createdAt: 1}).limit(20);
+    for (const candidate of candidates) {
+      const session = await mongoose.startSession();
+      let settledOrder = null;
+      try {
+        await session.withTransaction(async () => {
+          settledOrder = null;
+          const order = await MainOrder.findOne({_id: candidate._id, isPaid: false,
+            'paymentResult.provider': 'korapay', 'paymentResult.tx_ref': candidate.paymentResult.tx_ref}).session(session);
+          if (!order) return;
+          const verified = await verifyKoraPayment({transactionRef: order.paymentResult.tx_ref});
+          if (!koraPaymentMatchesOrder(verified, order, order.paymentResult.tx_ref)) {
+            order.paymentResult = buildKoraPendingPaymentResult(order.paymentResult, verified, order.paymentResult.tx_ref);
+            await order.save({session}); return;
+          }
+          const buyer = await User.findById(order.user).session(session);
+          if (!buyer) throw new Error('Buyer account not found');
+          settledOrder = await settleVerifiedPayment({order, buyer, verifiedTx: koraVerifiedTransaction(verified), app,
+            session, method: 'scheduled_reconciliation', provider: 'korapay', deferVendorNotifications: true});
+        });
+        if (settledOrder) {
+          await notifyPaidOrderVendors({app, order: settledOrder, paymentMethod: 'KoraPay'});
+          await grantReferralRewardForVerifiedUser(settledOrder.user);
+        }
+      } catch (error) {
+        console.warn('[KORA PAYMENT RECOVERY]', candidate._id.toString(), error.code || 'reconciliation_failed');
+        if (error.code === 'KORAPAY_RATE_LIMITED') break;
+      } finally {await session.endSession();}
+    }
+  } finally {koraRecoveryRunning = false;}
+}
+
+router.processPendingKoraPayments = processPendingKoraPayments;
 router.processPendingFlutterwavePayments = processPendingFlutterwavePayments;
 router.processPendingSquadPayments = processPendingSquadPayments;
 router.paymentMatchesOrder = paymentMatchesOrder;

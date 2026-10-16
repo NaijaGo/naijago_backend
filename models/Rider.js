@@ -245,7 +245,16 @@ const riderSchema = new mongoose.Schema({
   },
   
   // Withdrawal History
+  otp: String,
+  otpExpires: Date,
   withdrawalHistory: [{
+    provider: String,
+    mode: String,
+    providerStatus: String,
+    dispatchState: {type: String, enum: ['awaiting_approval', 'reserved', 'submitted', 'unknown']},
+    submittedAt: Date,
+    lastCheckedAt: Date,
+    processedBy: {type: mongoose.Schema.Types.ObjectId, ref: 'User'},
     amount: {
       type: Number,
       required: true,
@@ -272,6 +281,7 @@ const riderSchema = new mongoose.Schema({
       default: 'bank_transfer'
     },
     accountDetails: {
+      bankCode: String,
       bankName: String,
       accountNumber: String,
       accountName: String,

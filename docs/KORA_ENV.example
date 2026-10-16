@@ -1,0 +1,12 @@
+# Example values only. Enter real keys directly in the backend's secret store.
+# Test keys must never be used to settle production orders or wallets.
+PAYMENT_PROVIDER=korapay
+PAYOUT_PROVIDER=korapay
+KORAPAY_MODE=test
+KORAPAY_SECRET_KEY=sk_test_REPLACE_IN_SECRET_STORE
+KORAPAY_PUBLIC_KEY=pk_test_REPLACE_IN_SECRET_STORE
+KORAPAY_NOTIFICATION_URL=https://naijago-backend.onrender.com/api/orders/webhooks/korapay
+KORAPAY_CHANNELS=bank_transfer,card
+KORAPAY_PAYOUTS_ENABLED=false
+# Optional; leaving blank keeps Kora's own completion page.
+KORAPAY_REDIRECT_URL=

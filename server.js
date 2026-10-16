@@ -32,6 +32,7 @@ const adminActivityMiddleware = require('./middleware/adminActivityMiddleware');
 const { cleanupObsoleteIndexes } = require('./utils/dbIndexMaintenance');
 const { isApprovedPharmacistUser } = require('./utils/pharmacistEligibility');
 const orderRoutes = require('./routes/orderRoutes');
+const {processPendingKoraWithdrawals} = require('./services/koraPayoutService');
 
 const app = express();
 // Render places one trusted reverse proxy in front of the service. Trusting
@@ -2248,6 +2249,12 @@ const startServer = async () => {
     startOperationsMonitor(app);
     if (process.env.DISABLE_PAYMENT_RECOVERY_RUNNER !== 'true') {
       const runPaymentRecovery = () => {
+        orderRoutes.processPendingKoraPayments(app).catch((error) => {
+          console.error(colors.red(`Kora payment recovery runner error: ${error.message}`));
+        });
+        processPendingKoraWithdrawals().catch((error) => {
+          console.error(colors.red(`Kora withdrawal recovery runner error: ${error.message}`));
+        });
         orderRoutes.processPendingFlutterwavePayments(app).catch((error) => {
           console.error(colors.red(`Flutterwave recovery runner error: ${error.message}`));
         });
@@ -2257,7 +2264,7 @@ const startServer = async () => {
       };
       runPaymentRecovery();
       setInterval(runPaymentRecovery, Number(process.env.PAYMENT_RECOVERY_INTERVAL_MS || 300000));
-      console.log(colors.green('Payment recovery runners active (Squad + legacy Flutterwave).'));
+      console.log(colors.green('Payment recovery runners active (Kora + historical Squad/Flutterwave).'));
     }
     if (process.env.DISABLE_RIDER_ASSIGNMENT_TIMEOUT_RUNNER !== 'true') {
       const runAssignmentExpiry = () => {

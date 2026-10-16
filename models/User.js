@@ -1,6 +1,7 @@
 // models/User.js
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
+const WithdrawalRecord = require('./WithdrawalRecord');
 
 // Define the User Schema
 const UserSchema = new mongoose.Schema({
@@ -281,6 +282,8 @@ const UserSchema = new mongoose.Schema({
     default: 0,
   },
   // Vendor Wallet (Earnings from sales)
+  vendorWithdrawals: [WithdrawalRecord],
+  userWithdrawals: [WithdrawalRecord],
   vendorWalletBalance: {
     type: Number,
     default: 0.00,

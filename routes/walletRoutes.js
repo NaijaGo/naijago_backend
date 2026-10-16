@@ -13,6 +13,9 @@ const dotenv = require('dotenv');
 const { Resend } = require('resend');
 // Add this at the top of walletRoutes.js (after other imports)
 const mongoose = require('mongoose');
+const {listKoraBanks} = require('../services/koraPaymentService');
+const {requestKoraWithdrawal, processKoraWithdrawalAdminAction, isKoraWithdrawal} = require('../services/koraPayoutService');
+const configuredPayoutProvider = () => String(process.env.PAYOUT_PROVIDER || 'korapay').trim().toLowerCase();
 
 dotenv.config();
 
@@ -306,6 +309,10 @@ router.post('/verify-payment', dualProtect, async (req, res) => {
 // @access  Private
 router.get('/banks', dualProtect, async (req, res) => {
     try {
+        if (configuredPayoutProvider() === 'korapay') {
+            return res.status(200).json({banks: await listKoraBanks()});
+        }
+        if (configuredPayoutProvider() !== 'flutterwave') return res.status(503).json({message: 'Bank transfers are unavailable.'});
         const flutterwaveSecretKey = process.env.FLUTTERWAVE_SECRET_KEY;
         if (!flutterwaveSecretKey) {
             return res.status(500).json({ message: 'Missing Flutterwave Secret Key.' });
@@ -414,6 +421,16 @@ router.post('/request-otp', dualProtect, async (req, res) => {
 // @route     POST /api/wallet/withdraw
 // @access    Private
 router.post('/withdraw', dualProtect, async (req, res) => {
+    if (configuredPayoutProvider() === 'korapay') {
+        try {
+            const result = await requestKoraWithdrawal({userId: req.user.id, isRider: Boolean(req.user.isRider), body: req.body});
+            return res.status(200).json(result);
+        } catch (error) {
+            console.error('[KORA WITHDRAWAL]', error.code || 'request_failed');
+            return res.status(error.statusCode || 503).json({message: error.statusCode ? error.message : 'Unable to prepare the withdrawal. Check withdrawal history before retrying.'});
+        }
+    }
+    if (configuredPayoutProvider() !== 'flutterwave') return res.status(503).json({message: 'Bank transfers are unavailable.'});
     const { bank_code, account_number, account_name, amount, otp, wallet_type } = req.body;
 
     if (!bank_code || !account_number || !account_name || !amount || !otp || !wallet_type) {
@@ -826,7 +843,7 @@ router.get('/admin/pending-withdrawals', protect, authorizeRoles('admin'), async
 
         const vendorWithdrawalsPromise = (!userType || userType === 'vendor')
             ? User.aggregate([
-                { $match: { role: 'vendor' } },
+                { $match: { $or: [{isVendor: true}, {role: 'vendor'}] } },
                 { $unwind: '$vendorWithdrawals' },
                 { $match: withdrawalStatusMatch('vendorWithdrawals') },
                 {
@@ -924,6 +941,12 @@ router.get('/admin/pending-withdrawals', protect, authorizeRoles('admin'), async
 router.put('/admin/process-withdrawal/:reference', protect, authorizeRoles('admin'), async (req, res) => {
     const { reference } = req.params;
     const { status, failureReason } = req.body;
+    if (await isKoraWithdrawal(reference)) {
+        try {
+            const current = await processKoraWithdrawalAdminAction({reference, status, adminId: req.user.id});
+            return res.status(200).json({success: true, message: 'Kora withdrawal checked with the provider.', withdrawal: current?.withdrawal});
+        } catch (error) {return res.status(503).json({message: 'Kora verification is pending. Do not mark this transfer complete or refund it manually.'});}
+    }
 
     if (!['completed', 'failed'].includes(status)) {
         return res.status(400).json({ message: 'Status must be either "completed" or "failed".' });
@@ -999,7 +1022,7 @@ router.put('/admin/process-withdrawal/:reference', protect, authorizeRoles('admi
 
         // If not found in riders, try vendors
         let vendor = await User.findOne({
-            role: 'vendor',
+            $or: [{isVendor: true}, {role: 'vendor'}],
             'vendorWithdrawals.reference': reference
         }).session(session);
 
@@ -1125,6 +1148,11 @@ router.post('/admin/bulk-process-withdrawals', protect, authorizeRoles('admin'),
 
         for (const reference of references) {
             try {
+                if (await isKoraWithdrawal(reference)) {
+                    results.failed++;
+                    results.errors.push({reference, error: 'Kora transfers require provider reconciliation; use the individual withdrawal action.'});
+                    continue;
+                }
                 // Similar logic as single processing but in bulk
                 // For brevity, implementing single processing in loop
                 // In production, you might want to optimize this
@@ -1154,7 +1182,7 @@ router.post('/admin/bulk-process-withdrawals', protect, authorizeRoles('admin'),
                 if (!processed) {
                     // Try vendors
                     let vendor = await User.findOne({ 
-                        role: 'vendor',
+                        $or: [{isVendor: true}, {role: 'vendor'}],
                         'vendorWithdrawals.reference': reference 
                     }).session(session);
                     
@@ -1273,7 +1301,7 @@ router.get('/admin/withdrawal-stats', protect, authorizeRoles('admin'), async (r
         }).select('withdrawalHistory');
 
         const vendors = await User.find({
-            role: 'vendor',
+            $or: [{isVendor: true}, {role: 'vendor'}],
             'vendorWithdrawals.createdAt': { $gte: startDate }
         }).select('vendorWithdrawals');
 
