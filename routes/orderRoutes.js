@@ -2542,7 +2542,10 @@ router.post('/:id/payment-intent', protect, async (req, res) => {
             status: order.paymentResult.status,
         });
     } catch (error) {
-        console.error('[PAYMENT INTENT] Error:', error.code || 'unavailable');
+        console.error('[PAYMENT INTENT] Error:', {
+            code: error.code || 'unavailable',
+            ...(error.providerDiagnostic ? {providerDiagnostic: error.providerDiagnostic} : {}),
+        });
         return res.status(error.statusCode || 500).json({ message: error.statusCode ? error.message : 'Unable to prepare payment.' });
     }
 });

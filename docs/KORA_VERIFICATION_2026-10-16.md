@@ -89,3 +89,41 @@ revision does not contain this later change.
 
 No charge, payout, production database connection, migration, key inspection
 or Render configuration change was made during these checks.
+
+## Subsequent live checkout diagnosis
+
+After deployment of `64543d7`, the public Kora webhook became reachable and
+returned 401 to unsigned probes. This confirms route availability and basic
+key/mode validation, not provider acceptance of the key or a successful payment.
+
+The customer's subsequent checkout attempts first reported an unsupported
+provider setting, then invalid notification/redirect URL configuration. Later
+Render logs showed `KORAPAY_INITIALIZE_UNAVAILABLE` during checkout initialization.
+That error alone does not distinguish a Kora HTTP rejection from DNS, TLS,
+timeout or other transport failure. The actual cause is not yet established.
+
+The diagnostic patch preserves the existing failure code/customer message,
+checkout reference, payload, URL validation and retry behavior. It adds bounded,
+allowlisted `providerDiagnostic` fields to the `[PAYMENT INTENT]` server log:
+
+- `providerHttpStatus`: numeric HTTP status, or null when none was received.
+- `reason`: a diagnostic category, inferred from HTTP status and limited error
+  text matching, not the full provider response or a definitive root cause.
+- `fields`: recognized validation field names only, when supplied by Kora.
+- `transportCode`: a recognized network error code only, when applicable.
+
+Categories include `authentication_rejected`, `permission_rejected`,
+`ip_restricted`, `account_restricted`, `channel_rejected`, `reference_conflict`,
+`request_rejected`, `rate_limited`, `provider_unavailable` and `transport_error`.
+No raw provider messages/bodies, Axios config, authorization headers, keys,
+customer values or original exception causes are logged by this addition.
+
+The same targeted local command above now passes **57 tests**, including two
+new diagnostic tests exercising HTTP/error categories and redaction with
+synthetic private values. Parser and Git whitespace checks passed. No real Kora
+API request or database transaction was made by those tests.
+
+After deploying this patch, resume the existing unpaid order once. If checkout
+still fails, inspect the new diagnostic object in Render logs to identify the
+next account/configuration/request investigation. This patch improves diagnosis;
+it does not establish that the live checkout failure has been fixed.

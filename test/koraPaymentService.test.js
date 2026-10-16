@@ -84,3 +84,54 @@ test('bank payout has the documented destination and does not run when payouts a
   await assert.rejects(service.initiateKoraTransfer(args), /not enabled/);
   assert.equal(captured, undefined);
 }));
+
+test('checkout failure diagnostics retain HTTP categories without secrets or provider text', async () => withKoraEnvironment(async () => {
+  const cases = [
+    [401, 'Invalid API key', 'authentication_rejected'],
+    [403, 'Forbidden', 'permission_rejected'],
+    [403, 'IP address is not allowed on the whitelist', 'ip_restricted'],
+    [400, 'Merchant account is not activated', 'account_restricted'],
+    [422, 'Payment channel is not enabled', 'channel_rejected'],
+    [409, 'Reference already exists', 'reference_conflict'],
+    [400, 'Invalid customer', 'request_rejected'],
+    [429, 'Too many requests', 'rate_limited'],
+    [502, 'Bad gateway', 'provider_unavailable'],
+  ];
+  for (const [status, message, reason] of cases) {
+    let calls = 0;
+    const httpClient = {post: async () => {
+      calls++;
+      throw Object.assign(new Error('raw-sensitive-transport-message'), {
+        config: {headers: {Authorization: 'Bearer sk_live_private_fixture'}, data: {email: 'private-customer@example.com'}},
+        response: {status, data: {message: message + ' private-customer@example.com sk_live_private_fixture',
+          data: {customer: {email: 'private-customer@example.com'}, untrusted: 'private-provider-payload'},
+          errors: {email: 'private-customer@example.com'}}},
+      });
+    }};
+    await assert.rejects(service.initiateKoraPayment({...checkoutArgs, httpClient}), error => {
+      assert.equal(error.code, 'KORAPAY_INITIALIZE_UNAVAILABLE');
+      assert.equal(error.statusCode, 503);
+      assert.deepEqual(error.providerDiagnostic, {providerHttpStatus: status, reason, fields: ['customer', 'email']});
+      const output = error.stack + JSON.stringify(error);
+      for (const privateText of ['sk_live_private_fixture', 'private-customer@example.com',
+        'raw-sensitive-transport-message', 'private-provider-payload']) assert.equal(output.includes(privateText), false);
+      assert.equal(error.cause, undefined);
+      return true;
+    });
+    assert.equal(calls, 1, 'initialization errors must not automatically retry or create a different reference');
+  }
+}));
+
+test('checkout transport diagnostics allow only recognized network codes', async () => withKoraEnvironment(async () => {
+  for (const code of ['ENOTFOUND', 'ECONNABORTED', 'ECONNRESET', 'sk_live_private_fixture']) {
+    await assert.rejects(service.initiateKoraPayment({...checkoutArgs, httpClient: {post: async () => {
+      throw Object.assign(new Error('raw private diagnostics'), {code});
+    }}}), error => {
+      assert.equal(error.providerDiagnostic.providerHttpStatus, null);
+      assert.equal(error.providerDiagnostic.reason, 'transport_error');
+      assert.equal(error.providerDiagnostic.transportCode, code.startsWith('sk_') ? undefined : code);
+      assert.equal(JSON.stringify(error).includes('private'), false);
+      return true;
+    });
+  }
+}));

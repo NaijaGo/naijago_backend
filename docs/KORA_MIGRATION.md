@@ -138,11 +138,15 @@ including 39 Kora checks with isolated provider/database fixtures and 16 existin
 payment regression checks. A tiny positive amount rounding to zero kobo is now
 rejected. See [the verification report](KORA_VERIFICATION_2026-10-16.md).
 
-No provider test/live transaction, signed provider delivery, real database
-transaction or device checkout was exercised. Local tests do not establish
-production readiness. At the checked public app origin, the Kora POST webhook
-returned 404 while historical gateway webhooks returned 401. The deployed
-service URL/revision and route availability must be resolved before live testing.
+The later checkout-diagnostic patch passes 57 targeted local tests. No provider
+test/live transaction, signed provider delivery or real database transaction
+was exercised by those tests. Local tests do not establish production readiness.
+The initial Kora webhook 404 was resolved after deployment; unsigned requests
+now receive 401. Customer attempts subsequently reached initialization but
+failed with `KORAPAY_INITIALIZE_UNAVAILABLE`. The new server diagnostic reports
+an allowlisted HTTP status/category without raw provider/customer/key data.
+See the subsequent-diagnosis section of the verification report. Successful
+live checkout and bank transfers still require confirmation.
 
 ## Official references consulted
 

@@ -32,6 +32,32 @@ const referenceRequired = reference => {
   if (typeof reference !== 'string' || !/^[a-z\d_-]{8,100}$/i.test(reference)) fail('Invalid Kora reference.', 'KORAPAY_INVALID_REFERENCE', 400);
 };
 const auth = key => ({headers: {Authorization: `Bearer ${key}`, 'Content-Type': 'application/json'}, timeout: 30000, maxRedirects: 0});
+// Never log Axios errors or provider response bodies: they can contain the
+// Authorization header, customer details and request payload. Emit enums only.
+const initializationFailure = error => {
+  const status = error?.response?.status;
+  const providerHttpStatus = Number.isInteger(status) && status >= 100 && status <= 599 ? status : null;
+  const data = error?.response?.data;
+  const message = typeof data?.message === 'string' ? data.message.slice(0, 2000).toLowerCase() : '';
+  let reason = providerHttpStatus === null ? 'transport_error' : 'request_rejected';
+  if (providerHttpStatus === 401) reason = 'authentication_rejected';
+  else if (providerHttpStatus === 429) reason = 'rate_limited';
+  else if (providerHttpStatus >= 500) reason = 'provider_unavailable';
+  else if (/whitelist|allowlist|ip address.*(?:denied|not allowed|unauthori)/.test(message)) reason = 'ip_restricted';
+  else if (/already.*(?:used|exist)|duplicate|reference.*(?:used|exist)/.test(message)) reason = 'reference_conflict';
+  else if (/(?:account|merchant|business).{0,50}(?:inactive|disabled|suspended|restricted|not (?:active|enabled|verified|approved|activated))|(?:verification|activation).{0,30}(?:required|pending)/.test(message)) reason = 'account_restricted';
+  else if (/(?:channel|payment method).{0,60}(?:invalid|not enabled|not supported|not allowed|unavailable)|(?:invalid|unsupported|disabled).{0,30}(?:channel|payment method)/.test(message)) reason = 'channel_rejected';
+  else if (providerHttpStatus === 403) reason = 'permission_rejected';
+  const allowedFields = ['amount', 'currency', 'reference', 'channels', 'notification_url', 'redirect_url', 'customer', 'email', 'name', 'metadata'];
+  const fields = allowedFields.filter(field => [data?.data, data?.errors].some(value =>
+    value && typeof value === 'object' && !Array.isArray(value) && Object.hasOwn(value, field)));
+  const providerDiagnostic = {providerHttpStatus, reason, ...(fields.length ? {fields} : {})};
+  if (['ECONNABORTED', 'ETIMEDOUT', 'ENOTFOUND', 'EAI_AGAIN', 'ECONNRESET', 'ECONNREFUSED', 'ERR_NETWORK'].includes(error?.code)) {
+    providerDiagnostic.transportCode = error.code;
+  }
+  return Object.assign(new Error('Checkout could not be opened. Your payment reference is saved; do not pay through another gateway.'),
+    {statusCode: 503, code: 'KORAPAY_INITIALIZE_UNAVAILABLE', providerDiagnostic});
+};
 // Restrict redirects at both API and checkout boundaries; never forward secrets.
 const validCheckoutUrl = value => {
   try {
@@ -80,7 +106,7 @@ const initiateKoraPayment = async ({amountNaira, email, customerName, transactio
   if (config.redirectUrl) payload.redirect_url = config.redirectUrl;
   let response;
   try {response = (await httpClient.post(`${API}/charges/initialize`, payload, auth(config.secretKey))).data;}
-  catch {fail('Checkout could not be opened. Your payment reference is saved; do not pay through another gateway.', 'KORAPAY_INITIALIZE_UNAVAILABLE');}
+  catch (error) {throw initializationFailure(error);}
   if (response?.status !== true || response.data?.reference !== transactionRef || !validCheckoutUrl(response.data?.checkout_url)) fail('Kora returned invalid checkout details.', 'KORAPAY_INVALID_CHECKOUT');
   return {data: response.data, mode: config.mode};
 };
