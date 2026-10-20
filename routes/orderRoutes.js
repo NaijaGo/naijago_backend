@@ -50,7 +50,7 @@ const { verifySquadPayment } = require('../services/squadPaymentService');
 const { prepareKoraCheckout } = require('../services/koraCheckoutService');
 const { getKoraConfig, verifyKoraPayment } = require('../services/koraPaymentService');
 const { koraPaymentMatchesOrder, verifyKoraWebhookSignature, buildKoraPendingPaymentResult,
-    koraVerifiedTransaction } = require('../utils/koraPayment');
+    koraVerifiedTransaction, nairaToKobo } = require('../utils/koraPayment');
 const { reconcileKoraWithdrawal } = require('../services/koraPayoutService');
 const {
     buildSquadPendingPaymentResult,
@@ -2409,6 +2409,12 @@ router.put('/:id/pay/wallet', protect, async (req, res) => {
         }
         // 3. Balance check
         const orderTotal = mainOrder.totalPrice;
+        // Reject invalid stored amounts before any wallet or payment-state write.
+        if (typeof orderTotal !== 'number' || nairaToKobo(orderTotal) === null) {
+            await session.abortTransaction();
+            session.endSession();
+            return res.status(400).json({ message: 'Invalid order total. Please contact support before paying.' });
+        }
         if (buyer.userWalletBalance < orderTotal) {
             await session.abortTransaction();
             session.endSession();
