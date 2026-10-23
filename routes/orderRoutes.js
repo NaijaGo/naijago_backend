@@ -5,6 +5,7 @@ const { validateCoordinates } = require('../utils/addressCoordinates');
 // routes/orderRoutes.js
 const express = require('express');
 const crypto = require('crypto');
+const { emitToAdmins } = require('../utils/userSocketRoom');
 const mongoose = require('mongoose');
 const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
 const router = express.Router();
@@ -2231,7 +2232,7 @@ router.put('/shipments/:id/accept', protect, authorizeRoles('vendor', 'admin'), 
 
         const io = req.app.get('io');
         if (io) {
-            io.emit(`order_${shipment.mainOrder}`, {
+            io.to(`order_${shipment.mainOrder}`).emit(`order_${shipment.mainOrder}`, {
                 type: 'shipment_accepted',
                 shipmentId: shipment._id,
                 status: shipment.shipmentStatus,
@@ -2277,7 +2278,7 @@ router.put('/shipments/:id/reject', protect, authorizeRoles('vendor', 'admin'), 
 
         const io = req.app.get('io');
         if (io) {
-            io.emit(`order_${shipment.mainOrder}`, {
+            io.to(`order_${shipment.mainOrder}`).emit(`order_${shipment.mainOrder}`, {
                 type: 'shipment_rejected',
                 shipmentId: shipment._id,
                 reason: shipment.rejectionReason,
@@ -2869,7 +2870,7 @@ router.put('/shipments/:id/deliver', protect, authorizeRoles('vendor', 'admin'),
             // Emit socket notification
             const io = req.app.get('io');
             if (io) {
-                io.emit('admin_notification', {
+                emitToAdmins(io, 'admin_notification', {
                     type: 'order_ready_for_completion',
                     message: `Order ${mainOrder._id} has all shipments delivered and is ready for final verification and completion.`,
                     orderId: mainOrder._id,
@@ -2956,7 +2957,7 @@ router.put('/shipments/:id/status-update', protect, authorizeRoles('vendor', 'ad
             if (status === 'ready_for_pickup') {
                 const io = req.app.get('io');
                 if (io) {
-                    io.emit('admin_notification', {
+                    emitToAdmins(io, 'admin_notification', {
                         type: 'shipment_ready_for_pickup',
                         message: `Shipment ${shipment._id} is ready for rider pickup`,
                         shipmentId: shipment._id,

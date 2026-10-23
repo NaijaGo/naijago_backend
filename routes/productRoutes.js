@@ -36,6 +36,7 @@ const { generateGroundedSearchFallback } = require('../services/geminiCatalogSer
 const externalSearchUsage = new Map();
 const shoppingAssistant = require('../services/shoppingAssistantService');
 const { rateLimit } = require('express-rate-limit');
+const { shouldQueueVendorPhotoCleanup, queueVendorPhotoCleanup } = require('../services/vendorPhotoCleanupService');
 const shoppingAssistantLimiter = rateLimit({ windowMs: 60000, limit: 6, standardHeaders: 'draft-8', legacyHeaders: false,
     message: { message: 'Too many shopping requests. Please wait a minute and try again.' } });
 const EXTERNAL_SEARCH_WINDOW_MS = 60 * 1000;
@@ -642,6 +643,9 @@ router.post(
                     : 'Product added successfully!',
                 product: createdProduct,
             });
+            if (shouldQueueVendorPhotoCleanup({ user: req.user, body: req.body, files: req.files })) {
+                queueVendorPhotoCleanup({ productId: createdProduct._id, actor: req.user._id });
+            }
         } catch (error) {
             console.error('Error adding product:', error);
             res.status(error.statusCode || 500).json({ code: error.code, message: error.statusCode ? error.message : 'Server error adding product.' });
@@ -1078,6 +1082,9 @@ router.put(
                 message: 'Product updated successfully!',
                 product: updatedProduct,
             });
+            if (shouldQueueVendorPhotoCleanup({ user: req.user, body: req.body, files: req.files })) {
+                queueVendorPhotoCleanup({ productId: updatedProduct._id, actor: req.user._id });
+            }
         } catch (error) {
             if (inventorySession.inTransaction()) await inventorySession.abortTransaction();
             console.error('Error updating product:', error);

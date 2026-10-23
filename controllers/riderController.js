@@ -10,6 +10,7 @@ const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const { verifyGoogleIdentity, authError, sendGoogleError } = require('../services/googleIdentityService');
 const { sendVerificationEmail } = require('../utils/emailHelper');
+const { emitToUser, emitToAccount, emitToAdmins } = require('../utils/userSocketRoom');
 const {
   MAX_ACTIVE_DELIVERIES,
   notifyAssignedRider,
@@ -706,7 +707,7 @@ exports.updateRiderLocation = async (req, res) => {
     // Emit real-time location update (for admin/dispatch tracking)
     const io = req.app.get('io');
     if (io) {
-      io.emit('rider_location_update', {
+      emitToAdmins(io, 'rider_location_update', {
         riderId: rider._id,
         location: rider.currentLocation,
         fullName: rider.fullName,
@@ -1255,7 +1256,7 @@ exports.claimOrder = async (req, res) => {
           riderPhone: rider.phoneNumber,
           pickupOTP: pickupOTP
         };
-        io.emit(`vendor_${shipment.vendor}`, payload);
+        emitToAccount(io, shipment.vendor, `vendor_${shipment.vendor}`, payload);
         req.app.get('notifyVendor')?.(shipment.vendor.toString(), {
           title: 'Rider assigned',
           message: payload.message,
@@ -1264,7 +1265,7 @@ exports.claimOrder = async (req, res) => {
       });
 
       // Notify customer
-      io.emit(`user_${mainOrder.user}`, {
+      emitToUser(io, mainOrder.user, {
         type: 'order_claimed',
         message: `A rider has been assigned to your order. Delivery OTP: ${deliveryOTP}`,
         orderId: mainOrder._id,
@@ -1546,7 +1547,7 @@ exports.verifyPickupOTP = async (req, res) => {
     // Send notification
     const io = req.app.get('io');
     if (io) {
-      io.emit(`user_${mainOrder.user}`, {
+      emitToUser(io, mainOrder.user, {
         type: 'order_picked_up',
         message: `Your order has been picked up and is on the way`,
         orderId: mainOrder._id,
@@ -1561,7 +1562,7 @@ exports.verifyPickupOTP = async (req, res) => {
           shipmentId: shipment._id,
           riderName: req.rider.fullName
         };
-        io.emit(`vendor_${shipment.vendor}`, payload);
+        emitToAccount(io, shipment.vendor, `vendor_${shipment.vendor}`, payload);
         req.app.get('notifyVendor')?.(shipment.vendor.toString(), {
           title: 'Order picked up',
           message: payload.message,
@@ -1723,7 +1724,7 @@ exports.verifyDeliveryOTP = async (req, res) => {
     // Notify admin that order is ready for completion/payout
     const io = req.app.get('io');
     if (io) {
-      io.emit('admin_notification', {
+      emitToAdmins(io, 'admin_notification', {
         type: 'order_delivered',
         message: `Order ${mainOrder._id} has been delivered by rider ${req.rider.fullName}`,
         orderId: mainOrder._id,
@@ -1733,7 +1734,7 @@ exports.verifyDeliveryOTP = async (req, res) => {
       });
 
       // Notify customer
-      io.emit(`user_${mainOrder.user}`, {
+      emitToUser(io, mainOrder.user, {
         type: 'order_delivered',
         message: `Your order has been delivered successfully!`,
         orderId: mainOrder._id,
@@ -1748,7 +1749,7 @@ exports.verifyDeliveryOTP = async (req, res) => {
           orderId: mainOrder._id,
           shipmentId: shipment._id
         };
-        io.emit(`vendor_${shipment.vendor}`, payload);
+        emitToAccount(io, shipment.vendor, `vendor_${shipment.vendor}`, payload);
         req.app.get('notifyVendor')?.(shipment.vendor.toString(), {
           title: 'Order delivered',
           message: payload.message,
@@ -2051,7 +2052,7 @@ exports.requestWithdrawal = async (req, res) => {
     // Notify admin of withdrawal request
     const io = req.app.get('io');
     if (io) {
-      io.emit('admin_notification', {
+      emitToAdmins(io, 'admin_notification', {
         type: 'rider_withdrawal_request',
         message: `Rider ${rider.fullName} requested withdrawal of ₦${amount}`,
         riderId: rider._id,
@@ -2293,7 +2294,7 @@ exports.cancelDelivery = async (req, res) => {
     // Notify admin and vendor about cancellation
     const io = req.app.get('io');
     if (io) {
-      io.emit('admin_notification', {
+      emitToAdmins(io, 'admin_notification', {
         type: 'delivery_cancelled',
         message: `Rider ${rider.fullName} cancelled order ${orderId}. Reason: ${reason}`,
         orderId,
@@ -2306,7 +2307,7 @@ exports.cancelDelivery = async (req, res) => {
       // Notify vendor(s)
       const shipments = await Shipment.find({ mainOrder: orderId });
       shipments.forEach(shipment => {
-        io.emit(`vendor_${shipment.vendor}`, {
+        emitToAccount(io, shipment.vendor, `vendor_${shipment.vendor}`, {
           type: 'order_cancelled',
           message: `Order ${orderId} has been cancelled by rider. It is now available for pickup again.`,
           orderId,
@@ -2315,7 +2316,7 @@ exports.cancelDelivery = async (req, res) => {
       });
 
       // Notify customer
-      io.emit(`user_${mainOrder.user}`, {
+      emitToUser(io, mainOrder.user, {
         type: 'order_cancelled',
         message: `Your order has been cancelled by the rider. A new rider will be assigned shortly.`,
         orderId,
