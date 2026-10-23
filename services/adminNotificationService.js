@@ -3,6 +3,7 @@ const Rider = require('../models/Rider');
 const MainOrder = require('../models/MainOrder');
 const NotificationLog = require('../models/NotificationLog');
 const notificationService = require('./notificationService');
+const { emitToUser } = require('../utils/userSocketRoom');
 
 const CUSTOMER_CONTACT_FILTER = {
     isAdmin: { $ne: true },
@@ -264,7 +265,7 @@ const sendAdminInAppNotification = async ({
             { $push: { notifications: { ...notificationBase, type: userType } } },
         );
         customerIds.forEach((id) => {
-            io?.emit(`user_${id}`, {
+            emitToUser(io, id, {
                 type: userType,
                 title: cleanTitle,
                 message: storedMessage,

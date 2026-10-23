@@ -217,6 +217,7 @@ const ChatMessage = require('./models/ChatMessage');
 const { persistPharmacyMessage } = require('./services/pharmacyChatMessageService');
 const { claimPharmacySession } = require('./services/pharmacyChatSessionService');
 const { retainChatSocketPresence } = require('./utils/chatSocketPresence');
+const { ADMIN_SOCKET_ROOM, joinUserSocketRoom, emitToUser } = require('./utils/userSocketRoom');
 const User = require('./models/User');
 const Rider = require('./models/Rider'); // KEEP
 const MainOrder = require('./models/MainOrder');
@@ -377,9 +378,8 @@ async function notifyUserOfPharmacyMessage(session, textPreview, pharmacistId) {
   const userSocketId = onlineUsers.get(String(session.user));
   if (userSocketId) {
     io.to(userSocketId).emit('pharmacy_chat_message', payload);
-    io.to(userSocketId).emit(`user_${session.user}`, payload);
   }
-  io.emit(`user_${session.user}`, payload);
+  emitToUser(io, session.user, payload);
 
   notificationService.sendToUser(String(session.user), {
     title: 'New pharmacy chat message',
@@ -623,7 +623,8 @@ io.on('connection', (socket) => {
 
   // Store user connection
   onlineUsers.set(userId, socket.id);
-  
+  joinUserSocketRoom(socket, userId);
+
   // Store in appropriate role-based map
   if (userType === 'rider') {
     // INDIVIDUAL RIDER - ORIGINAL CODE
@@ -704,6 +705,7 @@ io.on('connection', (socket) => {
     
   } else if (userType === 'admin') {
     onlineAdmins.set(userId, socket.id);
+    socket.join(ADMIN_SOCKET_ROOM);
   } else if (userType === 'vendor') {
     onlineVendors.set(userId, socket.id);
   }
@@ -873,14 +875,6 @@ io.on('connection', (socket) => {
           riderLocationUpdates.set(userId, Date.now());
           await updateRiderLocationInDB(userId, { lat, lng, address });
         }
-
-        // Broadcast to tracking rooms (admins tracking this rider)
-        io.emit(`rider_${userId}_location`, {
-          riderId: userId,
-          location: { lat, lng, address },
-          timestamp: new Date(),
-          orderId
-        });
 
         // If tracking a specific order, update order room
         if (orderId) {

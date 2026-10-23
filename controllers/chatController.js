@@ -10,6 +10,7 @@ const {
 } = require('../services/pharmacySubscriptionService');
 const notificationService = require('../services/notificationService');
 const { isApprovedPharmacistUser } = require('../utils/pharmacistEligibility');
+const { emitToUser } = require('../utils/userSocketRoom');
 // NOTE: axios and getAIResponse removed as core logic moves to server.js socket handler
 
 const formatChatMessage = (message) => ({
@@ -214,9 +215,8 @@ const notifyUserOfPharmacyMessage = async (app, session, textPreview, pharmacist
   const socketId = onlineUsers?.get?.(String(session.user));
   if (io && socketId) {
     io.to(socketId).emit('pharmacy_chat_message', payload);
-    io.to(socketId).emit(`user_${session.user}`, payload);
   }
-  io?.emit(`user_${session.user}`, payload);
+  emitToUser(io, session.user, payload);
 
   notificationService.sendToUser(String(session.user), {
     title: 'New pharmacy chat message',
